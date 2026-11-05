@@ -12,11 +12,21 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
+      - name: Baixar MediaPipe
+        run: |
+          mkdir -p app/src/main/assets/mediapipe
+          npm pack @mediapipe/tasks-vision@0.10.14
+          tar xzf mediapipe-tasks-vision-0.10.14.tgz
+          ls package package/wasm
+          cp package/vision_bundle.mjs app/src/main/assets/mediapipe/
+          cp -r package/wasm app/src/main/assets/mediapipe/wasm
+          curl -fL -o app/src/main/assets/mediapipe/hand_landmarker.task https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task
+          rm -rf package mediapipe-tasks-vision-0.10.14.tgz
       - name: Gerar projeto
         run: |
           mkdir -p app/src/main/java/com/vr/launcher app/src/main/assets
           cp "$(ls *.html | head -1)" app/src/main/assets/index.html
-          sed -i 's#</body>#<script src="ar.js"></script><script src="ui.js"></script></body>#' app/src/main/assets/index.html
+          sed -i 's#</body>#<script src="ar.js"></script><script src="ui.js"></script><script src="hand.js"></script></body>#' app/src/main/assets/index.html
           cat > app/src/main/assets/ar.js <<'EOF'
           (function () {
             var css = document.createElement('style');
@@ -93,151 +103,50 @@ jobs:
             closeApp = function () { _c(); gw.style.visibility = 'visible'; };
           })();
           EOF
-          cat > settings.gradle <<'EOF'
-          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
-          dependencyResolutionManagement { repositories { google(); mavenCentral() } }
-          rootProject.name = "VRLauncher"
-          include ':app'
-          EOF
-          cat > build.gradle <<'EOF'
-          plugins { id 'com.android.application' version '8.5.2' apply false }
-          EOF
-          cat > app/build.gradle <<'EOF'
-          plugins { id 'com.android.application' }
-          android {
-            namespace 'com.vr.launcher'
-            compileSdk 34
-            defaultConfig {
-              applicationId 'com.vr.launcher'
-              minSdk 24
-              targetSdk 34
-              versionCode 4
-              versionName '1.3'
-            }
-          }
-          EOF
-          cat > app/src/main/AndroidManifest.xml <<'EOF'
-          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-            <uses-permission android:name="android.permission.CAMERA"/>
-            <uses-feature android:name="android.hardware.camera" android:required="false"/>
-            <application android:label="VR Launcher" android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
-              <activity android:name=".MainActivity" android:exported="true"
-                android:screenOrientation="sensorLandscape"
-                android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize">
-                <intent-filter>
-                  <action android:name="android.intent.action.MAIN"/>
-                  <category android:name="android.intent.category.LAUNCHER"/>
-                </intent-filter>
-              </activity>
-            </application>
-          </manifest>
-          EOF
-          cat > app/src/main/java/com/vr/launcher/MainActivity.java <<'EOF'
-          package com.vr.launcher;
-          import android.Manifest;
-          import android.app.Activity;
-          import android.content.pm.PackageManager;
-          import android.graphics.Color;
-          import android.hardware.Sensor;
-          import android.hardware.SensorEvent;
-          import android.hardware.SensorEventListener;
-          import android.hardware.SensorManager;
-          import android.net.Uri;
-          import android.os.Bundle;
-          import android.view.View;
-          import android.view.WindowManager;
-          import android.webkit.PermissionRequest;
-          import android.webkit.WebChromeClient;
-          import android.webkit.WebResourceRequest;
-          import android.webkit.WebResourceResponse;
-          import android.webkit.WebSettings;
-          import android.webkit.WebView;
-          import android.webkit.WebViewClient;
-          import java.io.InputStream;
-          public class MainActivity extends Activity implements SensorEventListener {
-            static final String HOST = "appassets.androidplatform.net";
-            static final String HOOK = "window.__r=function(a){Rdev=a;if(!haveSensor){haveSensor=true;haveGyro=true;mode='gyro';setTimeout(recenter,200)}if(st.textContent!=='Sensor nativo OK')st.textContent='Sensor nativo OK'};";
-            WebView web; SensorManager sm; Sensor rot; boolean ready = false;
-            PermissionRequest pending = null;
-            float[] m = new float[9];
-            boolean hasCam() {
-              return checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED;
-            }
-            @Override protected void onCreate(Bundle b) {
-              super.onCreate(b);
-              getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-              web = new WebView(this);
-              web.setBackgroundColor(Color.TRANSPARENT);
-              WebSettings s = web.getSettings();
-              s.setJavaScriptEnabled(true);
-              s.setDomStorageEnabled(true);
-              s.setMediaPlaybackRequiresUserGesture(false);
-              web.setWebChromeClient(new WebChromeClient() {
-                @Override public void onPermissionRequest(final PermissionRequest r) {
-                  runOnUiThread(new Runnable() { public void run() {
-                    if (hasCam()) { r.grant(r.getResources()); }
-                    else { pending = r; requestPermissions(new String[]{Manifest.permission.CAMERA}, 1); }
-                  }});
-                }
+          cat > app/src/main/assets/hand.js <<'EOF'
+          (function () {
+            var cam = document.getElementById('cam');
+            var cv = document.createElement('canvas');
+            cv.style.cssText = 'position:fixed;left:0;top:0;width:100%;height:100%;z-index:8;pointer-events:none';
+            document.body.appendChild(cv);
+            var ctx = cv.getContext('2d');
+            function fit() { cv.width = innerWidth; cv.height = innerHeight; }
+            fit(); addEventListener('resize', fit);
+
+            var hud = document.createElement('div');
+            hud.style.cssText = 'position:fixed;top:8px;left:8px;z-index:20;background:rgba(0,0,0,.6);color:#fff;font:12px sans-serif;padding:5px 10px;border-radius:999px';
+            document.body.appendChild(hud);
+            function say(t) { hud.textContent = t; }
+            say('Mão: carregando IA…');
+
+            var Mod = null, vision = null, lm = null, delegate = 'GPU', busy = false;
+            var pinch = false, fpsAvg = 0, msAvg = 0, lastDet = 0, lastT = 0, sx = 0, sy = 0, first = true;
+            window.handCursor = { x: 0, y: 0, pinch: false, has: false };
+
+            async function create(del) {
+              var n = await Mod.HandLandmarker.createFromOptions(vision, {
+                baseOptions: { modelAssetPath: 'mediapipe/hand_landmarker.task', delegate: del },
+                runningMode: 'VIDEO', numHands: 1
               });
-              web.setWebViewClient(new WebViewClient() {
-                @Override public WebResourceResponse shouldInterceptRequest(WebView v, WebResourceRequest r) {
-                  Uri u = r.getUrl();
-                  if (!HOST.equals(u.getHost())) return null;
-                  String p = u.getPath();
-                  if (p == null || p.equals("/")) p = "/index.html";
-                  try {
-                    InputStream in = getAssets().open(p.substring(1));
-                    String mime = p.endsWith(".js") ? "application/javascript" : "text/html";
-                    return new WebResourceResponse(mime, "UTF-8", in);
-                  } catch (Exception e) { return null; }
-                }
-                @Override public void onPageFinished(WebView v, String u) {
-                  v.evaluateJavascript(HOOK, null);
-                  ready = true;
-                }
-              });
-              setContentView(web);
-              if (!hasCam()) requestPermissions(new String[]{Manifest.permission.CAMERA}, 1);
-              web.loadUrl("https://" + HOST + "/index.html");
-              sm = (SensorManager) getSystemService(SENSOR_SERVICE);
-              rot = sm.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR);
-              if (rot == null) rot = sm.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
+              if (lm) { try { lm.close(); } catch (e) {} }
+              lm = n; delegate = del;
             }
-            @Override public void onRequestPermissionsResult(int c, String[] p, int[] res) {
-              if (pending != null) {
-                if (res.length > 0 && res[0] == PackageManager.PERMISSION_GRANTED) pending.grant(pending.getResources());
-                else pending.deny();
-                pending = null;
-              }
+            async function init() {
+              try {
+                Mod = await import('./mediapipe/vision_bundle.mjs');
+                vision = await Mod.FilesetResolver.forVisionTasks('mediapipe/wasm');
+                try { await create('GPU'); } catch (e) { await create('CPU'); }
+                say('Mão: pronta (' + delegate + ')');
+                requestAnimationFrame(loop);
+              } catch (e) { say('Mão: erro ' + (e.message || e)); }
             }
-            @Override public void onWindowFocusChanged(boolean f) {
-              super.onWindowFocusChanged(f);
-              if (f) web.setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY | View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
-            }
-            @Override protected void onResume() {
-              super.onResume();
-              if (rot != null) sm.registerListener(this, rot, SensorManager.SENSOR_DELAY_GAME);
-            }
-            @Override protected void onPause() {
-              super.onPause();
-              sm.unregisterListener(this);
-            }
-            @Override public void onSensorChanged(SensorEvent e) {
-              if (!ready) return;
-              SensorManager.getRotationMatrixFromVector(m, e.values);
-              StringBuilder sb = new StringBuilder("__r([");
-              for (int i = 0; i < 9; i++) { sb.append(m[i]); if (i < 8) sb.append(','); }
-              sb.append("])");
-              web.evaluateJavascript(sb.toString(), null);
-            }
-            @Override public void onAccuracyChanged(Sensor s, int a) {}
-          }
-          EOF
-      - name: Compilar
-        run: gradle assembleDebug --no-daemon
-      - uses: actions/upload-artifact@v4
-        with:
-          name: VRLauncher
-          path: app/build/outputs/apk/debug/app-debug.apk
+            hud.onclick = async function () {
+              if (!lm || busy) return;
+              var d = delegate === 'GPU' ? 'CPU' : 'GPU';
+              busy = true; say('Mão: trocando para ' + d + '…');
+              try { await create(d); } catch (e) { say('Erro ' + d + ': ' + (e.message || e)); }
+              busy = false;
+            };
+
+            function map(p) {
+              var vw = cam.videoWidth, vh = cam.videoHeight, W = cv.widt
