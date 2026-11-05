@@ -43,7 +43,7 @@ jobs:
               if (!keep) setTimeout(function () { d.remove(); }, 4000);
             }
             if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { msg('Câmera indisponível (secure=' + window.isSecureContext + ')', true); return; }
-            navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false })
+            navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: { ideal: 960 }, height: { ideal: 540 }, frameRate: { ideal: 30 } }, audio: false })
               .then(function (s) { v.srcObject = s; v.play(); })
               .catch(function (e) { msg('Câmera: ' + e.name + ' ' + e.message, true); });
           })();
@@ -106,6 +106,17 @@ jobs:
           cat > app/src/main/assets/hand.js <<'EOF'
           (function () {
             var cam = document.getElementById('cam');
+            var st2 = document.createElement('style');
+            st2.textContent = [
+              '.gt2.hand{transform:scale(1.18)}',
+              '.gt2.hand .gl{opacity:1}',
+              '.btn2.hand{background:rgba(255,255,255,.3)!important}',
+              'body.hasHand .gt2.hov:not(.hand){transform:none}',
+              'body.hasHand .btn2.hov:not(.hand){background:rgba(255,255,255,.14)!important}',
+              'body.hasHand #ret{opacity:0}'
+            ].join('');
+            document.head.appendChild(st2);
+
             var cv = document.createElement('canvas');
             cv.style.cssText = 'position:fixed;left:0;top:0;width:100%;height:100%;z-index:8;pointer-events:none';
             document.body.appendChild(cv);
@@ -113,15 +124,31 @@ jobs:
             function fit() { cv.width = innerWidth; cv.height = innerHeight; }
             fit(); addEventListener('resize', fit);
 
-            var hud = document.createElement('div');
-            hud.style.cssText = 'position:fixed;top:8px;left:8px;z-index:20;background:rgba(0,0,0,.6);color:#fff;font:12px sans-serif;padding:5px 10px;border-radius:999px';
-            document.body.appendChild(hud);
-            function say(t) { hud.textContent = t; }
-            say('Mão: carregando IA…');
+            var bar = document.createElement('div');
+            bar.style.cssText = 'position:fixed;top:8px;left:8px;z-index:20;display:flex;gap:6px;font:12px sans-serif;color:#fff';
+            var pill = 'background:rgba(0,0,0,.6);padding:5px 10px;border-radius:999px';
+            var hud = document.createElement('div'); hud.style.cssText = pill;
+            var pb = document.createElement('div'); pb.style.cssText = pill; pb.textContent = '⏸ Mão';
+            bar.appendChild(hud); bar.appendChild(pb); document.body.appendChild(bar);
+            var msgText = 'Mão: carregando IA…';
+            function say(t) { msgText = t; hud.textContent = t; }
+            say(msgText);
 
-            var Mod = null, vision = null, lm = null, delegate = 'GPU', busy = false;
-            var pinch = false, fpsAvg = 0, msAvg = 0, lastDet = 0, lastT = 0, sx = 0, sy = 0, first = true;
+            var Mod = null, vision = null, lm = null, delegate = 'GPU', busy = false, paused = false;
+            var skel = null, tx = 0, ty = 0, cx = 0, cy = 0, first = true;
+            var pinch = false, pinchN = 0, pinchItem = null, clicked = false, lastFire = 0;
+            var seen = 0, lastDet = 0, lastT = 0, fpsAvg = 0, msAvg = 0;
+            var lastFrame = performance.now(), pfAvg = 30, lastHud = 0, cur = null;
             window.handCursor = { x: 0, y: 0, pinch: false, has: false };
+
+            var _fire = fire;
+            fire = function (it) {
+              if (window.handCursor.has && !window.__tap) { dwell = -0.8; return; }
+              _fire(it);
+            };
+            addEventListener('pointerdown', function () {
+              window.__tap = 1; setTimeout(function () { window.__tap = 0; }, 500);
+            }, true);
 
             async function create(del) {
               var n = await Mod.HandLandmarker.createFromOptions(vision, {
@@ -136,16 +163,21 @@ jobs:
                 Mod = await import('./mediapipe/vision_bundle.mjs');
                 vision = await Mod.FilesetResolver.forVisionTasks('mediapipe/wasm');
                 try { await create('GPU'); } catch (e) { await create('CPU'); }
-                say('Mão: pronta (' + delegate + ')');
-                requestAnimationFrame(loop);
+                msgText = '';
+                requestAnimationFrame(frame);
               } catch (e) { say('Mão: erro ' + (e.message || e)); }
             }
             hud.onclick = async function () {
               if (!lm || busy) return;
               var d = delegate === 'GPU' ? 'CPU' : 'GPU';
               busy = true; say('Mão: trocando para ' + d + '…');
-              try { await create(d); } catch (e) { say('Erro ' + d + ': ' + (e.message || e)); }
+              try { await create(d); msgText = ''; } catch (e) { say('Erro ' + d + ': ' + (e.message || e)); }
               busy = false;
+            };
+            pb.onclick = function () {
+              paused = !paused;
+              pb.textContent = paused ? '▶ Mão' : '⏸ Mão';
+              if (paused) { skel = null; seen = 0; pinch = false; pinchN = 0; pinchItem = null; first = true; }
             };
 
             function map(p) {
@@ -156,54 +188,94 @@ jobs:
             function dist(a, b) {
               return Math.hypot((a.x - b.x) * cam.videoWidth, (a.y - b.y) * cam.videoHeight);
             }
+            function hitTest(x, y) {
+              var best = null, bd = 1e9, PAD = 12;
+              for (var i = 0; i < items.length; i++) {
+                var r = items[i].el.getBoundingClientRect();
+                if (x >= r.left - PAD && x <= r.right + PAD && y >= r.top - PAD && y <= r.bottom + PAD) {
+                  var d = Math.hypot(x - (r.left + r.right) / 2, y - (r.top + r.bottom) / 2);
+                  if (d < bd) { bd = d; best = items[i]; }
+                }
+              }
+              return best;
+            }
 
-            function loop() {
-              requestAnimationFrame(loop);
-              var now = performance.now();
-              if (busy || !lm || now - lastDet < 66 || cam.readyState < 2 || !cam.videoWidth) return;
-              lastDet = now;
-              var res;
-              try {
-                var t0 = performance.now();
-                res = lm.detectForVideo(cam, now);
-                msAvg = msAvg * 0.8 + (performance.now() - t0) * 0.2;
-              } catch (e) {
+            function detect(now) {
+              var res, t0 = performance.now();
+              try { res = lm.detectForVideo(cam, now); }
+              catch (e) {
                 if (delegate === 'GPU') {
                   busy = true; say('GPU falhou, usando CPU…');
-                  create('CPU').catch(function (e2) { say('Mão: erro ' + (e2.message || e2)); }).then(function () { busy = false; });
+                  create('CPU').then(function () { msgText = ''; }).catch(function (e2) { say('Mão: erro ' + (e2.message || e2)); }).then(function () { busy = false; });
                 } else { say('Mão: erro ' + (e.message || e)); }
                 return;
               }
+              msAvg = msAvg * 0.8 + (performance.now() - t0) * 0.2;
               if (lastT) { fpsAvg = fpsAvg ? fpsAvg * 0.8 + (1000 / (now - lastT)) * 0.2 : 1000 / (now - lastT); }
               lastT = now;
-
-              ctx.clearRect(0, 0, cv.width, cv.height);
               var hs = res.landmarks && res.landmarks[0];
               if (hs) {
-                var pts = hs.map(map);
-                ctx.strokeStyle = 'rgba(255,255,255,.7)'; ctx.lineWidth = 2;
-                Mod.HandLandmarker.HAND_CONNECTIONS.forEach(function (c) {
-                  ctx.beginPath(); ctx.moveTo(pts[c.start].x, pts[c.start].y); ctx.lineTo(pts[c.end].x, pts[c.end].y); ctx.stroke();
-                });
-                ctx.fillStyle = 'rgba(255,255,255,.9)';
-                pts.forEach(function (p) { ctx.beginPath(); ctx.arc(p.x, p.y, 3, 0, 6.283); ctx.fill(); });
-
+                seen = now;
+                skel = hs.map(map);
                 var ratio = dist(hs[4], hs[8]) / (dist(hs[0], hs[9]) || 1);
                 pinch = pinch ? ratio < 0.40 : ratio < 0.25;
-                var t = pts[8];
-                if (first) { sx = t.x; sy = t.y; first = false; }
-                sx += (t.x - sx) * 0.5; sy += (t.y - sy) * 0.5;
+                if (ratio > 0.5 || first) {
+                  tx = skel[8].x; ty = skel[8].y;
+                  if (first) { cx = tx; cy = ty; first = false; }
+                }
+                if (pinch) {
+                  if (pinchN === 0) pinchItem = hitTest(tx, ty);
+                  pinchN++;
+                } else { pinchN = 0; pinchItem = null; clicked = false; }
+              } else {
+                skel = null; first = true; pinch = false; pinchN = 0; pinchItem = null; clicked = false;
+              }
+            }
+
+            function frame(now) {
+              requestAnimationFrame(frame);
+              var dt = Math.min(0.1, (now - lastFrame) / 1000); lastFrame = now;
+              if (dt > 0) pfAvg = pfAvg * 0.95 + (1 / dt) * 0.05;
+              if (lm && !busy && !paused && cam.readyState >= 2 && cam.videoWidth && now - lastDet >= 66) {
+                lastDet = now; detect(now);
+              }
+              var has = seen > 0 && now - seen < 300;
+              var k = 1 - Math.exp(-dt * 20);
+              cx += (tx - cx) * k; cy += (ty - cy) * k;
+
+              ctx.clearRect(0, 0, cv.width, cv.height);
+              if (has && skel) {
+                ctx.strokeStyle = 'rgba(255,255,255,.35)'; ctx.lineWidth = 2;
+                Mod.HandLandmarker.HAND_CONNECTIONS.forEach(function (c) {
+                  ctx.beginPath(); ctx.moveTo(skel[c.start].x, skel[c.start].y); ctx.lineTo(skel[c.end].x, skel[c.end].y); ctx.stroke();
+                });
+              }
+              if (has) {
                 ctx.lineWidth = 3;
                 ctx.strokeStyle = pinch ? '#5eead4' : '#ffffff';
                 ctx.fillStyle = pinch ? '#5eead4' : '#ffffff';
-                ctx.beginPath(); ctx.arc(sx, sy, 16, 0, 6.283); ctx.stroke();
-                ctx.beginPath(); ctx.arc(sx, sy, 5, 0, 6.283); ctx.fill();
-                window.handCursor = { x: sx, y: sy, pinch: pinch, has: true };
-              } else {
-                first = true; pinch = false;
-                window.handCursor = { x: 0, y: 0, pinch: false, has: false };
+                ctx.beginPath(); ctx.arc(cx, cy, pinch ? 10 : 16, 0, 6.283); ctx.stroke();
+                ctx.beginPath(); ctx.arc(cx, cy, 4, 0, 6.283); ctx.fill();
               }
-              say('Mão: ' + Math.round(fpsAvg) + ' fps · ' + Math.round(msAvg) + ' ms · ' + delegate + (hs ? '' : ' · sem mão'));
+              document.body.classList.toggle('hasHand', has);
+              window.handCursor = { x: cx, y: cy, pinch: pinch, has: has };
+
+              var tgt = has ? hitTest(cx, cy) : null;
+              if (tgt !== cur) {
+                if (cur) cur.el.classList.remove('hand');
+                if (tgt) tgt.el.classList.add('hand');
+                cur = tgt;
+              }
+              if (has && pinchItem && pinchN >= 2 && !clicked && now - lastFire > 700) {
+                clicked = true; lastFire = now;
+                var it = pinchItem; pinchItem = null;
+                if (cur) { cur.el.classList.remove('hand'); cur = null; }
+                _fire(it);
+              }
+              if (now - lastHud > 400) {
+                lastHud = now;
+                hud.textContent = msgText || ('Mão: ' + Math.round(fpsAvg) + ' fps · ' + Math.round(msAvg) + ' ms · ' + delegate + ' · tela ' + Math.round(pfAvg) + ' fps' + (paused ? ' · pausada' : (has ? '' : ' · sem mão')));
+              }
             }
             init();
           })();
@@ -226,8 +298,8 @@ jobs:
               applicationId 'com.vr.launcher'
               minSdk 24
               targetSdk 34
-              versionCode 5
-              versionName '1.4'
+              versionCode 6
+              versionName '1.5'
             }
           }
           EOF
