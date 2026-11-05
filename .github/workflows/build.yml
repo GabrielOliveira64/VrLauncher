@@ -1,0 +1,121 @@
+name: Build APK
+on: [push, workflow_dispatch]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+      - name: Gerar projeto
+        run: |
+          mkdir -p app/src/main/java/com/vr/launcher app/src/main/assets
+          cp "$(ls *.html | head -1)" app/src/main/assets/index.html
+          cat > settings.gradle <<'EOF'
+          pluginManagement { repositories { google(); mavenCentral(); gradlePluginPortal() } }
+          dependencyResolutionManagement { repositories { google(); mavenCentral() } }
+          rootProject.name = "VRLauncher"
+          include ':app'
+          EOF
+          cat > build.gradle <<'EOF'
+          plugins { id 'com.android.application' version '8.5.2' apply false }
+          EOF
+          cat > app/build.gradle <<'EOF'
+          plugins { id 'com.android.application' }
+          android {
+            namespace 'com.vr.launcher'
+            compileSdk 34
+            defaultConfig {
+              applicationId 'com.vr.launcher'
+              minSdk 24
+              targetSdk 34
+              versionCode 1
+              versionName '1.0'
+            }
+          }
+          EOF
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+            <application android:label="VR Launcher" android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
+              <activity android:name=".MainActivity" android:exported="true"
+                android:screenOrientation="sensorLandscape"
+                android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize">
+                <intent-filter>
+                  <action android:name="android.intent.action.MAIN"/>
+                  <category android:name="android.intent.category.LAUNCHER"/>
+                </intent-filter>
+              </activity>
+            </application>
+          </manifest>
+          EOF
+          cat > app/src/main/java/com/vr/launcher/MainActivity.java <<'EOF'
+          package com.vr.launcher;
+          import android.app.Activity;
+          import android.hardware.Sensor;
+          import android.hardware.SensorEvent;
+          import android.hardware.SensorEventListener;
+          import android.hardware.SensorManager;
+          import android.os.Bundle;
+          import android.view.View;
+          import android.view.WindowManager;
+          import android.webkit.WebSettings;
+          import android.webkit.WebView;
+          import android.webkit.WebViewClient;
+          public class MainActivity extends Activity implements SensorEventListener {
+            static final String HOOK = "window.__r=function(a){Rdev=a;if(!haveSensor){haveSensor=true;haveGyro=true;mode='gyro';setTimeout(recenter,200)}if(st.textContent!=='Sensor nativo OK')st.textContent='Sensor nativo OK'};";
+            WebView web; SensorManager sm; Sensor rot; boolean ready = false;
+            float[] m = new float[9];
+            @Override protected void onCreate(Bundle b) {
+              super.onCreate(b);
+              getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+              web = new WebView(this);
+              WebSettings s = web.getSettings();
+              s.setJavaScriptEnabled(true);
+              s.setDomStorageEnabled(true);
+              web.setWebViewClient(new WebViewClient() {
+                @Override public void onPageFinished(WebView v, String u) {
+                  v.evaluateJavascript(HOOK, null);
+                  ready = true;
+                }
+              });
+              setContentView(web);
+              web.loadUrl("file:///android_asset/index.html");
+              sm = (SensorManager) getSystemService(SENSOR_SERVICE);
+              rot = sm.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR);
+              if (rot == null) rot = sm.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
+            }
+            @Override public void onWindowFocusChanged(boolean f) {
+              super.onWindowFocusChanged(f);
+              if (f) web.setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY | View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
+            }
+            @Override protected void onResume() {
+              super.onResume();
+              if (rot != null) sm.registerListener(this, rot, SensorManager.SENSOR_DELAY_GAME);
+            }
+            @Override protected void onPause() {
+              super.onPause();
+              sm.unregisterListener(this);
+            }
+            @Override public void onSensorChanged(SensorEvent e) {
+              if (!ready) return;
+              SensorManager.getRotationMatrixFromVector(m, e.values);
+              StringBuilder sb = new StringBuilder("__r([");
+              for (int i = 0; i < 9; i++) { sb.append(m[i]); if (i < 8) sb.append(','); }
+              sb.append("])");
+              web.evaluateJavascript(sb.toString(), null);
+            }
+            @Override public void onAccuracyChanged(Sensor s, int a) {}
+          }
+          EOF
+      - name: Compilar
+        run: gradle assembleDebug --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VRLauncher
+          path: app/build/outputs/apk/debug/app-debug.apk
