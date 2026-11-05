@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>VR Launcher – Etapa 1</title>
+<style>
+:root{color-scheme:dark;--bg:#05070f;--fg:#eef2ff;--glass:rgba(255,255,255,.09);--line:rgba(255,255,255,.28);--acc:#5eead4;box-sizing:border-box}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;overflow:hidden;touch-action:none;user-select:none}
+#view{position:fixed;inset:0;background:radial-gradient(ellipse at 50% 40%,#13203f 0%,#05070f 70%);overflow:hidden}
+#scene{position:absolute;left:50%;top:50%;width:0;height:0;transform-style:preserve-3d;will-change:transform}
+.p{position:absolute;left:0;top:0;backface-visibility:hidden;border-radius:36px;border:3px solid var(--line);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;text-align:center;background:linear-gradient(145deg,var(--c1),var(--c2));box-shadow:0 0 40px rgba(0,0,0,.5)}
+.p .i{font-size:150px;line-height:1}
+.p .t{font-size:44px;font-weight:700;letter-spacing:.5px}
+.p.hov{border-color:var(--acc);box-shadow:0 0 60px rgba(94,234,212,.7);filter:brightness(1.25)}
+.p.dim{opacity:.18}
+.star{position:absolute;left:0;top:0;width:10px;height:10px;border-radius:50%;background:#9db4ff;opacity:.7}
+.clock{background:var(--glass);font-size:88px;font-weight:300}
+.win{background:linear-gradient(145deg,#1b2540,#0e1424);gap:20px}
+.win .i{font-size:200px}
+.win .s{font-size:30px;opacity:.7;max-width:80%}
+.btn2{background:linear-gradient(145deg,#7f1d1d,#450a0a);flex-direction:row}
+#ret{position:fixed;left:50%;top:50%;width:30px;height:30px;margin:-15px 0 0 -15px;border-radius:50%;border:2px solid #fff;pointer-events:none;z-index:5}
+#ret::before{content:"";position:absolute;inset:-6px;border-radius:50%;background:conic-gradient(var(--acc) var(--p,0deg),transparent 0);-webkit-mask:radial-gradient(circle,transparent 62%,#000 64%);mask:radial-gradient(circle,transparent 62%,#000 64%)}
+#ret::after{content:"";position:absolute;left:50%;top:50%;width:6px;height:6px;margin:-3px;border-radius:50%;background:#fff}
+#ui{position:fixed;left:0;right:0;bottom:0;display:flex;gap:8px;justify-content:center;align-items:center;padding:8px 12px calc(8px + env(safe-area-inset-bottom,0px));z-index:6}
+#ui button,#ui span{font:inherit;font-size:13px;color:var(--fg);background:rgba(0,0,0,.55);border:1px solid var(--line);border-radius:999px;padding:7px 14px}
+#start{position:fixed;inset:0;z-index:9;background:rgba(5,7,15,.94);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;text-align:center;padding:24px}
+#start h1{margin:0;font-size:24px}
+#start p{margin:0;max-width:420px;opacity:.75;font-size:15px;line-height:1.45}
+#go{font:inherit;font-size:18px;font-weight:600;color:#04201c;background:var(--acc);border:0;border-radius:999px;padding:14px 34px}
+</style>
+</head>
+<body>
+<div id="view"><div id="scene"></div></div>
+<div id="ret"></div>
+<div id="ui"><button id="rc">⟲ Centralizar</button><button id="fs">⛶ Tela cheia</button><span id="st">—</span></div>
+<div id="start">
+  <h1>VR Launcher · Etapa 1</h1>
+  <p>Segure o celular na horizontal e olhe ao redor. Mire o ponto central num app por 1 segundo para abrir (ou toque na tela). Sem giroscópio, arraste o dedo para olhar.</p>
+  <button id="go">Iniciar</button>
+</div>
+<script>
+const D=Math.PI/180, $=id=>document.getElementById(id);
+const mul=(a,b)=>{const r=[];for(let i=0;i<3;i++)for(let j=0;j<3;j++)r[i*3+j]=a[i*3]*b[j]+a[i*3+1]*b[3+j]+a[i*3+2]*b[6+j];return r};
+const rx=a=>{const c=Math.cos(a),s=Math.sin(a);return[1,0,0,0,c,-s,0,s,c]};
+const ry=a=>{const c=Math.cos(a),s=Math.sin(a);return[c,0,s,0,1,0,-s,0,c]};
+const rz=a=>{const c=Math.cos(a),s=Math.sin(a);return[c,-s,0,s,c,0,0,0,1]};
+const tr=a=>[a[0],a[3],a[6],a[1],a[4],a[7],a[2],a[5],a[8]];
+const Cm=[1,0,0,0,0,-1,0,-1,0], Dm=[1,0,0,0,-1,0,0,0,1];
+
+const scene=$('scene'), view=$('view'), ret=$('ret'), st=$('st');
+let P=500; const R=900;
+function resize(){P=innerWidth*0.6;view.style.perspective=P+'px'}
+addEventListener('resize',resize);resize();
+
+function place(el,az,e,r,w,h){
+  el.style.width=w+'px';el.style.height=h+'px';el.style.marginLeft=-w/2+'px';el.style.marginTop=-h/2+'px';
+  const x=r*Math.cos(e*D)*Math.sin(az*D), y=-r*Math.sin(e*D), z=-r*Math.cos(e*D)*Math.cos(az*D);
+  el.style.transform=`translate3d(${x}px,${y}px,${z}px) rotateY(${-az}deg) rotateX(${-e}deg)`;
+}
+function mk(cls,html,css){const d=document.createElement('div');d.className=cls;d.innerHTML=html;if(css)d.style.cssText=css;scene.appendChild(d);return d}
+
+// estrelas
+for(let n=0;n<70;n++){const s=mk('star','');place(s,Math.random()*360,Math.random()*120-50,2200,8,8)}
+
+// relógio
+const clock=mk('p clock','');place(clock,0,28,R,420,150);
+setInterval(()=>{const d=new Date();clock.textContent=String(d.getHours()).padStart(2,'0')+':'+String(d.getMinutes()).padStart(2,'0')},1000);
+clock.textContent='--:--';
+
+// apps
+const APPS=[
+ ['▶️','YouTube','#b91c1c','#7f1d1d'],['💬','WhatsApp','#15803d','#14532d'],['🌐','Chrome','#1d4ed8','#1e3a8a'],['📷','Câmera','#6d28d9','#4c1d95'],
+ ['🖼️','Galeria','#be185d','#831843'],['🎵','Música','#c2410c','#7c2d12'],['🗺️','Mapas','#0f766e','#134e4a'],['⚙️','Config.','#475569','#1e293b']
+];
+let items=[], opened=null;
+const ring=APPS.map((a,i)=>{
+  const el=mk('p',`<div class="i">${a[0]}</div><div class="t">${a[1]}</div>`,`--c1:${a[2]};--c2:${a[3]}`);
+  const az=i*45;place(el,az,0,R,520,300);
+  return {el,az,e:0,hw:19,hh:12,fn:()=>openApp(a)};
+});
+const win=mk('p win','','display:none');place(win,0,0,760,900,520);
+const closeBtn=mk('p btn2','<div class="t">✕ Fechar</div>','display:none');place(closeBtn,0,-27,760,300,100);
+const closeItem={el:closeBtn,az:0,e:-27,hw:14,hh:8,fn:()=>closeApp()};
+
+function setItems(){items=opened?[closeItem]:ring}
+function openApp(a){
+  opened=a;
+  win.innerHTML=`<div class="i">${a[0]}</div><div class="t">${a[1]}</div><div class="s">Aqui vai aparecer a tela real do app (Etapa 3, app nativo).</div>`;
+  const az=gaze.az;
+  place(win,az,0,760,900,520);place(closeBtn,az,-27,760,300,100);
+  closeItem.az=az;
+  win.style.display=closeBtn.style.display='flex';
+  ring.forEach(r=>r.el.classList.add('dim'));clock.classList.add('dim');
+  setItems();
+}
+function closeApp(){
+  opened=null;win.style.display=closeBtn.style.display='none';
+  ring.forEach(r=>r.el.classList.remove('dim'));clock.classList.remove('dim');
+  setItems();
+}
+setItems();
+
+// sensores
+let mode='drag', ang=0, a=0,b=0,g=0, off=0, yaw=0, pitch=0, haveGyro=false, Rc=[1,0,0,0,1,0,0,0,1];
+const gaze={az:0,el:0};
+let Rdev=null, haveSensor=false;
+function onOri(e){if(e.beta==null||haveSensor)return;Rdev=mul(rz((e.alpha||0)*D),mul(rx(e.beta*D),ry((e.gamma||0)*D)));if(!haveGyro){haveGyro=true;mode='gyro';st.textContent='Sensor: deviceorientation';setTimeout(recenter,200)}}
+function startSensor(){
+  try{
+    const s=new RelativeOrientationSensor({frequency:60,referenceFrame:'device'});
+    s.addEventListener('reading',()=>{
+      const [x,y,z,w]=s.quaternion;
+      Rdev=[1-2*(y*y+z*z),2*(x*y-z*w),2*(x*z+y*w),2*(x*y+z*w),1-2*(x*x+z*z),2*(y*z-x*w),2*(x*z-y*w),2*(y*z+x*w),1-2*(x*x+y*y)];
+      if(!haveSensor){haveSensor=true;haveGyro=true;mode='gyro';st.textContent='Sensor: giroscópio OK';setTimeout(recenter,200)}
+    });
+    s.addEventListener('error',e=>{st.textContent='Erro do sensor: '+e.error.name});
+    s.start();
+  }catch(err){st.textContent='Sensor API: '+err.name}
+}
+function screenAng(){return (screen.orientation&&screen.orientation.angle!=null)?screen.orientation.angle:(window.orientation||0)}
+function recenter(){
+  if(mode==='gyro'){off=Math.atan2(-Rc[2],-Rc[5])}else{yaw=0;pitch=0}
+}
+let drag=null;
+view.addEventListener('pointerdown',e=>{drag={x:e.clientX,y:e.clientY,m:false}});
+addEventListener('pointermove',e=>{if(!drag||mode!=='drag')return;const dx=e.clientX-drag.x,dy=e.clientY-drag.y;if(Math.abs(dx)+Math.abs(dy)>2)drag.m=true;yaw-=dx*.25;pitch=Math.max(-80,Math.min(80,pitch+dy*.25));drag.x=e.clientX;drag.y=e.clientY});
+addEventListener('pointerup',()=>{if(drag&&!drag.m&&hover)fire(hover);drag=null});
+
+$('rc').onclick=recenter;
+$('fs').onclick=()=>{const d=document.documentElement;(d.requestFullscreen?d.requestFullscreen():Promise.reject()).then(()=>screen.orientation&&screen.orientation.lock&&screen.orientation.lock('landscape')).catch(()=>{})};
+$('go').onclick=async()=>{
+  try{if(window.DeviceOrientationEvent&&typeof DeviceOrientationEvent.requestPermission==='function'){await DeviceOrientationEvent.requestPermission()}}catch(e){}
+  addEventListener('deviceorientation',onOri);
+  if(window.RelativeOrientationSensor)startSensor();
+  $('start').style.display='none';
+  try{await document.documentElement.requestFullscreen();screen.orientation.lock('landscape')}catch(e){}
+  st.textContent='Procurando giroscópio…';
+  setTimeout(()=>{if(!haveGyro&&!/Erro|API:/.test(st.textContent)){let d='';try{const fp=document.featurePolicy||document.permissionsPolicy;d=' | iframe:'+(window.top!==window)+' gyro:'+(fp&&fp.allowsFeature('gyroscope'))+' accel:'+(fp&&fp.allowsFeature('accelerometer'))}catch(e){}st.textContent='Sem leitura'+d+' | arraste para olhar'}},2500);
+};
+
+// loop
+let hover=null, dwell=0, last=performance.now();
+const DWELL=1.2;
+function fire(it){it.fn();dwell=-0.8}
+function frame(t){
+  const dt=Math.min(.1,(t-last)/1000);last=t;
+  let Rf;
+  if(mode==='gyro'){
+    Rc=mul(Rdev,rz(-screenAng()*D));
+    Rf=mul(rz(off),Rc);
+  }else{Rc=Rf=mul(rz(-yaw*D),rx((90+pitch)*D))}
+  const M=mul(Dm,mul(tr(Rf),Cm));
+  scene.style.transform=`translateZ(${P}px) matrix3d(${M[0]},${M[3]},${M[6]},0,${M[1]},${M[4]},${M[7]},0,${M[2]},${M[5]},${M[8]},0,0,0,0,1)`;
+  const fE=-Rf[2],fN=-Rf[5],fU=-Rf[8];
+  gaze.az=Math.atan2(fE,fN)/D;gaze.el=Math.asin(Math.max(-1,Math.min(1,fU)))/D;
+  let h=null;
+  for(const it of items){
+    let da=((gaze.az-it.az+540)%360)-180;
+    if(Math.abs(da)<=it.hw&&Math.abs(gaze.el-it.e)<=it.hh){h=it;break}
+  }
+  if(h!==hover){if(hover)hover.el.classList.remove('hov');if(h)h.el.classList.add('hov');hover=h;if(dwell>0||!h)dwell=0}
+  if(hover){dwell+=dt;if(dwell>=DWELL)fire(hover)}
+  ret.style.setProperty('--p',(Math.max(0,dwell)/DWELL*360)+'deg');
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
