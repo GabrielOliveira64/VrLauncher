@@ -19,6 +19,7 @@ jobs:
           tar xzf mediapipe-tasks-vision-0.10.14.tgz
           ls package package/wasm
           cp package/vision_bundle.mjs app/src/main/assets/mediapipe/
+          cp package/vision_bundle.cjs app/src/main/assets/mediapipe/ || echo "sem cjs"
           cp -r package/wasm app/src/main/assets/mediapipe/wasm
           curl -fL -o app/src/main/assets/mediapipe/hand_landmarker.task https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task
           rm -rf package mediapipe-tasks-vision-0.10.14.tgz
@@ -53,13 +54,16 @@ jobs:
             var css = document.createElement('style');
             css.textContent = [
               '.gw{position:absolute;left:0;top:0;backface-visibility:hidden;padding:22px;border-radius:36px;background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.3);-webkit-backdrop-filter:blur(24px) saturate(1.5);backdrop-filter:blur(24px) saturate(1.5);box-shadow:0 12px 48px rgba(0,0,0,.28);color:#fff;font-family:system-ui,sans-serif}',
-              '.gh{height:28px;margin-bottom:12px;font-size:22px;font-weight:300;letter-spacing:1px;opacity:.9}',
+              '.gh{display:flex;align-items:center;justify-content:space-between;height:44px;margin-bottom:12px;font-size:22px;font-weight:300;letter-spacing:1px}',
+              '.gbs{display:flex;gap:8px}',
+              '.gb{width:42px;height:42px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.28);font-size:17px;font-weight:500;letter-spacing:0;transition:transform .12s,background .12s}',
               '.gr{display:flex;justify-content:center}',
               '.gt2{width:78px;height:92px;display:flex;flex-direction:column;align-items:center;gap:6px;transition:transform .15s}',
               '.gi{width:64px;height:64px;border-radius:20px;display:flex;align-items:center;justify-content:center;font-size:34px;box-shadow:inset 0 0 0 1px rgba(255,255,255,.25)}',
               '.gl{font-size:15px;opacity:.8;white-space:nowrap}',
               '.gt2.hov{transform:scale(1.14)}',
               '.gt2.hov .gl{opacity:1}',
+              '.gmin{padding:0;border-radius:50%;align-items:center;justify-content:center;font-size:44px}',
               '.p.win,.btn2{background:rgba(255,255,255,.14)!important;border:1px solid rgba(255,255,255,.3)!important;border-radius:32px!important;-webkit-backdrop-filter:blur(24px) saturate(1.5);backdrop-filter:blur(24px) saturate(1.5);box-shadow:0 12px 48px rgba(0,0,0,.28)!important}',
               '.p.hov{filter:none!important}',
               '.win .i{font-size:96px!important}.win .t{font-size:34px!important;font-weight:600}.win .s{font-size:22px!important}',
@@ -67,13 +71,26 @@ jobs:
             ].join('');
             document.head.appendChild(css);
 
-            var R0 = 620, W = 720, H = 176, STEP = 78, DY = 20;
+            var R0 = 620, W = 720, H = 192, STEP = 78, DY = 28;
+            var WS = { az: 0, el: 0, R: R0, s: 1, min: false };
+            try {
+              var sv = JSON.parse(localStorage.getItem('vrws') || 'null');
+              if (sv) { WS.R = Math.max(380, Math.min(1500, sv.R || R0)); WS.s = Math.max(0.6, Math.min(2, sv.s || 1)); }
+            } catch (e) {}
+            function save() { try { localStorage.setItem('vrws', JSON.stringify({ R: WS.R, s: WS.s })); } catch (e) {} }
+
             clock.style.display = 'none';
             ring.forEach(function (r) { r.el.remove(); });
             ring.length = 0;
 
-            var gw = mk('gw', '<div class="gh"><span id="gtime">--:--</span></div><div class="gr"></div>');
+            var gw = mk('gw', '<div class="gh"><span id="gtime">--:--</span><div class="gbs">' +
+              '<div class="gb" data-a="min">&#8212;</div><div class="gb" data-a="sm">A-</div><div class="gb" data-a="bg">A+</div>' +
+              '<div class="gb" data-a="near">&#8601;</div><div class="gb" data-a="far">&#8599;</div></div></div><div class="gr"></div>');
             place(gw, 0, 0, R0, W, H);
+            var bub = mk('gw gmin', '&#9638;');
+            place(bub, 0, 0, R0, 96, 96);
+            bub.style.display = 'none';
+
             var row = gw.querySelector('.gr');
             function tick() {
               var d = new Date();
@@ -81,36 +98,118 @@ jobs:
             }
             tick(); setInterval(tick, 1000);
 
-            var n = APPS.length;
-            APPS.forEach(function (a, i) {
+            APPS.forEach(function (a) {
               var t = document.createElement('div');
               t.className = 'gt2';
               t.innerHTML = '<div class="gi" style="background:linear-gradient(145deg,' + a[2] + ',' + a[3] + ')">' + a[0] + '</div><div class="gl">' + a[1] + '</div>';
               row.appendChild(t);
-              var dx = (i - (n - 1) / 2) * STEP;
-              ring.push({
-                el: t,
-                az: Math.atan(dx / R0) / D,
-                e: -Math.atan(DY / R0) / D,
-                hw: Math.atan((STEP / 2) / R0) / D,
-                hh: Math.atan(48 / R0) / D,
-                fn: function () { openApp(a); }
+              ring.push({ el: t, az: 0, e: 0, hw: 5, hh: 5, fn: function () { openApp(a); } });
+            });
+
+            function put(el, az, e, r, s) {
+              var x = r * Math.cos(e * D) * Math.sin(az * D), y = -r * Math.sin(e * D), z = -r * Math.cos(e * D) * Math.cos(az * D);
+              el.style.transform = 'translate3d(' + x + 'px,' + y + 'px,' + z + 'px) rotateY(' + (-az) + 'deg) rotateX(' + (-e) + 'deg) scale(' + s + ')';
+            }
+            var bubItem = { k: 'item', drag: true, el: bub, az: 0, e: 0, hw: 6, hh: 6, fn: function () { WS.min = false; apply(); } };
+            function layout() {
+              put(gw, WS.az, WS.el, WS.R, WS.s);
+              put(bub, WS.az, WS.el, WS.R, WS.s);
+              var n = ring.length;
+              ring.forEach(function (r, i) {
+                var dx = (i - (n - 1) / 2) * STEP * WS.s;
+                r.az = WS.az + Math.atan(dx / WS.R) / D;
+                r.e = WS.el - Math.atan(DY * WS.s / WS.R) / D;
+                r.hw = Math.atan(STEP * WS.s / 2 / WS.R) / D;
+                r.hh = Math.atan(48 * WS.s / WS.R) / D;
               });
+              bubItem.az = WS.az; bubItem.e = WS.el;
+              bubItem.hw = bubItem.hh = Math.atan(48 * WS.s / WS.R) / D;
+            }
+            setItems = function () { items = opened ? [closeItem] : (WS.min ? [bubItem] : ring); };
+            function apply() {
+              gw.style.display = WS.min ? 'none' : '';
+              bub.style.display = WS.min ? 'flex' : 'none';
+              setItems(); layout();
+            }
+            var acts = {
+              min: function () { WS.min = true; apply(); },
+              sm: function () { WS.s = Math.max(0.6, WS.s / 1.12); layout(); save(); },
+              bg: function () { WS.s = Math.min(2, WS.s * 1.12); layout(); save(); },
+              near: function () { WS.R = Math.max(380, WS.R - 80); layout(); save(); },
+              far: function () { WS.R = Math.min(1500, WS.R + 80); layout(); save(); }
+            };
+            var hbtns = [];
+            gw.querySelectorAll('.gb').forEach(function (b) {
+              var a = b.getAttribute('data-a');
+              hbtns.push({ k: 'btn', el: b, fn: acts[a], rep: a !== 'min' });
             });
 
             var _o = openApp, _c = closeApp;
             openApp = function (a) { _o(a); gw.style.visibility = 'hidden'; };
             closeApp = function () { _c(); gw.style.visibility = 'visible'; };
+
+            var rcb = document.getElementById('rc');
+            var oc = rcb.onclick;
+            rcb.onclick = function () { if (oc) oc(); WS.az = 0; WS.el = 0; layout(); };
+
+            window.UI = { WS: WS, layout: layout, hbtns: hbtns, winT: { k: 'win', el: gw }, save: save, bubItem: bubItem };
+            apply();
           })();
+          EOF
+          cat > app/src/main/assets/hand-worker.js <<'EOF'
+          var lm = null, del = 'GPU', M = null, model = null, vis = null;
+          function create(d) {
+            return M.HandLandmarker.createFromOptions(vis, {
+              baseOptions: { modelAssetBuffer: new Uint8Array(model.slice(0)), delegate: d },
+              runningMode: 'VIDEO', numHands: 1
+            }).then(function (n) {
+              if (lm) { try { lm.close(); } catch (e) {} }
+              lm = n; del = d;
+            });
+          }
+          function errMsg(e) { return String((e && e.message) || e); }
+          self.onmessage = function (e) {
+            var d = e.data;
+            if (d.t === 'init') {
+              try {
+                self.exports = {}; self.module = { exports: self.exports };
+                importScripts(d.base + '/vision_bundle.cjs');
+                M = (self.module.exports && self.module.exports.FilesetResolver) ? self.module.exports : self.exports;
+                if (!M.FilesetResolver) throw new Error('bundle sem FilesetResolver');
+                model = d.model;
+                M.FilesetResolver.forVisionTasks(d.base + '/wasm')
+                  .then(function (v) { vis = v; return create('GPU').catch(function () { return create('CPU'); }); })
+                  .then(function () { postMessage({ t: 'ready', d: del }); })
+                  .catch(function (err) { postMessage({ t: 'err', m: errMsg(err) }); });
+              } catch (err) { postMessage({ t: 'err', m: errMsg(err) }); }
+            } else if (d.t === 'frame') {
+              var t0 = performance.now();
+              try {
+                var r = lm.detectForVideo(d.bmp, d.ts);
+                d.bmp.close();
+                var h = r.landmarks && r.landmarks[0];
+                postMessage({ t: 'res', pts: h ? h.map(function (p) { return [p.x, p.y]; }) : null, ms: performance.now() - t0 });
+              } catch (err) {
+                try { d.bmp.close(); } catch (e2) {}
+                if (del === 'GPU') {
+                  create('CPU').then(function () { postMessage({ t: 'del', d: 'CPU' }); postMessage({ t: 'res', pts: null, ms: 0 }); })
+                    .catch(function (e3) { postMessage({ t: 'err', m: errMsg(e3) }); });
+                } else { postMessage({ t: 'err', m: errMsg(err) }); }
+              }
+            }
+          };
           EOF
           cat > app/src/main/assets/hand.js <<'EOF'
           (function () {
-            var cam = document.getElementById('cam');
+            var cam = document.getElementById('cam'), UI = window.UI;
             var st2 = document.createElement('style');
             st2.textContent = [
               '.gt2.hand{transform:scale(1.18)}',
               '.gt2.hand .gl{opacity:1}',
               '.btn2.hand{background:rgba(255,255,255,.3)!important}',
+              '.gb.hand{background:rgba(255,255,255,.5)!important;transform:scale(1.12)}',
+              '.gw.hand{border-color:rgba(255,255,255,.65)}',
+              '.gmin.hand{background:rgba(255,255,255,.35)}',
               'body.hasHand .gt2.hov:not(.hand){transform:none}',
               'body.hasHand .btn2.hov:not(.hand){background:rgba(255,255,255,.14)!important}',
               'body.hasHand #ret{opacity:0}'
@@ -121,7 +220,13 @@ jobs:
             cv.style.cssText = 'position:fixed;left:0;top:0;width:100%;height:100%;z-index:8;pointer-events:none';
             document.body.appendChild(cv);
             var ctx = cv.getContext('2d');
-            function fit() { cv.width = innerWidth; cv.height = innerHeight; }
+            var oc = document.createElement('canvas'), octx = oc.getContext('2d');
+            var mc = document.createElement('canvas'), mctx = mc.getContext('2d');
+            var MS = 3;
+            function fit() {
+              cv.width = oc.width = innerWidth; cv.height = oc.height = innerHeight;
+              mc.width = Math.ceil(innerWidth / MS); mc.height = Math.ceil(innerHeight / MS);
+            }
             fit(); addEventListener('resize', fit);
 
             var bar = document.createElement('div');
@@ -129,16 +234,20 @@ jobs:
             var pill = 'background:rgba(0,0,0,.6);padding:5px 10px;border-radius:999px';
             var hud = document.createElement('div'); hud.style.cssText = pill;
             var pb = document.createElement('div'); pb.style.cssText = pill; pb.textContent = '⏸ Mão';
-            bar.appendChild(hud); bar.appendChild(pb); document.body.appendChild(bar);
+            var ob = document.createElement('div'); ob.style.cssText = pill; ob.textContent = '🖐 Sobrepor: sim';
+            bar.appendChild(hud); bar.appendChild(pb); bar.appendChild(ob); document.body.appendChild(bar);
             var msgText = 'Mão: carregando IA…';
             function say(t) { msgText = t; hud.textContent = t; }
             say(msgText);
 
-            var Mod = null, vision = null, lm = null, delegate = 'GPU', busy = false, paused = false;
-            var skel = null, tx = 0, ty = 0, cx = 0, cy = 0, first = true;
-            var pinch = false, pinchN = 0, pinchItem = null, clicked = false, lastFire = 0;
-            var seen = 0, lastDet = 0, lastT = 0, fpsAvg = 0, msAvg = 0;
-            var lastFrame = performance.now(), pfAvg = 30, lastHud = 0, cur = null;
+            var CONN = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],[13,17],[17,18],[18,19],[19,20],[0,17]];
+            var CH = [[1,2,3,4],[5,6,7,8],[9,10,11,12],[13,14,15,16],[17,18,19,20]];
+
+            var Mod = null, vision = null, lm = null, delegate = 'GPU', busy = false, paused = false, overlay = true;
+            var worker = null, wReady = false, wBusy = false, wErr = 0, mode = 'init';
+            var skelT = null, skelC = null, tx = 0, ty = 0, cx = 0, cy = 0, first = true, hsA = 0;
+            var pinch = false, pinchN = 0, pinchTarget = null, clicked = false, lastFire = 0, grab = null, cur = null;
+            var seen = 0, lastDet = 0, lastT = 0, fpsAvg = 0, msAvg = 0, lastFrame = performance.now(), pfAvg = 30, lastHud = 0;
             window.handCursor = { x: 0, y: 0, pinch: false, has: false };
 
             var _fire = fire;
@@ -150,6 +259,31 @@ jobs:
               window.__tap = 1; setTimeout(function () { window.__tap = 0; }, 500);
             }, true);
 
+            function map(p) {
+              var vw = cam.videoWidth, vh = cam.videoHeight, W = cv.width, H = cv.height;
+              var s = Math.max(W / vw, H / vh);
+              return { x: p.x * vw * s - (vw * s - W) / 2, y: p.y * vh * s - (vh * s - H) / 2 };
+            }
+            function dist(a, b) { return Math.hypot((a.x - b.x) * cam.videoWidth, (a.y - b.y) * cam.videoHeight); }
+            function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+
+            function hitTarget(x, y) {
+              var best = null, bd = 1e9;
+              function test(t, pad) {
+                var r = t.el.getBoundingClientRect();
+                if (r.width < 1) return;
+                if (x >= r.left - pad && x <= r.right + pad && y >= r.top - pad && y <= r.bottom + pad) {
+                  var d = Math.hypot(x - (r.left + r.right) / 2, y - (r.top + r.bottom) / 2);
+                  if (d < bd) { bd = d; best = t; }
+                }
+              }
+              var closed = !opened && !UI.WS.min;
+              items.forEach(function (t) { test(t, 12); });
+              if (closed) UI.hbtns.forEach(function (t) { test(t, 8); });
+              if (!best && closed) test(UI.winT, 14);
+              return best;
+            }
+
             async function create(del) {
               var n = await Mod.HandLandmarker.createFromOptions(vision, {
                 baseOptions: { modelAssetPath: 'mediapipe/hand_landmarker.task', delegate: del },
@@ -158,49 +292,52 @@ jobs:
               if (lm) { try { lm.close(); } catch (e) {} }
               lm = n; delegate = del;
             }
-            async function init() {
+            async function initMain() {
               try {
-                Mod = await import('./mediapipe/vision_bundle.mjs');
-                vision = await Mod.FilesetResolver.forVisionTasks('mediapipe/wasm');
+                if (!Mod) {
+                  Mod = await import('./mediapipe/vision_bundle.mjs');
+                  vision = await Mod.FilesetResolver.forVisionTasks('mediapipe/wasm');
+                }
                 try { await create('GPU'); } catch (e) { await create('CPU'); }
                 msgText = '';
-                requestAnimationFrame(frame);
               } catch (e) { say('Mão: erro ' + (e.message || e)); }
             }
-            hud.onclick = async function () {
-              if (!lm || busy) return;
-              var d = delegate === 'GPU' ? 'CPU' : 'GPU';
-              busy = true; say('Mão: trocando para ' + d + '…');
-              try { await create(d); msgText = ''; } catch (e) { say('Erro ' + d + ': ' + (e.message || e)); }
-              busy = false;
-            };
-            pb.onclick = function () {
-              paused = !paused;
-              pb.textContent = paused ? '▶ Mão' : '⏸ Mão';
-              if (paused) { skel = null; seen = 0; pinch = false; pinchN = 0; pinchItem = null; first = true; }
-            };
-
-            function map(p) {
-              var vw = cam.videoWidth, vh = cam.videoHeight, W = cv.width, H = cv.height;
-              var s = Math.max(W / vw, H / vh);
-              return { x: p.x * vw * s - (vw * s - W) / 2, y: p.y * vh * s - (vh * s - H) / 2 };
+            function fallback(why) {
+              if (mode === 'main') return;
+              mode = 'main';
+              if (worker) { try { worker.terminate(); } catch (e) {} worker = null; }
+              wReady = false; wBusy = false;
+              say('Worker indisponível (' + why + '). Usando thread principal…');
+              initMain();
             }
-            function dist(a, b) {
-              return Math.hypot((a.x - b.x) * cam.videoWidth, (a.y - b.y) * cam.videoHeight);
-            }
-            function hitTest(x, y) {
-              var best = null, bd = 1e9, PAD = 12;
-              for (var i = 0; i < items.length; i++) {
-                var r = items[i].el.getBoundingClientRect();
-                if (x >= r.left - PAD && x <= r.right + PAD && y >= r.top - PAD && y <= r.bottom + PAD) {
-                  var d = Math.hypot(x - (r.left + r.right) / 2, y - (r.top + r.bottom) / 2);
-                  if (d < bd) { bd = d; best = items[i]; }
+            function startWorker() {
+              var t = setTimeout(function () { fallback('timeout'); }, 20000);
+              try { worker = new Worker('hand-worker.js'); }
+              catch (e) { clearTimeout(t); return fallback('Worker: ' + e.message); }
+              worker.onerror = function () { clearTimeout(t); fallback('erro no worker'); };
+              worker.onmessage = function (e) {
+                var d = e.data;
+                if (d.t === 'ready') { clearTimeout(t); wReady = true; delegate = d.d; mode = 'worker'; msgText = ''; }
+                else if (d.t === 'res') {
+                  wBusy = false; wErr = 0;
+                  var hs = d.pts ? d.pts.map(function (q) { return { x: q[0], y: q[1] }; }) : null;
+                  onHand(hs, performance.now(), d.ms);
                 }
-              }
-              return best;
+                else if (d.t === 'del') { delegate = d.d; }
+                else if (d.t === 'err') { clearTimeout(t); wBusy = false; if (!wReady || ++wErr >= 3) fallback(d.m); }
+              };
+              fetch('mediapipe/hand_landmarker.task')
+                .then(function (r) { return r.arrayBuffer(); })
+                .then(function (buf) { worker.postMessage({ t: 'init', model: buf, base: location.origin + '/mediapipe' }, [buf]); })
+                .catch(function (e) { clearTimeout(t); fallback('modelo: ' + e.message); });
             }
-
-            function detect(now) {
+            function sendFrame() {
+              var w = 480, h = Math.round(480 * cam.videoHeight / cam.videoWidth);
+              createImageBitmap(cam, { resizeWidth: w, resizeHeight: h, resizeQuality: 'low' })
+                .then(function (b) { if (worker) worker.postMessage({ t: 'frame', bmp: b, ts: lastDet }, [b]); else b.close(); })
+                .catch(function () { wBusy = false; });
+            }
+            function detectMain(now) {
               var res, t0 = performance.now();
               try { res = lm.detectForVideo(cam, now); }
               catch (e) {
@@ -210,74 +347,169 @@ jobs:
                 } else { say('Mão: erro ' + (e.message || e)); }
                 return;
               }
-              msAvg = msAvg * 0.8 + (performance.now() - t0) * 0.2;
-              if (lastT) { fpsAvg = fpsAvg ? fpsAvg * 0.8 + (1000 / (now - lastT)) * 0.2 : 1000 / (now - lastT); }
+              onHand((res.landmarks && res.landmarks[0]) || null, now, performance.now() - t0);
+            }
+
+            hud.onclick = async function () {
+              if (mode === 'worker') { fallback('manual'); return; }
+              if (!lm || busy) return;
+              var d = delegate === 'GPU' ? 'CPU' : 'GPU';
+              busy = true; say('Mão: trocando para ' + d + '…');
+              try { await create(d); msgText = ''; } catch (e) { say('Erro ' + d + ': ' + (e.message || e)); }
+              busy = false;
+            };
+            pb.onclick = function () {
+              paused = !paused;
+              pb.textContent = paused ? '▶ Mão' : '⏸ Mão';
+              if (paused) { skelT = skelC = null; seen = 0; pinch = false; pinchN = 0; pinchTarget = null; first = true; }
+            };
+            ob.onclick = function () {
+              overlay = !overlay;
+              ob.textContent = overlay ? '🖐 Sobrepor: sim' : '🖐 Sobrepor: não';
+            };
+
+            function onHand(hs, now, ms) {
+              if (ms != null) msAvg = msAvg * 0.8 + ms * 0.2;
+              if (lastT) fpsAvg = fpsAvg ? fpsAvg * 0.8 + (1000 / (now - lastT)) * 0.2 : 1000 / (now - lastT);
               lastT = now;
-              var hs = res.landmarks && res.landmarks[0];
               if (hs) {
                 seen = now;
-                skel = hs.map(map);
-                var ratio = dist(hs[4], hs[8]) / (dist(hs[0], hs[9]) || 1);
+                skelT = hs.map(map);
+                var palm = dist(hs[0], hs[9]) || 1;
+                hsA = hsA ? hsA * 0.6 + palm * 0.4 : palm;
+                var ratio = dist(hs[4], hs[8]) / palm;
                 pinch = pinch ? ratio < 0.40 : ratio < 0.25;
-                if (ratio > 0.5 || first) {
-                  tx = skel[8].x; ty = skel[8].y;
-                  if (first) { cx = tx; cy = ty; first = false; }
-                }
-                if (pinch) {
-                  if (pinchN === 0) pinchItem = hitTest(tx, ty);
-                  pinchN++;
-                } else { pinchN = 0; pinchItem = null; clicked = false; }
+                var w = clamp((0.6 - ratio) / 0.35, 0, 1);
+                tx = skelT[8].x * (1 - w) + (skelT[4].x + skelT[8].x) / 2 * w;
+                ty = skelT[8].y * (1 - w) + (skelT[4].y + skelT[8].y) / 2 * w;
+                if (first) { cx = tx; cy = ty; first = false; }
+                if (pinch) { if (pinchN === 0) pinchTarget = cur; pinchN++; }
+                else { pinchN = 0; pinchTarget = null; clicked = false; }
               } else {
-                skel = null; first = true; pinch = false; pinchN = 0; pinchItem = null; clicked = false;
+                skelT = null; first = true; pinch = false; pinchN = 0; pinchTarget = null; clicked = false; hsA = 0;
               }
+            }
+
+            function skeleton() {
+              ctx.strokeStyle = 'rgba(255,255,255,.6)'; ctx.lineWidth = 2;
+              CONN.forEach(function (c) {
+                ctx.beginPath(); ctx.moveTo(skelC[c[0]].x, skelC[c[0]].y); ctx.lineTo(skelC[c[1]].x, skelC[c[1]].y); ctx.stroke();
+              });
+              ctx.fillStyle = 'rgba(255,255,255,.9)';
+              skelC.forEach(function (p) { ctx.beginPath(); ctx.arc(p.x, p.y, 3, 0, 6.283); ctx.fill(); });
+            }
+            function cutout() {
+              var p = skelC, hsz = Math.hypot(p[0].x - p[9].x, p[0].y - p[9].y) || 60;
+              var vw = cam.videoWidth, vh = cam.videoHeight, W = cv.width, H = cv.height, s = Math.max(W / vw, H / vh);
+              var x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+              p.forEach(function (q) { if (q.x < x0) x0 = q.x; if (q.x > x1) x1 = q.x; if (q.y < y0) y0 = q.y; if (q.y > y1) y1 = q.y; });
+              var pad = hsz * 0.55;
+              var bx = Math.max(0, x0 - pad), by = Math.max(0, y0 - pad), bw = Math.min(W, x1 + pad) - bx, bh = Math.min(H, y1 + pad) - by;
+              if (bw < 4 || bh < 4) return;
+              mctx.setTransform(1, 0, 0, 1, 0, 0); mctx.clearRect(0, 0, mc.width, mc.height);
+              mctx.setTransform(1 / MS, 0, 0, 1 / MS, 0, 0);
+              mctx.fillStyle = mctx.strokeStyle = '#fff'; mctx.lineCap = mctx.lineJoin = 'round';
+              mctx.lineWidth = hsz * 0.34;
+              CH.forEach(function (c) {
+                mctx.beginPath(); mctx.moveTo(p[c[0]].x, p[c[0]].y);
+                for (var i = 1; i < c.length; i++) mctx.lineTo(p[c[i]].x, p[c[i]].y);
+                mctx.stroke();
+              });
+              mctx.lineWidth = hsz * 0.3;
+              mctx.beginPath();
+              [0, 1, 5, 9, 13, 17].forEach(function (i, j) { if (j) mctx.lineTo(p[i].x, p[i].y); else mctx.moveTo(p[i].x, p[i].y); });
+              mctx.closePath(); mctx.fill(); mctx.stroke();
+              octx.globalCompositeOperation = 'source-over';
+              octx.clearRect(0, 0, W, H);
+              octx.drawImage(cam, (bx + (vw * s - W) / 2) / s, (by + (vh * s - H) / 2) / s, bw / s, bh / s, bx, by, bw, bh);
+              octx.globalCompositeOperation = 'destination-in';
+              octx.drawImage(mc, 0, 0, mc.width, mc.height, 0, 0, mc.width * MS, mc.height * MS);
+              octx.globalCompositeOperation = 'source-over';
+              ctx.drawImage(oc, 0, 0);
+            }
+
+            function activate(t) { if (t.k === 'btn') t.fn(); else _fire(t); }
+            function doGrab() {
+              var g = grab, WS = UI.WS;
+              var dx = cx - g.lx, dy = cy - g.ly; g.lx = cx; g.ly = cy;
+              if (!g.moved && Math.hypot(cx - g.sx, cy - g.sy) > 28) g.moved = true;
+              if (!g.moved) return;
+              WS.az += Math.atan(dx / P) / D;
+              WS.el = clamp(WS.el - Math.atan(dy / P) / D, -60, 60);
+              if (g.t.k === 'win' && hsA > 0 && g.s0 > 0) {
+                var r = g.s0 / hsA, dz = 0.15;
+                r = r > 1 + dz ? r - dz : (r < 1 - dz ? r + dz : 1);
+                WS.R = clamp(g.R0 * r, 380, 1500);
+              }
+              UI.layout();
+            }
+            function endGrab() {
+              var g = grab; grab = null;
+              if (g.t.drag && !g.moved) _fire(g.t);
+              UI.save();
             }
 
             function frame(now) {
               requestAnimationFrame(frame);
               var dt = Math.min(0.1, (now - lastFrame) / 1000); lastFrame = now;
               if (dt > 0) pfAvg = pfAvg * 0.95 + (1 / dt) * 0.05;
-              if (lm && !busy && !paused && cam.readyState >= 2 && cam.videoWidth && now - lastDet >= 66) {
-                lastDet = now; detect(now);
+
+              if (wBusy && now - lastDet > 3000) wBusy = false;
+              if (!paused && cam.readyState >= 2 && cam.videoWidth) {
+                if (mode === 'worker' && wReady && !wBusy && now - lastDet >= 33) { lastDet = now; wBusy = true; sendFrame(); }
+                else if (mode === 'main' && lm && !busy && now - lastDet >= 66) { lastDet = now; detectMain(now); }
               }
+
               var has = seen > 0 && now - seen < 300;
               var k = 1 - Math.exp(-dt * 20);
               cx += (tx - cx) * k; cy += (ty - cy) * k;
+              if (skelT) {
+                if (!skelC) skelC = skelT.map(function (q) { return { x: q.x, y: q.y }; });
+                else for (var i = 0; i < 21; i++) { skelC[i].x += (skelT[i].x - skelC[i].x) * k; skelC[i].y += (skelT[i].y - skelC[i].y) * k; }
+              }
+              if (!has) skelC = null;
 
               ctx.clearRect(0, 0, cv.width, cv.height);
-              if (has && skel) {
-                ctx.strokeStyle = 'rgba(255,255,255,.35)'; ctx.lineWidth = 2;
-                Mod.HandLandmarker.HAND_CONNECTIONS.forEach(function (c) {
-                  ctx.beginPath(); ctx.moveTo(skel[c.start].x, skel[c.start].y); ctx.lineTo(skel[c.end].x, skel[c.end].y); ctx.stroke();
-                });
-              }
+              if (has && skelC) { if (overlay) cutout(); else skeleton(); }
               if (has) {
                 ctx.lineWidth = 3;
-                ctx.strokeStyle = pinch ? '#5eead4' : '#ffffff';
-                ctx.fillStyle = pinch ? '#5eead4' : '#ffffff';
+                ctx.strokeStyle = ctx.fillStyle = pinch ? '#5eead4' : '#ffffff';
                 ctx.beginPath(); ctx.arc(cx, cy, pinch ? 10 : 16, 0, 6.283); ctx.stroke();
                 ctx.beginPath(); ctx.arc(cx, cy, 4, 0, 6.283); ctx.fill();
               }
               document.body.classList.toggle('hasHand', has);
               window.handCursor = { x: cx, y: cy, pinch: pinch, has: has };
 
-              var tgt = has ? hitTest(cx, cy) : null;
-              if (tgt !== cur) {
-                if (cur) cur.el.classList.remove('hand');
-                if (tgt) tgt.el.classList.add('hand');
-                cur = tgt;
+              var want = grab ? grab.t : (has ? hitTarget(cx, cy) : null);
+              if (want !== cur) {
+                if (cur && cur.el) cur.el.classList.remove('hand');
+                if (want && want.el) want.el.classList.add('hand');
+                cur = want;
               }
-              if (has && pinchItem && pinchN >= 2 && !clicked && now - lastFire > 700) {
-                clicked = true; lastFire = now;
-                var it = pinchItem; pinchItem = null;
-                if (cur) { cur.el.classList.remove('hand'); cur = null; }
-                _fire(it);
+
+              if ((!has || !pinch) && grab) endGrab();
+              if (has && pinch && pinchTarget && pinchN >= 2) {
+                var pt = pinchTarget;
+                if (pt.k === 'win' || pt.drag) {
+                  if (!grab) grab = { t: pt, lx: cx, ly: cy, sx: cx, sy: cy, moved: pt.k === 'win', s0: hsA, R0: UI.WS.R };
+                  doGrab();
+                } else if (!clicked && now - lastFire > (pt.rep ? 300 : 700)) {
+                  clicked = true; lastFire = now;
+                  if (cur && cur.el) { cur.el.classList.remove('hand'); }
+                  var it = pt; if (!pt.rep) pinchTarget = null;
+                  activate(it);
+                } else if (pt.rep && clicked && cur === pt && now - lastFire > 450) {
+                  lastFire = now; activate(pt);
+                }
               }
+
               if (now - lastHud > 400) {
                 lastHud = now;
-                hud.textContent = msgText || ('Mão: ' + Math.round(fpsAvg) + ' fps · ' + Math.round(msAvg) + ' ms · ' + delegate + ' · tela ' + Math.round(pfAvg) + ' fps' + (paused ? ' · pausada' : (has ? '' : ' · sem mão')));
+                hud.textContent = msgText || ('Mão: ' + Math.round(fpsAvg) + ' fps · ' + Math.round(msAvg) + ' ms · ' + delegate + ' · ' + mode + ' · tela ' + Math.round(pfAvg) + ' fps' + (paused ? ' · pausada' : (has ? '' : ' · sem mão')));
               }
             }
-            init();
+            requestAnimationFrame(frame);
+            startWorker();
           })();
           EOF
           cat > settings.gradle <<'EOF'
@@ -298,8 +530,8 @@ jobs:
               applicationId 'com.vr.launcher'
               minSdk 24
               targetSdk 34
-              versionCode 6
-              versionName '1.5'
+              versionCode 7
+              versionName '1.6'
             }
           }
           EOF
@@ -377,7 +609,7 @@ jobs:
                     InputStream in = getAssets().open(p.substring(1));
                     String mime = "text/html";
                     String enc = "UTF-8";
-                    if (p.endsWith(".js") || p.endsWith(".mjs")) mime = "application/javascript";
+                    if (p.endsWith(".js") || p.endsWith(".mjs") || p.endsWith(".cjs")) mime = "application/javascript";
                     else if (p.endsWith(".wasm")) { mime = "application/wasm"; enc = null; }
                     else if (p.endsWith(".task")) { mime = "application/octet-stream"; enc = null; }
                     return new WebResourceResponse(mime, enc, in);
