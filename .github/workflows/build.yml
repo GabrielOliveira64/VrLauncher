@@ -16,11 +16,11 @@ jobs:
         run: |
           mkdir -p app/src/main/java/com/vr/launcher app/src/main/assets
           cp "$(ls *.html | head -1)" app/src/main/assets/index.html
-          sed -i 's#</body>#<script src="ar.js"></script></body>#' app/src/main/assets/index.html
+          sed -i 's#</body>#<script src="ar.js"></script><script src="ui.js"></script></body>#' app/src/main/assets/index.html
           cat > app/src/main/assets/ar.js <<'EOF'
           (function () {
             var css = document.createElement('style');
-            css.textContent = 'html,body,#view{background:transparent!important}.star{display:none}.p:not(.dim){opacity:.92}#cam{position:fixed;left:0;top:0;width:100%;height:100%;object-fit:cover;z-index:0}';
+            css.textContent = 'html,body,#view{background:transparent!important}.star{display:none}#cam{position:fixed;left:0;top:0;width:100%;height:100%;object-fit:cover;z-index:0}';
             document.head.appendChild(css);
             var v = document.createElement('video');
             v.id = 'cam'; v.autoplay = true; v.muted = true; v.setAttribute('playsinline', '');
@@ -34,8 +34,63 @@ jobs:
             }
             if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { msg('Câmera indisponível (secure=' + window.isSecureContext + ')', true); return; }
             navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false })
-              .then(function (s) { v.srcObject = s; v.play(); msg('Câmera ativa'); })
+              .then(function (s) { v.srcObject = s; v.play(); })
               .catch(function (e) { msg('Câmera: ' + e.name + ' ' + e.message, true); });
+          })();
+          EOF
+          cat > app/src/main/assets/ui.js <<'EOF'
+          (function () {
+            var css = document.createElement('style');
+            css.textContent = [
+              '.gw{position:absolute;left:0;top:0;backface-visibility:hidden;padding:22px;border-radius:36px;background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.3);-webkit-backdrop-filter:blur(24px) saturate(1.5);backdrop-filter:blur(24px) saturate(1.5);box-shadow:0 12px 48px rgba(0,0,0,.28);color:#fff;font-family:system-ui,sans-serif}',
+              '.gh{height:28px;margin-bottom:12px;font-size:22px;font-weight:300;letter-spacing:1px;opacity:.9}',
+              '.gr{display:flex;justify-content:center}',
+              '.gt2{width:78px;height:92px;display:flex;flex-direction:column;align-items:center;gap:6px;transition:transform .15s}',
+              '.gi{width:64px;height:64px;border-radius:20px;display:flex;align-items:center;justify-content:center;font-size:34px;box-shadow:inset 0 0 0 1px rgba(255,255,255,.25)}',
+              '.gl{font-size:15px;opacity:.8;white-space:nowrap}',
+              '.gt2.hov{transform:scale(1.14)}',
+              '.gt2.hov .gl{opacity:1}',
+              '.p.win,.btn2{background:rgba(255,255,255,.14)!important;border:1px solid rgba(255,255,255,.3)!important;border-radius:32px!important;-webkit-backdrop-filter:blur(24px) saturate(1.5);backdrop-filter:blur(24px) saturate(1.5);box-shadow:0 12px 48px rgba(0,0,0,.28)!important}',
+              '.p.hov{filter:none!important}',
+              '.win .i{font-size:96px!important}.win .t{font-size:34px!important;font-weight:600}.win .s{font-size:22px!important}',
+              '.btn2 .t{font-size:26px!important}.btn2.hov{background:rgba(255,255,255,.3)!important}'
+            ].join('');
+            document.head.appendChild(css);
+
+            var R0 = 620, W = 720, H = 176, STEP = 78, DY = 20;
+            clock.style.display = 'none';
+            ring.forEach(function (r) { r.el.remove(); });
+            ring.length = 0;
+
+            var gw = mk('gw', '<div class="gh"><span id="gtime">--:--</span></div><div class="gr"></div>');
+            place(gw, 0, 0, R0, W, H);
+            var row = gw.querySelector('.gr');
+            function tick() {
+              var d = new Date();
+              document.getElementById('gtime').textContent = ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
+            }
+            tick(); setInterval(tick, 1000);
+
+            var n = APPS.length;
+            APPS.forEach(function (a, i) {
+              var t = document.createElement('div');
+              t.className = 'gt2';
+              t.innerHTML = '<div class="gi" style="background:linear-gradient(145deg,' + a[2] + ',' + a[3] + ')">' + a[0] + '</div><div class="gl">' + a[1] + '</div>';
+              row.appendChild(t);
+              var dx = (i - (n - 1) / 2) * STEP;
+              ring.push({
+                el: t,
+                az: Math.atan(dx / R0) / D,
+                e: -Math.atan(DY / R0) / D,
+                hw: Math.atan((STEP / 2) / R0) / D,
+                hh: Math.atan(48 / R0) / D,
+                fn: function () { openApp(a); }
+              });
+            });
+
+            var _o = openApp, _c = closeApp;
+            openApp = function (a) { _o(a); gw.style.visibility = 'hidden'; };
+            closeApp = function () { _c(); gw.style.visibility = 'visible'; };
           })();
           EOF
           cat > settings.gradle <<'EOF'
@@ -56,8 +111,8 @@ jobs:
               applicationId 'com.vr.launcher'
               minSdk 24
               targetSdk 34
-              versionCode 3
-              versionName '1.2'
+              versionCode 4
+              versionName '1.3'
             }
           }
           EOF
