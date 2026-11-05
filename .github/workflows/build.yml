@@ -20,21 +20,22 @@ jobs:
           cat > app/src/main/assets/ar.js <<'EOF'
           (function () {
             var css = document.createElement('style');
-            css.textContent = 'html,body,#view{background:transparent!important}.star{display:none}.p:not(.dim){opacity:.92}#cam{position:fixed;left:0;top:0;width:100%;height:100%;object-fit:cover;z-index:-1}';
+            css.textContent = 'html,body,#view{background:transparent!important}.star{display:none}.p:not(.dim){opacity:.92}#cam{position:fixed;left:0;top:0;width:100%;height:100%;object-fit:cover;z-index:0}';
             document.head.appendChild(css);
             var v = document.createElement('video');
             v.id = 'cam'; v.autoplay = true; v.muted = true; v.setAttribute('playsinline', '');
             document.body.prepend(v);
-            function msg(t) {
+            function msg(t, keep) {
               var d = document.createElement('div');
-              d.style.cssText = 'position:fixed;top:8px;left:50%;transform:translateX(-50%);z-index:20;background:rgba(0,0,0,.7);color:#fff;font:13px sans-serif;padding:6px 12px;border-radius:999px';
+              d.style.cssText = 'position:fixed;top:8px;left:50%;transform:translateX(-50%);z-index:20;background:rgba(0,0,0,.8);color:#fff;font:13px sans-serif;padding:6px 12px;border-radius:999px;max-width:90%';
               d.textContent = t; document.body.appendChild(d);
-              setTimeout(function () { d.remove(); }, 6000);
+              d.onclick = function () { d.remove(); };
+              if (!keep) setTimeout(function () { d.remove(); }, 4000);
             }
-            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { msg('Câmera indisponível neste WebView'); return; }
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { msg('Câmera indisponível (secure=' + window.isSecureContext + ')', true); return; }
             navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false })
-              .then(function (s) { v.srcObject = s; v.play(); })
-              .catch(function (e) { msg('Câmera: ' + e.name); });
+              .then(function (s) { v.srcObject = s; v.play(); msg('Câmera ativa'); })
+              .catch(function (e) { msg('Câmera: ' + e.name + ' ' + e.message, true); });
           })();
           EOF
           cat > settings.gradle <<'EOF'
@@ -55,8 +56,8 @@ jobs:
               applicationId 'com.vr.launcher'
               minSdk 24
               targetSdk 34
-              versionCode 2
-              versionName '1.1'
+              versionCode 3
+              versionName '1.2'
             }
           }
           EOF
@@ -86,15 +87,20 @@ jobs:
           import android.hardware.SensorEvent;
           import android.hardware.SensorEventListener;
           import android.hardware.SensorManager;
+          import android.net.Uri;
           import android.os.Bundle;
           import android.view.View;
           import android.view.WindowManager;
           import android.webkit.PermissionRequest;
           import android.webkit.WebChromeClient;
+          import android.webkit.WebResourceRequest;
+          import android.webkit.WebResourceResponse;
           import android.webkit.WebSettings;
           import android.webkit.WebView;
           import android.webkit.WebViewClient;
+          import java.io.InputStream;
           public class MainActivity extends Activity implements SensorEventListener {
+            static final String HOST = "appassets.androidplatform.net";
             static final String HOOK = "window.__r=function(a){Rdev=a;if(!haveSensor){haveSensor=true;haveGyro=true;mode='gyro';setTimeout(recenter,200)}if(st.textContent!=='Sensor nativo OK')st.textContent='Sensor nativo OK'};";
             WebView web; SensorManager sm; Sensor rot; boolean ready = false;
             PermissionRequest pending = null;
@@ -120,6 +126,17 @@ jobs:
                 }
               });
               web.setWebViewClient(new WebViewClient() {
+                @Override public WebResourceResponse shouldInterceptRequest(WebView v, WebResourceRequest r) {
+                  Uri u = r.getUrl();
+                  if (!HOST.equals(u.getHost())) return null;
+                  String p = u.getPath();
+                  if (p == null || p.equals("/")) p = "/index.html";
+                  try {
+                    InputStream in = getAssets().open(p.substring(1));
+                    String mime = p.endsWith(".js") ? "application/javascript" : "text/html";
+                    return new WebResourceResponse(mime, "UTF-8", in);
+                  } catch (Exception e) { return null; }
+                }
                 @Override public void onPageFinished(WebView v, String u) {
                   v.evaluateJavascript(HOOK, null);
                   ready = true;
@@ -127,7 +144,7 @@ jobs:
               });
               setContentView(web);
               if (!hasCam()) requestPermissions(new String[]{Manifest.permission.CAMERA}, 1);
-              web.loadUrl("file:///android_asset/index.html");
+              web.loadUrl("https://" + HOST + "/index.html");
               sm = (SensorManager) getSystemService(SENSOR_SERVICE);
               rot = sm.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR);
               if (rot == null) rot = sm.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
