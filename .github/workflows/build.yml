@@ -27,7 +27,7 @@ jobs:
         run: |
           mkdir -p app/src/main/java/com/vr/launcher app/src/main/assets
           cp "$(ls *.html | head -1)" app/src/main/assets/index.html
-          sed -i 's#</body>#<script src="ar.js"></script><script src="ui.js"></script><script src="hand.js"></script></body>#' app/src/main/assets/index.html
+          sed -i 's#</body>#<script src="ar.js"></script><script src="ui.js"></script><script src="hand.js"></script><script src="lean.js"></script></body>#' app/src/main/assets/index.html
           cat > app/src/main/assets/ar.js <<'EOF'
           (function () {
             var css = document.createElement('style');
@@ -70,7 +70,7 @@ jobs:
             document.head.appendChild(css);
 
             var R0 = 620, W = 720, H = 192, STEP = 78, DY = 28;
-            var WS = { az: 0, el: 0, R: R0, s: 1, min: false };
+            var WS = { az: 0, el: 0, R: R0, s: 1, min: false, L: 0 };
             try {
               var sv = JSON.parse(localStorage.getItem('vrws') || 'null');
               if (sv) { WS.R = Math.max(380, Math.min(1500, sv.R || R0)); WS.s = Math.max(0.6, Math.min(2, sv.s || 1)); }
@@ -110,18 +110,19 @@ jobs:
             }
             var bubItem = { k: 'item', drag: true, el: bub, az: 0, e: 0, hw: 6, hh: 6, fn: function () { WS.min = false; apply(); } };
             function layout() {
-              put(gw, WS.az, WS.el, WS.R, WS.s);
-              put(bub, WS.az, WS.el, WS.R, WS.s);
+              var Rn = Math.max(240, Math.min(2400, WS.R - (WS.L || 0)));
+              put(gw, WS.az, WS.el, Rn, WS.s);
+              put(bub, WS.az, WS.el, Rn, WS.s);
               var n = ring.length;
               ring.forEach(function (r, i) {
                 var dx = (i - (n - 1) / 2) * STEP * WS.s;
-                r.az = WS.az + Math.atan(dx / WS.R) / D;
-                r.e = WS.el - Math.atan(DY * WS.s / WS.R) / D;
-                r.hw = Math.atan(STEP * WS.s / 2 / WS.R) / D;
-                r.hh = Math.atan(48 * WS.s / WS.R) / D;
+                r.az = WS.az + Math.atan(dx / Rn) / D;
+                r.e = WS.el - Math.atan(DY * WS.s / Rn) / D;
+                r.hw = Math.atan(STEP * WS.s / 2 / Rn) / D;
+                r.hh = Math.atan(48 * WS.s / Rn) / D;
               });
               bubItem.az = WS.az; bubItem.e = WS.el;
-              bubItem.hw = bubItem.hh = Math.atan(48 * WS.s / WS.R) / D;
+              bubItem.hw = bubItem.hh = Math.atan(48 * WS.s / Rn) / D;
             }
             setItems = function () { items = opened ? [closeItem] : (WS.min ? [bubItem] : ring); };
             function apply() {
@@ -152,6 +153,70 @@ jobs:
 
             window.UI = { WS: WS, layout: layout, hbtns: hbtns, winT: { k: 'win', el: gw }, save: save, bubItem: bubItem };
             apply();
+          })();
+          EOF
+          cat > app/src/main/assets/lean.js <<'EOF'
+          (function () {
+            var UI = window.UI, WS = UI.WS;
+            WS.L = 0;
+            var G = 1400;
+            var on = true, v = 0, p = 0, t0 = 0, calm = 0, w = 0, fp = null, sm = 0, lastHud = 0;
+
+            var bar = document.getElementById('ui');
+            bar.style.flexWrap = 'wrap';
+            var tb = document.createElement('button'); tb.textContent = '↕ Inclinar: sim';
+            var lv = document.createElement('span'); lv.textContent = '↕ 0 cm';
+            bar.insertBefore(lv, bar.firstChild); bar.insertBefore(tb, bar.firstChild);
+            tb.onclick = function () {
+              on = !on;
+              tb.textContent = on ? '↕ Inclinar: sim' : '↕ Inclinar: não';
+              if (!on) { v = 0; p = 0; }
+            };
+
+            function reset() { v = 0; p = 0; calm = 0; }
+            var rcb = document.getElementById('rc'), prev = rcb.onclick;
+            rcb.onclick = function () { if (prev) prev(); reset(); };
+
+            window.__a = function (x, y, z) {
+              var now = performance.now(), dt = (now - t0) / 1000; t0 = now;
+              if (dt <= 0.002 || dt > 0.1) { fp = null; return; }
+              var f = [-Rdev[2], -Rdev[5], -Rdev[8]];
+              if (fp) {
+                var cx = f[1] * fp[2] - f[2] * fp[1], cy = f[2] * fp[0] - f[0] * fp[2], cz = f[0] * fp[1] - f[1] * fp[0];
+                w = w * 0.7 + (Math.sqrt(cx * cx + cy * cy + cz * cz) / dt) * 0.3;
+              }
+              fp = f;
+              if (!on) return;
+              var a = -z;
+              if (w > 0.9) { a = 0; v = 0; calm = 0; }
+              else if (Math.abs(a) < 0.1) { a = 0; calm += dt; if (calm > 0.25) v = 0; }
+              else calm = 0;
+              v += a * dt; v *= Math.exp(-dt / 1.2);
+              p += v * dt; p *= Math.exp(-dt / 5);
+              p = Math.max(-0.35, Math.min(0.35, p));
+            };
+
+            function updOpen() {
+              if (!opened) return;
+              var Rw = Math.max(260, 760 - WS.L);
+              place(win, closeItem.az, 0, Rw, 900, 520);
+              place(closeBtn, closeItem.az, -27, Rw, 300, 100);
+            }
+            var _o = openApp;
+            openApp = function (a) { _o(a); updOpen(); };
+
+            function frame() {
+              requestAnimationFrame(frame);
+              var target = on ? p * G : 0;
+              sm += (target - sm) * 0.25;
+              if (Math.abs(sm - WS.L) > 0.4) { WS.L = sm; UI.layout(); updOpen(); }
+              var n = performance.now();
+              if (n - lastHud > 250) {
+                lastHud = n;
+                lv.textContent = '↕ ' + (p * 100).toFixed(0) + ' cm · rot ' + w.toFixed(1);
+              }
+            }
+            requestAnimationFrame(frame);
           })();
           EOF
           cat > app/src/main/assets/hand-worker.js <<'EOF'
@@ -499,8 +564,8 @@ jobs:
               applicationId 'com.vr.launcher'
               minSdk 24
               targetSdk 34
-              versionCode 8
-              versionName '1.7'
+              versionCode 9
+              versionName '1.8'
             }
           }
           EOF
@@ -544,10 +609,12 @@ jobs:
           import java.io.InputStream;
           public class MainActivity extends Activity implements SensorEventListener {
             static final String HOST = "appassets.androidplatform.net";
-            static final String HOOK = "window.__r=function(a){Rdev=a;if(!haveSensor){haveSensor=true;haveGyro=true;mode='gyro';setTimeout(recenter,200)}if(st.textContent!=='Sensor nativo OK')st.textContent='Sensor nativo OK'};";
-            WebView web; SensorManager sm; Sensor rot; boolean ready = false;
+            static final String HOOK = "window.__r=function(a,x,y,z){Rdev=a;if(!haveSensor){haveSensor=true;haveGyro=true;mode='gyro';setTimeout(recenter,200)}if(st.textContent!=='Sensor nativo OK')st.textContent='Sensor nativo OK';if(window.__a)window.__a(x,y,z)};";
+            WebView web; SensorManager sm; Sensor rot; Sensor lin; boolean ready = false;
             PermissionRequest pending = null;
             float[] m = new float[9];
+            float[] grav = new float[3];
+            float lx = 0, ly = 0, lz = 0;
             boolean hasCam() {
               return checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED;
             }
@@ -595,6 +662,8 @@ jobs:
               sm = (SensorManager) getSystemService(SENSOR_SERVICE);
               rot = sm.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR);
               if (rot == null) rot = sm.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
+              lin = sm.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION);
+              if (lin == null) lin = sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
             }
             @Override public void onRequestPermissionsResult(int c, String[] p, int[] res) {
               if (pending != null) {
@@ -611,17 +680,30 @@ jobs:
             @Override protected void onResume() {
               super.onResume();
               if (rot != null) sm.registerListener(this, rot, SensorManager.SENSOR_DELAY_GAME);
+              if (lin != null) sm.registerListener(this, lin, SensorManager.SENSOR_DELAY_GAME);
             }
             @Override protected void onPause() {
               super.onPause();
               sm.unregisterListener(this);
             }
             @Override public void onSensorChanged(SensorEvent e) {
+              int ty = e.sensor.getType();
+              if (ty == Sensor.TYPE_LINEAR_ACCELERATION || ty == Sensor.TYPE_ACCELEROMETER) {
+                float x = e.values[0], y = e.values[1], z = e.values[2];
+                if (ty == Sensor.TYPE_ACCELEROMETER) {
+                  grav[0] = 0.95f * grav[0] + 0.05f * x;
+                  grav[1] = 0.95f * grav[1] + 0.05f * y;
+                  grav[2] = 0.95f * grav[2] + 0.05f * z;
+                  x -= grav[0]; y -= grav[1]; z -= grav[2];
+                }
+                lx = x; ly = y; lz = z;
+                return;
+              }
               if (!ready) return;
               SensorManager.getRotationMatrixFromVector(m, e.values);
               StringBuilder sb = new StringBuilder("__r([");
               for (int i = 0; i < 9; i++) { sb.append(m[i]); if (i < 8) sb.append(','); }
-              sb.append("])");
+              sb.append("],").append(lx).append(',').append(ly).append(',').append(lz).append(')');
               web.evaluateJavascript(sb.toString(), null);
             }
             @Override public void onAccuracyChanged(Sensor s, int a) {}
