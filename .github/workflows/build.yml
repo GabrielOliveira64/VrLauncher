@@ -61,13 +61,11 @@ jobs:
               '.gt2{width:78px;height:92px;display:flex;flex-direction:column;align-items:center;gap:6px;transition:transform .15s}',
               '.gi{width:64px;height:64px;border-radius:20px;display:flex;align-items:center;justify-content:center;font-size:34px;box-shadow:inset 0 0 0 1px rgba(255,255,255,.25)}',
               '.gl{font-size:15px;opacity:.8;white-space:nowrap}',
-              '.gt2.hov{transform:scale(1.14)}',
-              '.gt2.hov .gl{opacity:1}',
               '.gmin{padding:0;border-radius:50%;align-items:center;justify-content:center;font-size:44px}',
               '.p.win,.btn2{background:rgba(255,255,255,.14)!important;border:1px solid rgba(255,255,255,.3)!important;border-radius:32px!important;-webkit-backdrop-filter:blur(24px) saturate(1.5);backdrop-filter:blur(24px) saturate(1.5);box-shadow:0 12px 48px rgba(0,0,0,.28)!important}',
               '.p.hov{filter:none!important}',
               '.win .i{font-size:96px!important}.win .t{font-size:34px!important;font-weight:600}.win .s{font-size:22px!important}',
-              '.btn2 .t{font-size:26px!important}.btn2.hov{background:rgba(255,255,255,.3)!important}'
+              '.btn2 .t{font-size:26px!important}'
             ].join('');
             document.head.appendChild(css);
 
@@ -157,11 +155,11 @@ jobs:
           })();
           EOF
           cat > app/src/main/assets/hand-worker.js <<'EOF'
-          var lm = null, del = 'GPU', M = null, model = null, vis = null;
+          var lm = null, del = 'GPU', M = null, model = null, vis = null, NH = 1;
           function create(d) {
             return M.HandLandmarker.createFromOptions(vis, {
               baseOptions: { modelAssetBuffer: new Uint8Array(model.slice(0)), delegate: d },
-              runningMode: 'VIDEO', numHands: 1
+              runningMode: 'VIDEO', numHands: NH
             }).then(function (n) {
               if (lm) { try { lm.close(); } catch (e) {} }
               lm = n; del = d;
@@ -176,19 +174,22 @@ jobs:
                 importScripts(d.base + '/vision_bundle.cjs');
                 M = (self.module.exports && self.module.exports.FilesetResolver) ? self.module.exports : self.exports;
                 if (!M.FilesetResolver) throw new Error('bundle sem FilesetResolver');
-                model = d.model;
+                model = d.model; NH = d.n || 1;
                 M.FilesetResolver.forVisionTasks(d.base + '/wasm')
                   .then(function (v) { vis = v; return create('GPU').catch(function () { return create('CPU'); }); })
                   .then(function () { postMessage({ t: 'ready', d: del }); })
                   .catch(function (err) { postMessage({ t: 'err', m: errMsg(err) }); });
               } catch (err) { postMessage({ t: 'err', m: errMsg(err) }); }
+            } else if (d.t === 'hands') {
+              NH = d.n;
+              if (lm) create(del).catch(function (err) { postMessage({ t: 'err', m: errMsg(err) }); });
             } else if (d.t === 'frame') {
               var t0 = performance.now();
               try {
                 var r = lm.detectForVideo(d.bmp, d.ts);
                 d.bmp.close();
-                var h = r.landmarks && r.landmarks[0];
-                postMessage({ t: 'res', pts: h ? h.map(function (p) { return [p.x, p.y]; }) : null, ms: performance.now() - t0 });
+                var hs = (r.landmarks && r.landmarks.length) ? r.landmarks.map(function (h) { return h.map(function (p) { return [p.x, p.y]; }); }) : null;
+                postMessage({ t: 'res', pts: hs, ms: performance.now() - t0 });
               } catch (err) {
                 try { d.bmp.close(); } catch (e2) {}
                 if (del === 'GPU') {
@@ -204,15 +205,13 @@ jobs:
             var cam = document.getElementById('cam'), UI = window.UI;
             var st2 = document.createElement('style');
             st2.textContent = [
+              '#ret{display:none!important}',
               '.gt2.hand{transform:scale(1.18)}',
               '.gt2.hand .gl{opacity:1}',
               '.btn2.hand{background:rgba(255,255,255,.3)!important}',
               '.gb.hand{background:rgba(255,255,255,.5)!important;transform:scale(1.12)}',
               '.gw.hand{border-color:rgba(255,255,255,.65)}',
-              '.gmin.hand{background:rgba(255,255,255,.35)}',
-              'body.hasHand .gt2.hov:not(.hand){transform:none}',
-              'body.hasHand .btn2.hov:not(.hand){background:rgba(255,255,255,.14)!important}',
-              'body.hasHand #ret{opacity:0}'
+              '.gmin.hand{background:rgba(255,255,255,.35)}'
             ].join('');
             document.head.appendChild(st2);
 
@@ -220,44 +219,30 @@ jobs:
             cv.style.cssText = 'position:fixed;left:0;top:0;width:100%;height:100%;z-index:8;pointer-events:none';
             document.body.appendChild(cv);
             var ctx = cv.getContext('2d');
-            var oc = document.createElement('canvas'), octx = oc.getContext('2d');
-            var mc = document.createElement('canvas'), mctx = mc.getContext('2d');
-            var MS = 3;
-            function fit() {
-              cv.width = oc.width = innerWidth; cv.height = oc.height = innerHeight;
-              mc.width = Math.ceil(innerWidth / MS); mc.height = Math.ceil(innerHeight / MS);
-            }
+            function fit() { cv.width = innerWidth; cv.height = innerHeight; }
             fit(); addEventListener('resize', fit);
 
             var bar = document.createElement('div');
             bar.style.cssText = 'position:fixed;top:8px;left:8px;z-index:20;display:flex;gap:6px;font:12px sans-serif;color:#fff';
             var pill = 'background:rgba(0,0,0,.6);padding:5px 10px;border-radius:999px';
             var hud = document.createElement('div'); hud.style.cssText = pill;
-            var pb = document.createElement('div'); pb.style.cssText = pill; pb.textContent = '⏸ Mão';
-            var ob = document.createElement('div'); ob.style.cssText = pill; ob.textContent = '🖐 Sobrepor: sim';
-            bar.appendChild(hud); bar.appendChild(pb); bar.appendChild(ob); document.body.appendChild(bar);
+            var hb = document.createElement('div'); hb.style.cssText = pill; hb.textContent = '☝ 1 mão';
+            bar.appendChild(hud); bar.appendChild(hb); document.body.appendChild(bar);
             var msgText = 'Mão: carregando IA…';
             function say(t) { msgText = t; hud.textContent = t; }
             say(msgText);
 
             var CONN = [[0,1],[1,2],[2,3],[3,4],[0,5],[5,6],[6,7],[7,8],[5,9],[9,10],[10,11],[11,12],[9,13],[13,14],[14,15],[15,16],[13,17],[17,18],[18,19],[19,20],[0,17]];
-            var CH = [[1,2,3,4],[5,6,7,8],[9,10,11,12],[13,14,15,16],[17,18,19,20]];
 
-            var Mod = null, vision = null, lm = null, delegate = 'GPU', busy = false, paused = false, overlay = true;
+            var Mod = null, vision = null, lm = null, delegate = 'GPU', busy = false, nh = 1;
             var worker = null, wReady = false, wBusy = false, wErr = 0, mode = 'init';
-            var skelT = null, skelC = null, tx = 0, ty = 0, cx = 0, cy = 0, first = true, hsA = 0;
+            var skelT = null, skelC = null, pw = null, tx = 0, ty = 0, cx = 0, cy = 0, first = true, hsA = 0;
             var pinch = false, pinchN = 0, pinchTarget = null, clicked = false, lastFire = 0, grab = null, cur = null;
             var seen = 0, lastDet = 0, lastT = 0, fpsAvg = 0, msAvg = 0, lastFrame = performance.now(), pfAvg = 30, lastHud = 0;
             window.handCursor = { x: 0, y: 0, pinch: false, has: false };
 
             var _fire = fire;
-            fire = function (it) {
-              if (window.handCursor.has && !window.__tap) { dwell = -0.8; return; }
-              _fire(it);
-            };
-            addEventListener('pointerdown', function () {
-              window.__tap = 1; setTimeout(function () { window.__tap = 0; }, 500);
-            }, true);
+            fire = function () { dwell = -0.8; };
 
             function map(p) {
               var vw = cam.videoWidth, vh = cam.videoHeight, W = cv.width, H = cv.height;
@@ -287,7 +272,7 @@ jobs:
             async function create(del) {
               var n = await Mod.HandLandmarker.createFromOptions(vision, {
                 baseOptions: { modelAssetPath: 'mediapipe/hand_landmarker.task', delegate: del },
-                runningMode: 'VIDEO', numHands: 1
+                runningMode: 'VIDEO', numHands: nh
               });
               if (lm) { try { lm.close(); } catch (e) {} }
               lm = n; delegate = del;
@@ -320,7 +305,7 @@ jobs:
                 if (d.t === 'ready') { clearTimeout(t); wReady = true; delegate = d.d; mode = 'worker'; msgText = ''; }
                 else if (d.t === 'res') {
                   wBusy = false; wErr = 0;
-                  var hs = d.pts ? d.pts.map(function (q) { return { x: q[0], y: q[1] }; }) : null;
+                  var hs = d.pts ? d.pts.map(function (h) { return h.map(function (q) { return { x: q[0], y: q[1] }; }); }) : null;
                   onHand(hs, performance.now(), d.ms);
                 }
                 else if (d.t === 'del') { delegate = d.d; }
@@ -328,7 +313,7 @@ jobs:
               };
               fetch('mediapipe/hand_landmarker.task')
                 .then(function (r) { return r.arrayBuffer(); })
-                .then(function (buf) { worker.postMessage({ t: 'init', model: buf, base: location.origin + '/mediapipe' }, [buf]); })
+                .then(function (buf) { worker.postMessage({ t: 'init', model: buf, n: nh, base: location.origin + '/mediapipe' }, [buf]); })
                 .catch(function (e) { clearTimeout(t); fallback('modelo: ' + e.message); });
             }
             function sendFrame() {
@@ -347,7 +332,7 @@ jobs:
                 } else { say('Mão: erro ' + (e.message || e)); }
                 return;
               }
-              onHand((res.landmarks && res.landmarks[0]) || null, now, performance.now() - t0);
+              onHand((res.landmarks && res.landmarks.length) ? res.landmarks : null, now, performance.now() - t0);
             }
 
             hud.onclick = async function () {
@@ -358,74 +343,56 @@ jobs:
               try { await create(d); msgText = ''; } catch (e) { say('Erro ' + d + ': ' + (e.message || e)); }
               busy = false;
             };
-            pb.onclick = function () {
-              paused = !paused;
-              pb.textContent = paused ? '▶ Mão' : '⏸ Mão';
-              if (paused) { skelT = skelC = null; seen = 0; pinch = false; pinchN = 0; pinchTarget = null; first = true; }
-            };
-            ob.onclick = function () {
-              overlay = !overlay;
-              ob.textContent = overlay ? '🖐 Sobrepor: sim' : '🖐 Sobrepor: não';
+            hb.onclick = function () {
+              nh = nh === 1 ? 2 : 1;
+              hb.textContent = nh === 1 ? '☝ 1 mão' : '✌ 2 mãos';
+              if (mode === 'worker' && worker) worker.postMessage({ t: 'hands', n: nh });
+              else if (mode === 'main' && lm && !busy) {
+                busy = true;
+                create(delegate).catch(function (e) { say('Mão: erro ' + (e.message || e)); }).then(function () { busy = false; });
+              }
             };
 
-            function onHand(hs, now, ms) {
+            function onHand(hands, now, ms) {
               if (ms != null) msAvg = msAvg * 0.8 + ms * 0.2;
               if (lastT) fpsAvg = fpsAvg ? fpsAvg * 0.8 + (1000 / (now - lastT)) * 0.2 : 1000 / (now - lastT);
               lastT = now;
-              if (hs) {
+              if (hands && hands.length) {
+                if (hands.length > 1 && pw) {
+                  var bi = 0, bd = 1e9;
+                  hands.forEach(function (h, i) {
+                    var d = Math.hypot(h[0].x - pw.x, h[0].y - pw.y);
+                    if (d < bd) { bd = d; bi = i; }
+                  });
+                  if (bi) { var tmp = hands[0]; hands[0] = hands[bi]; hands[bi] = tmp; }
+                }
+                var hs = hands[0];
+                pw = { x: hs[0].x, y: hs[0].y };
                 seen = now;
-                skelT = hs.map(map);
+                skelT = hands.map(function (h) { return h.map(map); });
+                var sp = skelT[0];
                 var palm = dist(hs[0], hs[9]) || 1;
                 hsA = hsA ? hsA * 0.6 + palm * 0.4 : palm;
                 var ratio = dist(hs[4], hs[8]) / palm;
                 pinch = pinch ? ratio < 0.40 : ratio < 0.25;
                 var w = clamp((0.6 - ratio) / 0.35, 0, 1);
-                tx = skelT[8].x * (1 - w) + (skelT[4].x + skelT[8].x) / 2 * w;
-                ty = skelT[8].y * (1 - w) + (skelT[4].y + skelT[8].y) / 2 * w;
+                tx = sp[8].x * (1 - w) + (sp[4].x + sp[8].x) / 2 * w;
+                ty = sp[8].y * (1 - w) + (sp[4].y + sp[8].y) / 2 * w;
                 if (first) { cx = tx; cy = ty; first = false; }
                 if (pinch) { if (pinchN === 0) pinchTarget = cur; pinchN++; }
                 else { pinchN = 0; pinchTarget = null; clicked = false; }
               } else {
-                skelT = null; first = true; pinch = false; pinchN = 0; pinchTarget = null; clicked = false; hsA = 0;
+                skelT = null; pw = null; first = true; pinch = false; pinchN = 0; pinchTarget = null; clicked = false; hsA = 0;
               }
             }
 
-            function skeleton() {
-              ctx.strokeStyle = 'rgba(255,255,255,.6)'; ctx.lineWidth = 2;
+            function drawSkel(s) {
+              ctx.strokeStyle = 'rgba(255,255,255,.4)'; ctx.lineWidth = 2;
               CONN.forEach(function (c) {
-                ctx.beginPath(); ctx.moveTo(skelC[c[0]].x, skelC[c[0]].y); ctx.lineTo(skelC[c[1]].x, skelC[c[1]].y); ctx.stroke();
+                ctx.beginPath(); ctx.moveTo(s[c[0]].x, s[c[0]].y); ctx.lineTo(s[c[1]].x, s[c[1]].y); ctx.stroke();
               });
-              ctx.fillStyle = 'rgba(255,255,255,.9)';
-              skelC.forEach(function (p) { ctx.beginPath(); ctx.arc(p.x, p.y, 3, 0, 6.283); ctx.fill(); });
-            }
-            function cutout() {
-              var p = skelC, hsz = Math.hypot(p[0].x - p[9].x, p[0].y - p[9].y) || 60;
-              var vw = cam.videoWidth, vh = cam.videoHeight, W = cv.width, H = cv.height, s = Math.max(W / vw, H / vh);
-              var x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
-              p.forEach(function (q) { if (q.x < x0) x0 = q.x; if (q.x > x1) x1 = q.x; if (q.y < y0) y0 = q.y; if (q.y > y1) y1 = q.y; });
-              var pad = hsz * 0.55;
-              var bx = Math.max(0, x0 - pad), by = Math.max(0, y0 - pad), bw = Math.min(W, x1 + pad) - bx, bh = Math.min(H, y1 + pad) - by;
-              if (bw < 4 || bh < 4) return;
-              mctx.setTransform(1, 0, 0, 1, 0, 0); mctx.clearRect(0, 0, mc.width, mc.height);
-              mctx.setTransform(1 / MS, 0, 0, 1 / MS, 0, 0);
-              mctx.fillStyle = mctx.strokeStyle = '#fff'; mctx.lineCap = mctx.lineJoin = 'round';
-              mctx.lineWidth = hsz * 0.34;
-              CH.forEach(function (c) {
-                mctx.beginPath(); mctx.moveTo(p[c[0]].x, p[c[0]].y);
-                for (var i = 1; i < c.length; i++) mctx.lineTo(p[c[i]].x, p[c[i]].y);
-                mctx.stroke();
-              });
-              mctx.lineWidth = hsz * 0.3;
-              mctx.beginPath();
-              [0, 1, 5, 9, 13, 17].forEach(function (i, j) { if (j) mctx.lineTo(p[i].x, p[i].y); else mctx.moveTo(p[i].x, p[i].y); });
-              mctx.closePath(); mctx.fill(); mctx.stroke();
-              octx.globalCompositeOperation = 'source-over';
-              octx.clearRect(0, 0, W, H);
-              octx.drawImage(cam, (bx + (vw * s - W) / 2) / s, (by + (vh * s - H) / 2) / s, bw / s, bh / s, bx, by, bw, bh);
-              octx.globalCompositeOperation = 'destination-in';
-              octx.drawImage(mc, 0, 0, mc.width, mc.height, 0, 0, mc.width * MS, mc.height * MS);
-              octx.globalCompositeOperation = 'source-over';
-              ctx.drawImage(oc, 0, 0);
+              ctx.fillStyle = 'rgba(255,255,255,.6)';
+              s.forEach(function (p) { ctx.beginPath(); ctx.arc(p.x, p.y, 2.5, 0, 6.283); ctx.fill(); });
             }
 
             function activate(t) { if (t.k === 'btn') t.fn(); else _fire(t); }
@@ -455,7 +422,7 @@ jobs:
               if (dt > 0) pfAvg = pfAvg * 0.95 + (1 / dt) * 0.05;
 
               if (wBusy && now - lastDet > 3000) wBusy = false;
-              if (!paused && cam.readyState >= 2 && cam.videoWidth) {
+              if (cam.readyState >= 2 && cam.videoWidth) {
                 if (mode === 'worker' && wReady && !wBusy && now - lastDet >= 33) { lastDet = now; wBusy = true; sendFrame(); }
                 else if (mode === 'main' && lm && !busy && now - lastDet >= 66) { lastDet = now; detectMain(now); }
               }
@@ -464,20 +431,22 @@ jobs:
               var k = 1 - Math.exp(-dt * 20);
               cx += (tx - cx) * k; cy += (ty - cy) * k;
               if (skelT) {
-                if (!skelC) skelC = skelT.map(function (q) { return { x: q.x, y: q.y }; });
-                else for (var i = 0; i < 21; i++) { skelC[i].x += (skelT[i].x - skelC[i].x) * k; skelC[i].y += (skelT[i].y - skelC[i].y) * k; }
+                if (!skelC || skelC.length !== skelT.length) skelC = skelT.map(function (h) { return h.map(function (q) { return { x: q.x, y: q.y }; }); });
+                else for (var j = 0; j < skelT.length; j++) for (var i = 0; i < 21; i++) {
+                  skelC[j][i].x += (skelT[j][i].x - skelC[j][i].x) * k;
+                  skelC[j][i].y += (skelT[j][i].y - skelC[j][i].y) * k;
+                }
               }
               if (!has) skelC = null;
 
               ctx.clearRect(0, 0, cv.width, cv.height);
-              if (has && skelC) { if (overlay) cutout(); else skeleton(); }
+              if (has && skelC) skelC.forEach(drawSkel);
               if (has) {
                 ctx.lineWidth = 3;
                 ctx.strokeStyle = ctx.fillStyle = pinch ? '#5eead4' : '#ffffff';
                 ctx.beginPath(); ctx.arc(cx, cy, pinch ? 10 : 16, 0, 6.283); ctx.stroke();
                 ctx.beginPath(); ctx.arc(cx, cy, 4, 0, 6.283); ctx.fill();
               }
-              document.body.classList.toggle('hasHand', has);
               window.handCursor = { x: cx, y: cy, pinch: pinch, has: has };
 
               var want = grab ? grab.t : (has ? hitTarget(cx, cy) : null);
@@ -505,7 +474,7 @@ jobs:
 
               if (now - lastHud > 400) {
                 lastHud = now;
-                hud.textContent = msgText || ('Mão: ' + Math.round(fpsAvg) + ' fps · ' + Math.round(msAvg) + ' ms · ' + delegate + ' · ' + mode + ' · tela ' + Math.round(pfAvg) + ' fps' + (paused ? ' · pausada' : (has ? '' : ' · sem mão')));
+                hud.textContent = msgText || ('Mão: ' + Math.round(fpsAvg) + ' fps · ' + Math.round(msAvg) + ' ms · ' + delegate + ' · ' + mode + ' · tela ' + Math.round(pfAvg) + ' fps' + (has ? '' : ' · sem mão'));
               }
             }
             requestAnimationFrame(frame);
@@ -530,8 +499,8 @@ jobs:
               applicationId 'com.vr.launcher'
               minSdk 24
               targetSdk 34
-              versionCode 7
-              versionName '1.6'
+              versionCode 8
+              versionName '1.7'
             }
           }
           EOF
