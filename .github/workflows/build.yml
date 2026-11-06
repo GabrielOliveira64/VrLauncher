@@ -25,10 +25,9 @@ jobs:
           rm -rf package mediapipe-tasks-vision-0.10.14.tgz
       - name: Gerar projeto
         run: |
-          mkdir -p app/src/main/java/com/vr/launcher app/src/main/assets app/src/main/aidl/com/vr/launcher
+          mkdir -p app/src/main/java/com/vr/launcher app/src/main/assets
           cp "$(ls *.html | head -1)" app/src/main/assets/index.html
-          sed -i 's#</body>#<script src="ar.js"></script><script src="ui.js"></script><script src="hand.js"></script><script src="lean.js"></script><script src="apps.js"></script></body>#' app/src/main/assets/index.html
-          printf 'android.useAndroidX=true\norg.gradle.jvmargs=-Xmx2g\n' > gradle.properties
+          sed -i 's#</body>#<script src="ar.js"></script><script src="ui.js"></script><script src="hand.js"></script><script src="lean.js"></script><script src="boot.js"></script></body>#' app/src/main/assets/index.html
           cat > app/src/main/assets/ar.js <<'EOF'
           (function () {
             var css = document.createElement('style');
@@ -37,21 +36,29 @@ jobs:
             var v = document.createElement('video');
             v.id = 'cam'; v.autoplay = true; v.muted = true; v.setAttribute('playsinline', '');
             document.body.prepend(v);
-            function msg(t, keep) {
+            function msg(t) {
               var d = document.createElement('div');
-              d.style.cssText = 'position:fixed;top:8px;left:50%;transform:translateX(-50%);z-index:20;background:rgba(0,0,0,.8);color:#fff;font:13px sans-serif;padding:6px 12px;border-radius:999px;max-width:90%';
+              d.style.cssText = 'position:fixed;top:8px;left:50%;transform:translateX(-50%);z-index:70;background:rgba(0,0,0,.8);color:#fff;font:13px sans-serif;padding:6px 12px;border-radius:999px;max-width:90%';
               d.textContent = t; document.body.appendChild(d);
               d.onclick = function () { d.remove(); };
-              if (!keep) setTimeout(function () { d.remove(); }, 4000);
             }
-            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { msg('Câmera indisponível (secure=' + window.isSecureContext + ')', true); return; }
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { msg('Câmera indisponível'); return; }
             navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: { ideal: 960 }, height: { ideal: 540 }, frameRate: { ideal: 30 } }, audio: false })
               .then(function (s) { v.srcObject = s; v.play(); })
-              .catch(function (e) { msg('Câmera: ' + e.name + ' ' + e.message, true); });
+              .catch(function (e) { msg('Câmera: ' + e.name + ' ' + e.message); });
           })();
           EOF
           cat > app/src/main/assets/ui.js <<'EOF'
           (function () {
+            var A = window.Android || null;
+            function nOpen(i, k) { if (A) A.open(i, k); }
+            function nClose(i) { if (A) A.close(i); }
+            function nFront(i) { if (A) A.front(i); }
+            function nRects(s) { if (A) A.rects(s); }
+            function nCur(x, y, p, h) { if (A) A.cursor(x, y, p, h); }
+            function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+            function angd(a, b) { var d = (((a - b) % 360) + 360) % 360; return d > 180 ? d - 360 : d; }
+
             var css = document.createElement('style');
             css.textContent = [
               '.gw{position:absolute;left:0;top:0;backface-visibility:hidden;padding:22px;border-radius:36px;background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.3);-webkit-backdrop-filter:blur(24px) saturate(1.5);backdrop-filter:blur(24px) saturate(1.5);box-shadow:0 12px 48px rgba(0,0,0,.28);color:#fff;font-family:system-ui,sans-serif}',
@@ -61,100 +68,302 @@ jobs:
               '.gr{display:flex;justify-content:center}',
               '.gt2{width:78px;height:92px;display:flex;flex-direction:column;align-items:center;gap:6px;transition:transform .15s}',
               '.gi{width:64px;height:64px;border-radius:20px;display:flex;align-items:center;justify-content:center;font-size:34px;box-shadow:inset 0 0 0 1px rgba(255,255,255,.25)}',
-              '.gl{font-size:15px;opacity:.8;white-space:nowrap}',
-              '.gmin{padding:0;border-radius:50%;align-items:center;justify-content:center;font-size:44px}',
-              '.p.win,.btn2{background:rgba(255,255,255,.14)!important;border:1px solid rgba(255,255,255,.3)!important;border-radius:32px!important;-webkit-backdrop-filter:blur(24px) saturate(1.5);backdrop-filter:blur(24px) saturate(1.5);box-shadow:0 12px 48px rgba(0,0,0,.28)!important}',
-              '.p.hov{filter:none!important}',
-              '.win .i{font-size:96px!important}.win .t{font-size:34px!important;font-weight:600}.win .s{font-size:22px!important}',
-              '.btn2 .t{font-size:26px!important}'
+              '.gl{font-size:14px;opacity:.8;white-space:nowrap}',
+              '.wf{position:absolute;left:0;top:0;backface-visibility:hidden;padding:12px;border-radius:30px;background:rgba(18,22,32,.78);border:1px solid rgba(255,255,255,.3);box-shadow:0 12px 40px rgba(0,0,0,.35);color:#fff;font-family:system-ui,sans-serif}',
+              '.wh{display:flex;align-items:center;justify-content:space-between;height:48px;margin-bottom:8px;padding:0 6px;border-radius:18px}',
+              '.wt{display:flex;align-items:center;gap:10px;font-size:24px;font-weight:500}',
+              '.ws{width:720px;border-radius:18px;background:rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center;font-size:26px}'
             ].join('');
             document.head.appendChild(css);
 
-            var R0 = 620, W = 720, H = 192, STEP = 78, DY = 28;
-            var WS = { az: 0, el: 0, R: R0, s: 1, min: false, L: 0 };
-            try {
-              var sv = JSON.parse(localStorage.getItem('vrws') || 'null');
-              if (sv) { WS.R = Math.max(380, Math.min(1500, sv.R || R0)); WS.s = Math.max(0.6, Math.min(2, sv.s || 1)); }
-            } catch (e) {}
-            function save() { try { localStorage.setItem('vrws', JSON.stringify({ R: WS.R, s: WS.s })); } catch (e) {} }
-
-            clock.style.display = 'none';
+            clock.remove(); win.remove(); closeBtn.remove();
             ring.forEach(function (r) { r.el.remove(); });
             ring.length = 0;
+            items = [];
+            setItems = function () { items = []; };
 
-            var gw = mk('gw', '<div class="gh"><span id="gtime">--:--</span><div class="gbs">' +
+            var WAPPS = [
+              ['▶️', 'YouTube', '#b91c1c', '#7f1d1d'], ['🔎', 'Google', '#1d4ed8', '#1e3a8a'],
+              ['📖', 'Wikipédia', '#475569', '#1e293b'], ['🎮', 'Discord', '#4f46e5', '#312e81'],
+              ['💬', 'WhatsApp', '#15803d', '#14532d'], ['👽', 'Reddit', '#c2410c', '#7c2d12'],
+              ['🗺️', 'Mapas', '#0f766e', '#134e4a'], ['📰', 'Notícias', '#be185d', '#831843']
+            ];
+            var HUB = { az: 0, ev: 0, R: 620, s: 1, hidden: true };
+            try {
+              var sv = JSON.parse(localStorage.getItem('vrws') || 'null');
+              if (sv) { HUB.R = clamp(sv.R || 620, 380, 1500); HUB.s = clamp(sv.s || 1, 0.6, 2); }
+            } catch (e) {}
+            function save() { try { localStorage.setItem('vrws', JSON.stringify({ R: HUB.R, s: HUB.s })); } catch (e) {} }
+
+            var WS = { L: 0 };
+            var WINS = [], nextId = 1, T_hub = [], hubBtns = [];
+
+            function sz(el, w, h) {
+              el.style.width = w + 'px'; el.style.height = h + 'px';
+              el.style.marginLeft = (-w / 2) + 'px'; el.style.marginTop = (-h / 2) + 'px';
+            }
+            function put(el, az, e, r, s) {
+              var x = r * Math.cos(e * D) * Math.sin(az * D), y = -r * Math.sin(e * D), z = -r * Math.cos(e * D) * Math.cos(az * D);
+              el.style.transform = 'translate3d(' + x + 'px,' + y + 'px,' + z + 'px) rotateY(' + (-az) + 'deg) rotateX(' + (-e) + 'deg) scale(' + s + ')';
+            }
+            function rn(o) { return clamp(o.R - (WS.L || 0), 240, 2400); }
+            function toast(t) {
+              var d = document.createElement('div');
+              d.style.cssText = 'position:fixed;bottom:14px;left:50%;transform:translateX(-50%);z-index:40;background:rgba(0,0,0,.75);color:#fff;font:13px system-ui;padding:7px 14px;border-radius:999px';
+              d.textContent = t; document.body.appendChild(d);
+              setTimeout(function () { d.remove(); }, 2500);
+            }
+
+            var hubEl = mk('gw', '<div class="gh"><span id="gtime">--:--</span><div class="gbs">' +
               '<div class="gb" data-a="min">&#8212;</div><div class="gb" data-a="sm">A-</div><div class="gb" data-a="bg">A+</div>' +
               '<div class="gb" data-a="near">&#8601;</div><div class="gb" data-a="far">&#8599;</div></div></div><div class="gr"></div>');
-            place(gw, 0, 0, R0, W, H);
-            var bub = mk('gw gmin', '&#9638;');
-            place(bub, 0, 0, R0, 96, 96);
-            bub.style.display = 'none';
-
-            var row = gw.querySelector('.gr');
+            sz(hubEl, 720, 192);
+            hubEl.style.display = 'none';
+            document.body.classList.add('vrh');
             function tick() {
               var d = new Date();
               document.getElementById('gtime').textContent = ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
             }
             tick(); setInterval(tick, 1000);
 
-            APPS.forEach(function (a) {
+            var row = hubEl.querySelector('.gr');
+            WAPPS.forEach(function (a, i) {
               var t = document.createElement('div');
               t.className = 'gt2';
               t.innerHTML = '<div class="gi" style="background:linear-gradient(145deg,' + a[2] + ',' + a[3] + ')">' + a[0] + '</div><div class="gl">' + a[1] + '</div>';
               row.appendChild(t);
-              ring.push({ el: t, az: 0, e: 0, hw: 5, hh: 5, fn: function () { openApp(a); } });
+              T_hub.push({ k: 'btn', el: t, fn: function () { openWin(i); hideHub(); } });
             });
-
-            function put(el, az, e, r, s) {
-              var x = r * Math.cos(e * D) * Math.sin(az * D), y = -r * Math.sin(e * D), z = -r * Math.cos(e * D) * Math.cos(az * D);
-              el.style.transform = 'translate3d(' + x + 'px,' + y + 'px,' + z + 'px) rotateY(' + (-az) + 'deg) rotateX(' + (-e) + 'deg) scale(' + s + ')';
-            }
-            var bubItem = { k: 'item', drag: true, el: bub, az: 0, e: 0, hw: 6, hh: 6, fn: function () { WS.min = false; apply(); } };
-            function layout() {
-              var Rn = Math.max(240, Math.min(2400, WS.R - (WS.L || 0)));
-              put(gw, WS.az, WS.el, Rn, WS.s);
-              put(bub, WS.az, WS.el, Rn, WS.s);
-              var n = ring.length;
-              ring.forEach(function (r, i) {
-                var dx = (i - (n - 1) / 2) * STEP * WS.s;
-                r.az = WS.az + Math.atan(dx / Rn) / D;
-                r.e = WS.el - Math.atan(DY * WS.s / Rn) / D;
-                r.hw = Math.atan(STEP * WS.s / 2 / Rn) / D;
-                r.hh = Math.atan(48 * WS.s / Rn) / D;
-              });
-              bubItem.az = WS.az; bubItem.e = WS.el;
-              bubItem.hw = bubItem.hh = Math.atan(48 * WS.s / Rn) / D;
-            }
-            setItems = function () { items = opened ? [closeItem] : (WS.min ? [bubItem] : ring); };
-            function apply() {
-              gw.style.display = WS.min ? 'none' : '';
-              bub.style.display = WS.min ? 'flex' : 'none';
-              setItems(); layout();
-            }
-            var acts = {
-              min: function () { WS.min = true; apply(); },
-              sm: function () { WS.s = Math.max(0.6, WS.s / 1.12); layout(); save(); },
-              bg: function () { WS.s = Math.min(2, WS.s * 1.12); layout(); save(); },
-              near: function () { WS.R = Math.max(380, WS.R - 80); layout(); save(); },
-              far: function () { WS.R = Math.min(1500, WS.R + 80); layout(); save(); }
+            var hubActs = {
+              min: function () { hideHub(); },
+              sm: function () { HUB.s = clamp(HUB.s / 1.12, 0.6, 2); layout(); save(); },
+              bg: function () { HUB.s = clamp(HUB.s * 1.12, 0.6, 2); layout(); save(); },
+              near: function () { HUB.R = clamp(HUB.R - 80, 380, 1500); layout(); save(); },
+              far: function () { HUB.R = clamp(HUB.R + 80, 380, 1500); layout(); save(); }
             };
-            var hbtns = [];
-            gw.querySelectorAll('.gb').forEach(function (b) {
+            [].forEach.call(hubEl.querySelectorAll('.gb'), function (b) {
               var a = b.getAttribute('data-a');
-              hbtns.push({ k: 'btn', el: b, fn: acts[a], rep: a !== 'min' });
+              hubBtns.push({ k: 'btn', el: b, fn: hubActs[a], rep: a !== 'min' });
             });
 
-            var _o = openApp, _c = closeApp;
-            openApp = function (a) { _o(a); gw.style.visibility = 'hidden'; };
-            closeApp = function () { _c(); gw.style.visibility = 'visible'; };
+            function rebuild() {
+              var t = [], low = [];
+              if (!HUB.hidden) { t = t.concat(T_hub, hubBtns); low.push({ k: 'win', w: HUB, el: hubEl }); }
+              WINS.forEach(function (W) { t = t.concat(W.btns); t.push({ k: 'win', w: W, el: W.hdr }); });
+              UI.T = t; UI.TL = low;
+            }
+            function layout() {
+              if (!HUB.hidden) put(hubEl, HUB.az, HUB.ev, rn(HUB), HUB.s);
+              WINS.forEach(function (W) { put(W.dom, W.az, W.ev, rn(W), W.s); });
+            }
+            function showHub() {
+              HUB.hidden = false; HUB.az = gaze.az; HUB.ev = clamp(gaze.el, -35, 35);
+              hubEl.style.display = '';
+              document.body.classList.remove('vrh');
+              rebuild(); layout();
+            }
+            function hideHub() {
+              HUB.hidden = true; hubEl.style.display = 'none';
+              document.body.classList.add('vrh');
+              rebuild();
+            }
 
-            var rcb = document.getElementById('rc');
-            var oc = rcb.onclick;
-            rcb.onclick = function () { if (oc) oc(); WS.az = 0; WS.el = 0; layout(); };
+            function winSize(W) {
+              var h = W.ar ? 309 : 405;
+              W.slot.style.height = h + 'px';
+              sz(W.dom, 744, 12 + 48 + 8 + h + 12);
+            }
+            var lastR = '';
+            function closeWin(W) {
+              nClose(W.id);
+              W.dom.remove();
+              WINS.splice(WINS.indexOf(W), 1);
+              lastR = '';
+              rebuild();
+            }
+            function focusWin(W) {
+              if (WINS[WINS.length - 1] === W) return;
+              WINS.splice(WINS.indexOf(W), 1); WINS.push(W);
+              nFront(W.id); rebuild();
+            }
+            function openWin(idx) {
+              var ex = WINS.filter(function (w) { return w.idx === idx; })[0];
+              if (ex) { focusWin(ex); return; }
+              if (WINS.length >= 3) { toast('Máximo de 3 janelas abertas'); return; }
+              var a = WAPPS[idx];
+              var W = { id: nextId++, idx: idx, ar: 0, s: 0.95, R: 620, ev: HUB.ev, az: HUB.az };
+              var cand = [0, 70, -70, 140, -140];
+              for (var i = 0; i < cand.length; i++) {
+                var c = HUB.az + cand[i];
+                if (WINS.every(function (w) { return Math.abs(angd(c, w.az)) > 35; })) { W.az = c; break; }
+              }
+              W.dom = mk('wf', '<div class="wh"><div class="wt"><span>' + a[0] + '</span><span>' + a[1] + '</span></div><div class="gbs">' +
+                '<div class="gb" data-a="ar">&#9645;</div><div class="gb" data-a="sm">A-</div><div class="gb" data-a="bg">A+</div><div class="gb" data-a="x">&#10005;</div></div></div>' +
+                '<div class="ws">Carregando…</div>');
+              W.hdr = W.dom.querySelector('.wh'); W.slot = W.dom.querySelector('.ws');
+              var acts = {
+                ar: function () { W.ar = W.ar ? 0 : 1; winSize(W); layout(); },
+                sm: function () { W.s = clamp(W.s / 1.12, 0.5, 2.2); layout(); },
+                bg: function () { W.s = clamp(W.s * 1.12, 0.5, 2.2); layout(); },
+                x: function () { closeWin(W); }
+              };
+              W.btns = [];
+              [].forEach.call(W.dom.querySelectorAll('.gb'), function (b) {
+                var k = b.getAttribute('data-a');
+                W.btns.push({ k: 'btn', el: b, fn: acts[k], rep: k === 'sm' || k === 'bg' });
+              });
+              WINS.push(W); winSize(W); rebuild(); layout();
+              nOpen(W.id, idx);
+            }
 
-            window.UI = { WS: WS, layout: layout, hbtns: hbtns, winT: { k: 'win', el: gw }, save: save, bubItem: bubItem };
-            apply();
+            var rcb = document.getElementById('rc'), oc = rcb.onclick;
+            rcb.onclick = function () {
+              if (oc) oc();
+              HUB.az = 0; HUB.ev = 0;
+              var offs = [0, 70, -70];
+              WINS.forEach(function (W, i) { W.az = offs[i % 3]; W.ev = 0; });
+              layout();
+            };
+
+            var lastC = '';
+            (function loop() {
+              requestAnimationFrame(loop);
+              if (!A) return;
+              if (WINS.length) {
+                var parts = [];
+                WINS.forEach(function (W) {
+                  var r = W.slot.getBoundingClientRect();
+                  var ok = Math.abs(angd(gaze.az, W.az)) < 75 && isFinite(r.width) && r.width > 8 && r.width < 3000;
+                  parts.push([W.id, ok ? r.left.toFixed(1) : 0, ok ? r.top.toFixed(1) : 0, ok ? r.width.toFixed(1) : 0, ok ? r.height.toFixed(1) : 0, W.ar ? 1120 : 960, W.ar ? 480 : 540].join(','));
+                });
+                var s = parts.join(';');
+                if (s !== lastR) { lastR = s; nRects(s); }
+              }
+              var h = window.handCursor || {};
+              var c = Math.round(h.x || 0) + ',' + Math.round(h.y || 0) + ',' + (h.pinch ? 1 : 0) + ',' + (h.has ? 1 : 0);
+              if (c !== lastC) { lastC = c; nCur(h.x || 0, h.y || 0, !!h.pinch, !!h.has); }
+            })();
+
+            window.UI = {
+              WS: WS, layout: layout, save: save, T: [], TL: [], WINS: WINS,
+              showHub: showHub, hideHub: hideHub, focus: focusWin,
+              hubHidden: function () { return HUB.hidden; }
+            };
+            rebuild();
           })();
+          EOF
+          cat > app/src/main/assets/lean.js <<'EOF'
+          (function () {
+            var UI = window.UI, WS = UI.WS;
+            WS.L = 0;
+            var G = 1400, SIGN = 1;
+            try { if (localStorage.getItem('vrsign') === '-1') SIGN = -1; } catch (e) {}
+            var on = true, v = 0, p = 0, t0 = 0, calm = 0, w = 0, fp = null, sm = 0, lastHud = 0, fa = 0, bias = 0;
+
+            var bar = document.getElementById('ui');
+            bar.style.flexWrap = 'wrap';
+            var tb = document.createElement('button'); tb.textContent = '↕ Inclinar: sim';
+            var ib = document.createElement('button'); ib.textContent = '⇅ Inverter';
+            var lv = document.createElement('span'); lv.textContent = '↕ 0 cm';
+            bar.insertBefore(lv, bar.firstChild); bar.insertBefore(ib, bar.firstChild); bar.insertBefore(tb, bar.firstChild);
+
+            function reset() { v = 0; p = 0; calm = 0; fa = 0; }
+            tb.onclick = function () {
+              on = !on;
+              tb.textContent = on ? '↕ Inclinar: sim' : '↕ Inclinar: não';
+              if (!on) reset();
+            };
+            ib.onclick = function () {
+              SIGN = -SIGN; bias = 0; reset();
+              try { localStorage.setItem('vrsign', String(SIGN)); } catch (e) {}
+            };
+            var rcb = document.getElementById('rc'), prev = rcb.onclick;
+            rcb.onclick = function () { if (prev) prev(); reset(); };
+
+            window.__a = function (x, y, z) {
+              var now = performance.now(), dt = (now - t0) / 1000; t0 = now;
+              if (dt <= 0.002 || dt > 0.1) { fp = null; return; }
+              var f = [-Rdev[2], -Rdev[5], -Rdev[8]];
+              if (fp) {
+                var cx = f[1] * fp[2] - f[2] * fp[1], cy = f[2] * fp[0] - f[0] * fp[2], cz = f[0] * fp[1] - f[1] * fp[0];
+                w = w * 0.7 + (Math.sqrt(cx * cx + cy * cy + cz * cz) / dt) * 0.3;
+              }
+              fp = f;
+              if (!on) return;
+              var raw = SIGN * z;
+              fa = fa * 0.6 + (raw - bias) * 0.4;
+              var a = fa, still = false;
+              if (w > 0.9) { a = 0; v = 0; calm = 0; }
+              else if (Math.abs(a) < 0.15) {
+                a = 0; calm += dt;
+                if (calm > 0.2) { v = 0; still = true; }
+              } else calm = 0;
+              if (still && w < 0.3) bias += (raw - bias) * 0.02;
+              v += a * dt; v *= Math.exp(-dt / 1.2);
+              p += v * dt; p *= Math.exp(-dt / (still ? 1.5 : 5));
+              p = Math.max(-0.35, Math.min(0.35, p));
+            };
+
+            function frame() {
+              requestAnimationFrame(frame);
+              var pd = Math.abs(p) < 0.02 ? 0 : p - (p > 0 ? 0.02 : -0.02);
+              var target = on ? pd * G : 0;
+              sm += (target - sm) * 0.25;
+              if (Math.abs(sm - WS.L) > 0.4) { WS.L = sm; UI.layout(); }
+              var n = performance.now();
+              if (n - lastHud > 250) {
+                lastHud = n;
+                lv.textContent = '↕ ' + (pd * 100).toFixed(0) + ' cm · rot ' + w.toFixed(1);
+              }
+            }
+            requestAnimationFrame(frame);
+          })();
+          EOF
+          cat > app/src/main/assets/hand-worker.js <<'EOF'
+          var lm = null, del = 'GPU', M = null, model = null, vis = null, NH = 1;
+          function create(d) {
+            return M.HandLandmarker.createFromOptions(vis, {
+              baseOptions: { modelAssetBuffer: new Uint8Array(model.slice(0)), delegate: d },
+              runningMode: 'VIDEO', numHands: NH
+            }).then(function (n) {
+              if (lm) { try { lm.close(); } catch (e) {} }
+              lm = n; del = d;
+            });
+          }
+          function errMsg(e) { return String((e && e.message) || e); }
+          self.onmessage = function (e) {
+            var d = e.data;
+            if (d.t === 'init') {
+              try {
+                self.exports = {}; self.module = { exports: self.exports };
+                importScripts(d.base + '/vision_bundle.cjs');
+                M = (self.module.exports && self.module.exports.FilesetResolver) ? self.module.exports : self.exports;
+                if (!M.FilesetResolver) throw new Error('bundle sem FilesetResolver');
+                model = d.model; NH = d.n || 1;
+                M.FilesetResolver.forVisionTasks(d.base + '/wasm')
+                  .then(function (v) { vis = v; return create('GPU').catch(function () { return create('CPU'); }); })
+                  .then(function () { postMessage({ t: 'ready', d: del }); })
+                  .catch(function (err) { postMessage({ t: 'err', m: errMsg(err) }); });
+              } catch (err) { postMessage({ t: 'err', m: errMsg(err) }); }
+            } else if (d.t === 'hands') {
+              NH = d.n;
+              if (lm) create(del).catch(function (err) { postMessage({ t: 'err', m: errMsg(err) }); });
+            } else if (d.t === 'frame') {
+              var t0 = performance.now();
+              try {
+                var r = lm.detectForVideo(d.bmp, d.ts);
+                d.bmp.close();
+                var hs = (r.landmarks && r.landmarks.length) ? r.landmarks.map(function (h) { return h.map(function (p) { return [p.x, p.y]; }); }) : null;
+                postMessage({ t: 'res', pts: hs, ms: performance.now() - t0 });
+              } catch (err) {
+                try { d.bmp.close(); } catch (e2) {}
+                if (del === 'GPU') {
+                  create('CPU').then(function () { postMessage({ t: 'del', d: 'CPU' }); postMessage({ t: 'res', pts: null, ms: 0 }); })
+                    .catch(function (e3) { postMessage({ t: 'err', m: errMsg(e3) }); });
+                } else { postMessage({ t: 'err', m: errMsg(err) }); }
+              }
+            }
+          };
           EOF
           cat > app/src/main/assets/hand.js <<'EOF'
           (function () {
@@ -164,10 +373,9 @@ jobs:
               '#ret{display:none!important}',
               '.gt2.hand{transform:scale(1.18)}',
               '.gt2.hand .gl{opacity:1}',
-              '.btn2.hand{background:rgba(255,255,255,.3)!important}',
               '.gb.hand{background:rgba(255,255,255,.5)!important;transform:scale(1.12)}',
               '.gw.hand{border-color:rgba(255,255,255,.65)}',
-              '.gmin.hand{background:rgba(255,255,255,.35)}'
+              '.wh.hand{background:rgba(255,255,255,.12)}'
             ].join('');
             document.head.appendChild(st2);
 
@@ -179,6 +387,7 @@ jobs:
             fit(); addEventListener('resize', fit);
 
             var bar = document.createElement('div');
+            bar.id = 'hb';
             bar.style.cssText = 'position:fixed;top:8px;left:8px;z-index:20;display:flex;gap:6px;font:12px sans-serif;color:#fff';
             var pill = 'background:rgba(0,0,0,.6);padding:5px 10px;border-radius:999px';
             var hud = document.createElement('div'); hud.style.cssText = pill;
@@ -196,8 +405,8 @@ jobs:
             var pinch = false, pinchN = 0, pinchTarget = null, clicked = false, lastFire = 0, grab = null, cur = null;
             var seen = 0, lastDet = 0, lastT = 0, fpsAvg = 0, msAvg = 0, lastFrame = performance.now(), pfAvg = 30, lastHud = 0;
             window.handCursor = { x: 0, y: 0, pinch: false, has: false };
+            window.__ready = function () { return mode === 'worker' ? wReady : (mode === 'main' && !!lm); };
 
-            var _fire = fire;
             fire = function () { dwell = -0.8; };
 
             function map(p) {
@@ -218,10 +427,8 @@ jobs:
                   if (d < bd) { bd = d; best = t; }
                 }
               }
-              var closed = !opened && !UI.WS.min;
-              items.forEach(function (t) { test(t, 12); });
-              if (closed) UI.hbtns.forEach(function (t) { test(t, 8); });
-              if (!best && closed) test(UI.winT, 14);
+              (UI.T || []).forEach(function (t) { test(t, 10); });
+              if (!best) (UI.TL || []).forEach(function (t) { test(t, 14); });
               return best;
             }
 
@@ -351,39 +558,36 @@ jobs:
               s.forEach(function (p) { ctx.beginPath(); ctx.arc(p.x, p.y, 2.5, 0, 6.283); ctx.fill(); });
             }
 
-            function activate(t) { if (t.k === 'btn') t.fn(); else _fire(t); }
             function doGrab() {
-              var g = grab, WS = g.t.ws || UI.WS;
+              var g = grab, W = g.t.w;
               var dx = cx - g.lx, dy = cy - g.ly; g.lx = cx; g.ly = cy;
-              if (!g.moved && Math.hypot(cx - g.sx, cy - g.sy) > 28) g.moved = true;
-              if (!g.moved) return;
-              WS.az += Math.atan(dx / P) / D;
-              WS.el = clamp(WS.el - Math.atan(dy / P) / D, -60, 60);
-              if (g.t.k === 'win' && hsA > 0 && g.s0 > 0) {
+              W.az += Math.atan(dx / P) / D;
+              W.ev = clamp(W.ev - Math.atan(dy / P) / D, -60, 60);
+              if (hsA > 0 && g.s0 > 0) {
                 var r = g.s0 / hsA, dz = 0.15;
                 r = r > 1 + dz ? r - dz : (r < 1 - dz ? r + dz : 1);
-                WS.R = clamp(g.R0 * r, 380, 1500);
+                W.R = clamp(g.R0 * r, 380, 1500);
               }
               UI.layout();
             }
-            function endGrab() {
-              var g = grab; grab = null;
-              if (g.t.drag && !g.moved) _fire(g.t);
-              UI.save();
-            }
+            function endGrab() { grab = null; UI.save(); }
 
             function frame(now) {
               requestAnimationFrame(frame);
               var dt = Math.min(0.1, (now - lastFrame) / 1000); lastFrame = now;
               if (dt > 0) pfAvg = pfAvg * 0.95 + (1 / dt) * 0.05;
 
+              var has = seen > 0 && now - seen < 300;
+              var idle = !has && now - seen > 1500;
+              window.__idle = idle;
+
               if (wBusy && now - lastDet > 3000) wBusy = false;
               if (cam.readyState >= 2 && cam.videoWidth) {
-                if (mode === 'worker' && wReady && !wBusy && now - lastDet >= 33) { lastDet = now; wBusy = true; sendFrame(); }
-                else if (mode === 'main' && lm && !busy && now - lastDet >= 66) { lastDet = now; detectMain(now); }
+                var gap = idle ? 700 : 33;
+                if (mode === 'worker' && wReady && !wBusy && now - lastDet >= gap) { lastDet = now; wBusy = true; sendFrame(); }
+                else if (mode === 'main' && lm && !busy && now - lastDet >= Math.max(gap, 66)) { lastDet = now; detectMain(now); }
               }
 
-              var has = seen > 0 && now - seen < 300;
               var k = 1 - Math.exp(-dt * 20);
               cx += (tx - cx) * k; cy += (ty - cy) * k;
               if (skelT) {
@@ -415,148 +619,109 @@ jobs:
               if ((!has || !pinch) && grab) endGrab();
               if (has && pinch && pinchTarget && pinchN >= 2) {
                 var pt = pinchTarget;
-                if (pt.k === 'win' || pt.drag) {
-                  if (!grab) grab = { t: pt, lx: cx, ly: cy, sx: cx, sy: cy, moved: pt.k === 'win', s0: hsA, R0: (pt.ws || UI.WS).R };
+                if (pt.k === 'win') {
+                  if (!grab) {
+                    grab = { t: pt, lx: cx, ly: cy, s0: hsA, R0: pt.w.R };
+                    if (pt.w.dom && UI.focus) UI.focus(pt.w);
+                  }
                   doGrab();
                 } else if (!clicked && now - lastFire > (pt.rep ? 300 : 700)) {
                   clicked = true; lastFire = now;
-                  if (cur && cur.el) { cur.el.classList.remove('hand'); }
-                  var it = pt; if (!pt.rep) pinchTarget = null;
-                  activate(it);
+                  if (cur && cur.el) cur.el.classList.remove('hand');
+                  if (!pt.rep) pinchTarget = null;
+                  pt.fn();
                 } else if (pt.rep && clicked && cur === pt && now - lastFire > 450) {
-                  lastFire = now; activate(pt);
+                  lastFire = now; pt.fn();
                 }
               }
 
               if (now - lastHud > 400) {
                 lastHud = now;
-                hud.textContent = msgText || ('Mão: ' + Math.round(fpsAvg) + ' fps · ' + Math.round(msAvg) + ' ms · ' + delegate + ' · ' + mode + ' · tela ' + Math.round(pfAvg) + ' fps' + (has ? '' : ' · sem mão'));
+                hud.textContent = msgText || ('Mão: ' + Math.round(fpsAvg) + ' fps · ' + Math.round(msAvg) + ' ms · ' + delegate + ' · ' + mode + ' · tela ' + Math.round(pfAvg) + ' fps' + (idle ? ' · repouso' : (has ? '' : ' · sem mão')));
               }
             }
             requestAnimationFrame(frame);
             startWorker();
           })();
           EOF
-          cat > app/src/main/assets/hand-worker.js <<'EOF'
-          var lm = null, del = 'GPU', M = null, model = null, vis = null, NH = 1;
-          function create(d) {
-            return M.HandLandmarker.createFromOptions(vis, {
-              baseOptions: { modelAssetBuffer: new Uint8Array(model.slice(0)), delegate: d },
-              runningMode: 'VIDEO', numHands: NH
-            }).then(function (n) {
-              if (lm) { try { lm.close(); } catch (e) {} }
-              lm = n; del = d;
-            });
-          }
-          function errMsg(e) { return String((e && e.message) || e); }
-          self.onmessage = function (e) {
-            var d = e.data;
-            if (d.t === 'init') {
-              try {
-                self.exports = {}; self.module = { exports: self.exports };
-                importScripts(d.base + '/vision_bundle.cjs');
-                M = (self.module.exports && self.module.exports.FilesetResolver) ? self.module.exports : self.exports;
-                if (!M.FilesetResolver) throw new Error('bundle sem FilesetResolver');
-                model = d.model; NH = d.n || 1;
-                M.FilesetResolver.forVisionTasks(d.base + '/wasm')
-                  .then(function (v) { vis = v; return create('GPU').catch(function () { return create('CPU'); }); })
-                  .then(function () { postMessage({ t: 'ready', d: del }); })
-                  .catch(function (err) { postMessage({ t: 'err', m: errMsg(err) }); });
-              } catch (err) { postMessage({ t: 'err', m: errMsg(err) }); }
-            } else if (d.t === 'hands') {
-              NH = d.n;
-              if (lm) create(del).catch(function (err) { postMessage({ t: 'err', m: errMsg(err) }); });
-            } else if (d.t === 'frame') {
-              var t0 = performance.now();
-              try {
-                var r = lm.detectForVideo(d.bmp, d.ts);
-                d.bmp.close();
-                var hs = (r.landmarks && r.landmarks.length) ? r.landmarks.map(function (h) { return h.map(function (p) { return [p.x, p.y]; }); }) : null;
-                postMessage({ t: 'res', pts: hs, ms: performance.now() - t0 });
-              } catch (err) {
-                try { d.bmp.close(); } catch (e2) {}
-                if (del === 'GPU') {
-                  create('CPU').then(function () { postMessage({ t: 'del', d: 'CPU' }); postMessage({ t: 'res', pts: null, ms: 0 }); })
-                    .catch(function (e3) { postMessage({ t: 'err', m: errMsg(e3) }); });
-                } else { postMessage({ t: 'err', m: errMsg(err) }); }
-              }
-            }
-          };
-          EOF
-          cat > app/src/main/assets/lean.js <<'EOF'
+          cat > app/src/main/assets/boot.js <<'EOF'
           (function () {
-            var UI = window.UI, WS = UI.WS;
-            WS.L = 0;
-            var G = 1400, SIGN = 1;
-            try { if (localStorage.getItem('vrsign') === '-1') SIGN = -1; } catch (e) {}
-            var on = true, v = 0, p = 0, t0 = 0, calm = 0, w = 0, fp = null, sm = 0, lastHud = 0, fa = 0, bias = 0;
+            var UI = window.UI, cam = document.getElementById('cam');
+            var css = document.createElement('style');
+            css.textContent = [
+              '#start,#fs{display:none!important}',
+              'body.vrh #ui,body.vrh #hb{display:none!important}',
+              '#boot{position:fixed;inset:0;z-index:60;background:#05070f;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;transition:opacity .5s;font-family:system-ui,sans-serif}',
+              '#boot i{width:34px;height:34px;border-radius:50%;border:2px solid rgba(255,255,255,.18);border-top-color:#fff;animation:bs 1s linear infinite}',
+              '#boot b{font-size:12px;font-weight:300;letter-spacing:4px;color:rgba(255,255,255,.6)}',
+              '#boot small{font-size:11px;color:rgba(255,255,255,.3);min-height:14px}',
+              '@keyframes bs{to{transform:rotate(360deg)}}',
+              '#rv{position:fixed;left:0;top:0;width:64px;height:64px;margin:-32px 0 0 -32px;border-radius:50%;z-index:9;pointer-events:none;display:none;border:2px solid rgba(255,255,255,.45)}',
+              '#rv i{position:absolute;inset:0;border-radius:50%;background:#5eead4;opacity:.9;transform:scale(var(--p,0))}',
+              '#hint{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);z-index:30;background:rgba(0,0,0,.55);color:#fff;font:13px system-ui,sans-serif;padding:8px 16px;border-radius:999px;transition:opacity .6s}'
+            ].join('');
+            document.head.appendChild(css);
 
-            var bar = document.getElementById('ui');
-            bar.style.flexWrap = 'wrap';
-            var tb = document.createElement('button'); tb.textContent = '↕ Inclinar: sim';
-            var ib = document.createElement('button'); ib.textContent = '⇅ Inverter';
-            var lv = document.createElement('span'); lv.textContent = '↕ 0 cm';
-            bar.insertBefore(lv, bar.firstChild); bar.insertBefore(ib, bar.firstChild); bar.insertBefore(tb, bar.firstChild);
+            var ov = document.createElement('div');
+            ov.id = 'boot';
+            ov.innerHTML = '<i></i><b>CARREGANDO</b><small id="bsub"></small>';
+            document.body.appendChild(ov);
+            var sub = document.getElementById('bsub');
+            var rv = document.createElement('div');
+            rv.id = 'rv'; rv.innerHTML = '<i></i>';
+            document.body.appendChild(rv);
 
-            function reset() { v = 0; p = 0; calm = 0; fa = 0; }
-            tb.onclick = function () {
-              on = !on;
-              tb.textContent = on ? '↕ Inclinar: sim' : '↕ Inclinar: não';
-              if (!on) reset();
-            };
-            ib.onclick = function () {
-              SIGN = -SIGN; bias = 0; reset();
-              try { localStorage.setItem('vrsign', String(SIGN)); } catch (e) {}
-            };
-            var rcb = document.getElementById('rc'), prev = rcb.onclick;
-            rcb.onclick = function () { if (prev) prev(); reset(); };
-
-            window.__a = function (x, y, z) {
-              var now = performance.now(), dt = (now - t0) / 1000; t0 = now;
-              if (dt <= 0.002 || dt > 0.1) { fp = null; return; }
-              var f = [-Rdev[2], -Rdev[5], -Rdev[8]];
-              if (fp) {
-                var cx = f[1] * fp[2] - f[2] * fp[1], cy = f[2] * fp[0] - f[0] * fp[2], cz = f[0] * fp[1] - f[1] * fp[0];
-                w = w * 0.7 + (Math.sqrt(cx * cx + cy * cy + cz * cz) / dt) * 0.3;
-              }
-              fp = f;
-              if (!on) return;
-              var raw = SIGN * z;
-              fa = fa * 0.6 + (raw - bias) * 0.4;
-              var a = fa, still = false;
-              if (w > 0.9) { a = 0; v = 0; calm = 0; }
-              else if (Math.abs(a) < 0.15) {
-                a = 0; calm += dt;
-                if (calm > 0.2) { v = 0; still = true; }
-              } else calm = 0;
-              if (still && w < 0.3) bias += (raw - bias) * 0.02;
-              v += a * dt; v *= Math.exp(-dt / 1.2);
-              p += v * dt; p *= Math.exp(-dt / (still ? 1.5 : 5));
-              p = Math.max(-0.35, Math.min(0.35, p));
-            };
-
-            function updOpen() {
-              if (!opened) return;
-              var Rw = Math.max(260, 760 - WS.L);
-              place(win, closeItem.az, 0, Rw, 900, 520);
-              place(closeBtn, closeItem.az, -27, Rw, 300, 100);
+            var loaded = false, hintEl = null, t0 = performance.now();
+            function hint() {
+              hintEl = document.createElement('div');
+              hintEl.id = 'hint';
+              hintEl.textContent = 'Faça a pinça por 1 segundo para abrir o menu';
+              document.body.appendChild(hintEl);
+              setTimeout(dropHint, 8000);
             }
-            var _o = openApp;
-            openApp = function (a) { _o(a); updOpen(); };
-
-            function frame() {
-              requestAnimationFrame(frame);
-              var pd = Math.abs(p) < 0.02 ? 0 : p - (p > 0 ? 0.02 : -0.02);
-              var target = on ? pd * G : 0;
-              sm += (target - sm) * 0.25;
-              if (Math.abs(sm - WS.L) > 0.4) { WS.L = sm; UI.layout(); updOpen(); }
-              var n = performance.now();
-              if (n - lastHud > 250) {
-                lastHud = n;
-                lv.textContent = '↕ ' + (pd * 100).toFixed(0) + ' cm · rot ' + w.toFixed(1);
-              }
+            function dropHint() {
+              if (!hintEl) return;
+              var h = hintEl; hintEl = null;
+              h.style.opacity = '0';
+              setTimeout(function () { h.remove(); }, 700);
             }
-            requestAnimationFrame(frame);
+            var iv = setInterval(function () {
+              var cOk = cam && cam.readyState >= 2 && cam.videoWidth > 0;
+              var sOk = (typeof haveSensor !== 'undefined') && haveSensor;
+              var aOk = !!(window.__ready && window.__ready());
+              var miss = [];
+              if (!cOk) miss.push('câmera');
+              if (!sOk) miss.push('sensores');
+              if (!aOk) miss.push('detecção de mãos');
+              sub.textContent = miss.join(' · ');
+              var el = performance.now() - t0;
+              if ((miss.length === 0 && el > 900) || el > 30000) {
+                clearInterval(iv);
+                ov.style.opacity = '0';
+                setTimeout(function () { ov.remove(); }, 600);
+                loaded = true; hint();
+              }
+            }, 200);
+
+            var HOLD = 1000, holdT = 0, armed = false;
+            function overWin(x, y) {
+              return UI.WINS.some(function (W) {
+                var r = W.dom.getBoundingClientRect();
+                return r.width > 1 && x >= r.left - 10 && x <= r.right + 10 && y >= r.top - 10 && y <= r.bottom + 10;
+              });
+            }
+            (function loop(now) {
+              requestAnimationFrame(loop);
+              var h = window.handCursor || {};
+              if (!h.has || !h.pinch) { armed = true; holdT = 0; rv.style.display = 'none'; return; }
+              if (!loaded || !UI.hubHidden() || !armed || overWin(h.x, h.y)) { holdT = 0; rv.style.display = 'none'; return; }
+              if (!holdT) holdT = now;
+              var p = Math.min(1, (now - holdT) / HOLD);
+              rv.style.display = 'block';
+              rv.style.transform = 'translate(' + h.x + 'px,' + h.y + 'px)';
+              rv.style.setProperty('--p', (0.15 + 0.85 * p).toFixed(3));
+              if (p >= 1) { armed = false; holdT = 0; rv.style.display = 'none'; UI.showHub(); dropHint(); }
+            })(performance.now());
           })();
           EOF
           cat > settings.gradle <<'EOF'
@@ -580,30 +745,14 @@ jobs:
               versionCode 11
               versionName '3.0'
             }
-            buildFeatures {
-              aidl true
-            }
-          }
-          dependencies {
-            implementation 'dev.rikka.shizuku:api:13.1.5'
-            implementation 'dev.rikka.shizuku:provider:13.1.5'
           }
           EOF
           cat > app/src/main/AndroidManifest.xml <<'EOF'
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+            <uses-permission android:name="android.permission.INTERNET"/>
             <uses-permission android:name="android.permission.CAMERA"/>
-            <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"/>
             <uses-feature android:name="android.hardware.camera" android:required="false"/>
-            <queries>
-              <package android:name="moe.shizuku.privileged.api"/>
-            </queries>
             <application android:label="VR Launcher" android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
-              <provider android:name="rikka.shizuku.ShizukuProvider"
-                android:authorities="com.vr.launcher.shizuku"
-                android:multiprocess="false"
-                android:enabled="true"
-                android:exported="true"
-                android:permission="android.permission.INTERACT_ACROSS_USERS_FULL"/>
               <activity android:name=".MainActivity" android:exported="true"
                 android:screenOrientation="sensorLandscape"
                 android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize">
@@ -615,457 +764,53 @@ jobs:
             </application>
           </manifest>
           EOF
-          cat > app/src/main/aidl/com/vr/launcher/IShell.aidl <<'EOF'
-          package com.vr.launcher;
-          interface IShell {
-            void destroy() = 16777114;
-            String run(String cmd) = 1;
-            oneway void touch(int action, float x, float y, int displayId) = 2;
-            String info() = 3;
-          }
-          EOF
-          cat > app/src/main/java/com/vr/launcher/ShellService.java <<'EOF'
-          package com.vr.launcher;
-          import android.os.SystemClock;
-          import android.view.InputDevice;
-          import android.view.InputEvent;
-          import android.view.MotionEvent;
-          import java.io.BufferedReader;
-          import java.io.InputStreamReader;
-          import java.lang.reflect.Method;
-          public class ShellService extends IShell.Stub {
-            Object im; Method inject, setDisp; String err = "ok"; long downTime = 0;
-            public ShellService() {
-              try {
-                Class<?> c = Class.forName("android.hardware.input.InputManager");
-                im = c.getMethod("getInstance").invoke(null);
-                inject = c.getMethod("injectInputEvent", InputEvent.class, int.class);
-                setDisp = InputEvent.class.getMethod("setDisplayId", int.class);
-              } catch (Throwable t) { err = String.valueOf(t); }
-            }
-            @Override public void destroy() { System.exit(0); }
-            @Override public String run(String cmd) {
-              try {
-                Process p = new ProcessBuilder("sh", "-c", cmd).redirectErrorStream(true).start();
-                BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream()));
-                StringBuilder sb = new StringBuilder(); String l;
-                while ((l = r.readLine()) != null) sb.append(l).append('\n');
-                p.waitFor();
-                return sb.toString();
-              } catch (Throwable t) { return "Error: " + t; }
-            }
-            @Override public String info() { return err; }
-            @Override public void touch(int a, float x, float y, int d) {
-              if (inject == null) return;
-              try {
-                long now = SystemClock.uptimeMillis();
-                if (a == 0) downTime = now;
-                MotionEvent e = MotionEvent.obtain(downTime, now, a, x, y, a == 1 ? 0f : 1f, 1f, 0, 1f, 1f, 0, 0);
-                e.setSource(InputDevice.SOURCE_TOUCHSCREEN);
-                setDisp.invoke(e, d);
-                inject.invoke(im, e, 0);
-                e.recycle();
-              } catch (Throwable t) { err = String.valueOf(t); }
-            }
-          }
-          EOF
-      - name: Janelas curvas e multiplas janelas
-        run: |
-          python3 - <<'PY'
-          import re
-          p = 'app/src/main/assets/index.html'
-          s = open(p, encoding='utf-8').read()
-          s2, n = re.subn(r'(const\s+M\s*=\s*mul\(\s*Dm\s*,\s*mul\(\s*tr\(\s*Rf\s*\)\s*,\s*Cm\s*\)\s*\)\s*;)', r'\1window.__M=M;', s, count=1)
-          if n == 0:
-              print('AVISO: nao achei a linha da matriz no HTML; janelas curvas nao vao aparecer')
-          else:
-              open(p, 'w', encoding='utf-8').write(s2)
-              print('HTML ok: matriz exposta')
-          PY
-          cat > app/src/main/java/com/vr/launcher/AppWin.java <<'EOF'
-          package com.vr.launcher;
-          import android.graphics.SurfaceTexture;
-          import android.hardware.display.VirtualDisplay;
-          import android.view.Surface;
-          import java.util.concurrent.atomic.AtomicBoolean;
-          public class AppWin {
-            public final int id, idx;
-            public volatile int w, h, dpi;
-            public String pkg, comp;
-            public volatile int dispId = -1;
-            public VirtualDisplay vd;
-            public volatile Surface surf;
-            public boolean paused = false;
-            public long hiddenSince = 0L;
-            // parametros vindos do JS (graus / px de cena)
-            public volatile float az = 0f, el = 0f, r = 900f, ww = 860f, hh = 272f, kappa = 1f / 900f;
-            public volatile boolean placed = false;
-            public volatile float focus = 0f;
-            public volatile boolean inView = true;
-            // so a thread do renderizador mexe aqui
-            SurfaceTexture st;
-            int texId = 0;
-            final float[] stm = new float[16];
-            final AtomicBoolean newFrame = new AtomicBoolean(false);
-            boolean hasFrame = false;
-            public AppWin(int id, int idx, int w, int h, int dpi) {
-              this.id = id; this.idx = idx; this.w = w; this.h = h; this.dpi = dpi;
-            }
-          }
-          EOF
-          cat > app/src/main/java/com/vr/launcher/WinRenderer.java <<'EOF'
-          package com.vr.launcher;
-          import android.graphics.SurfaceTexture;
-          import android.opengl.EGL14;
-          import android.opengl.EGLConfig;
-          import android.opengl.EGLContext;
-          import android.opengl.EGLDisplay;
-          import android.opengl.EGLSurface;
-          import android.opengl.GLES11Ext;
-          import android.opengl.GLES20;
-          import android.os.Handler;
-          import android.os.Looper;
-          import android.view.Surface;
-          import java.nio.ByteBuffer;
-          import java.nio.ByteOrder;
-          import java.nio.FloatBuffer;
-          import java.util.List;
-          import java.util.concurrent.ConcurrentLinkedQueue;
-
-          /** Desenha cada janela de app como uma faixa de cilindro (curva) com cantos arredondados. */
-          public class WinRenderer extends Thread {
-            public interface Host { void onSurfaceReady(AppWin w); void onError(String m); }
-            public static class ViewState { public volatile float[] M; }
-
-            static final String VS =
-              "attribute vec2 aUv;\n" +
-              "uniform mat4 uMV; uniform mat4 uProj;\n" +
-              "uniform vec4 uWin; uniform vec2 uCurve;\n" +
-              "varying vec2 vUv;\n" +
-              "void main(){\n" +
-              "  float az=uWin.x, r=uWin.y, w=uWin.z, h=uWin.w;\n" +
-              "  float k=uCurve.x, yc=uCurve.y;\n" +
-              "  float s=(aUv.x-0.5)*w;\n" +
-              "  vec3 f=vec3(sin(az),0.0,-cos(az));\n" +
-              "  vec3 rt=vec3(cos(az),0.0,sin(az));\n" +
-              "  vec3 pos;\n" +
-              "  if(abs(k)<1e-6){ pos=r*f+s*rt; }\n" +
-              "  else { float ph=s*k; pos=r*f+(sin(ph)/k)*rt+((cos(ph)-1.0)/k)*f; }\n" +
-              "  pos.y=yc+(aUv.y-0.5)*h;\n" +
-              "  gl_Position=uProj*uMV*vec4(pos,1.0);\n" +
-              "  vUv=aUv;\n" +
-              "}\n";
-            static final String FS =
-              "#extension GL_OES_EGL_image_external : require\n" +
-              "#ifdef GL_FRAGMENT_PRECISION_HIGH\nprecision highp float;\n#else\nprecision mediump float;\n#endif\n" +
-              "varying vec2 vUv;\n" +
-              "uniform samplerExternalOES uTex; uniform mat4 uSt;\n" +
-              "uniform vec2 uSize; uniform float uRad; uniform float uFocus;\n" +
-              "void main(){\n" +
-              "  vec2 p=(vUv-0.5)*uSize;\n" +
-              "  vec2 q=abs(p)-(uSize*0.5-vec2(uRad));\n" +
-              "  float d=length(max(q,0.0))+min(max(q.x,q.y),0.0)-uRad;\n" +
-              "  float mask=1.0-smoothstep(-1.5,0.0,d);\n" +
-              "  if(mask<=0.0) discard;\n" +
-              "  vec2 tc=(uSt*vec4(vUv.x,1.0-vUv.y,0.0,1.0)).xy;\n" +
-              "  vec3 c=texture2D(uTex,tc).rgb;\n" +
-              "  float edge=smoothstep(-3.5,-1.0,d);\n" +
-              "  vec3 bc=mix(vec3(1.0),vec3(0.37,0.92,0.83),uFocus);\n" +
-              "  c=mix(c,bc,edge*(0.22+0.5*uFocus));\n" +
-              "  gl_FragColor=vec4(c*mask,mask);\n" +
-              "}\n";
-
-            static final int COLS = 64;
-
-            final List<AppWin> wins;
-            final SurfaceTexture target;
-            final Host host;
-            final ViewState vs;
-            final Handler main = new Handler(Looper.getMainLooper());
-            final Object lock = new Object();
-            final ConcurrentLinkedQueue<Runnable> tasks = new ConcurrentLinkedQueue<>();
-            volatile boolean running = true, dirty = true;
-            EGLDisplay dpy = EGL14.EGL_NO_DISPLAY; EGLContext ctx = EGL14.EGL_NO_CONTEXT; EGLSurface srf = EGL14.EGL_NO_SURFACE;
-            int prog, aUv, uMV, uProj, uWin, uCurve, uTex, uSt, uSize, uRad, uFocus;
-            FloatBuffer mesh;
-            final float[] mv = new float[16], proj = new float[16];
-            final int[] tmp = new int[1];
-
-            public WinRenderer(SurfaceTexture target, List<AppWin> wins, ViewState vs, Host host) {
-              super("winrender");
-              this.target = target; this.wins = wins; this.vs = vs; this.host = host;
-            }
-            public void requestRender() { synchronized (lock) { dirty = true; lock.notifyAll(); } }
-            public void post(Runnable r) { tasks.add(r); requestRender(); }
-            public void quit() { running = false; requestRender(); }
-
-            @Override public void run() {
-              try {
-                initEgl(); initGl();
-              } catch (Throwable t) {
-                final String m = "GL: " + t;
-                main.post(new Runnable() { public void run() { host.onError(m); } });
-                return;
-              }
-              while (running) {
-                Runnable t;
-                while ((t = tasks.poll()) != null) { try { t.run(); } catch (Throwable e) { } }
-                ensureTextures();
-                draw();
-                synchronized (lock) {
-                  if (!dirty && running) { try { lock.wait(); } catch (InterruptedException e) { } }
-                  dirty = false;
-                }
-              }
-              teardown();
-            }
-
-            void initEgl() {
-              dpy = EGL14.eglGetDisplay(EGL14.EGL_DEFAULT_DISPLAY);
-              int[] v = new int[2];
-              if (!EGL14.eglInitialize(dpy, v, 0, v, 1)) throw new RuntimeException("eglInitialize");
-              int[] ca = { EGL14.EGL_RENDERABLE_TYPE, EGL14.EGL_OPENGL_ES2_BIT, EGL14.EGL_RED_SIZE, 8, EGL14.EGL_GREEN_SIZE, 8,
-                EGL14.EGL_BLUE_SIZE, 8, EGL14.EGL_ALPHA_SIZE, 8, EGL14.EGL_NONE };
-              EGLConfig[] cfg = new EGLConfig[1]; int[] n = new int[1];
-              if (!EGL14.eglChooseConfig(dpy, ca, 0, cfg, 0, 1, n, 0) || n[0] < 1) throw new RuntimeException("eglChooseConfig");
-              int[] xa = { EGL14.EGL_CONTEXT_CLIENT_VERSION, 2, EGL14.EGL_NONE };
-              ctx = EGL14.eglCreateContext(dpy, cfg[0], EGL14.EGL_NO_CONTEXT, xa, 0);
-              int[] sa = { EGL14.EGL_NONE };
-              srf = EGL14.eglCreateWindowSurface(dpy, cfg[0], target, sa, 0);
-              if (srf == null || srf == EGL14.EGL_NO_SURFACE) throw new RuntimeException("eglCreateWindowSurface");
-              if (!EGL14.eglMakeCurrent(dpy, srf, srf, ctx)) throw new RuntimeException("eglMakeCurrent");
-              EGL14.eglSwapInterval(dpy, 1);
-            }
-
-            static int shader(int type, String src) {
-              int s = GLES20.glCreateShader(type);
-              GLES20.glShaderSource(s, src);
-              GLES20.glCompileShader(s);
-              int[] ok = new int[1];
-              GLES20.glGetShaderiv(s, GLES20.GL_COMPILE_STATUS, ok, 0);
-              if (ok[0] == 0) { String log = GLES20.glGetShaderInfoLog(s); GLES20.glDeleteShader(s); throw new RuntimeException("shader: " + log); }
-              return s;
-            }
-
-            void initGl() {
-              int vsh = shader(GLES20.GL_VERTEX_SHADER, VS), fsh = shader(GLES20.GL_FRAGMENT_SHADER, FS);
-              prog = GLES20.glCreateProgram();
-              GLES20.glAttachShader(prog, vsh); GLES20.glAttachShader(prog, fsh);
-              GLES20.glLinkProgram(prog);
-              int[] ok = new int[1];
-              GLES20.glGetProgramiv(prog, GLES20.GL_LINK_STATUS, ok, 0);
-              if (ok[0] == 0) throw new RuntimeException("link: " + GLES20.glGetProgramInfoLog(prog));
-              aUv = GLES20.glGetAttribLocation(prog, "aUv");
-              uMV = GLES20.glGetUniformLocation(prog, "uMV");
-              uProj = GLES20.glGetUniformLocation(prog, "uProj");
-              uWin = GLES20.glGetUniformLocation(prog, "uWin");
-              uCurve = GLES20.glGetUniformLocation(prog, "uCurve");
-              uTex = GLES20.glGetUniformLocation(prog, "uTex");
-              uSt = GLES20.glGetUniformLocation(prog, "uSt");
-              uSize = GLES20.glGetUniformLocation(prog, "uSize");
-              uRad = GLES20.glGetUniformLocation(prog, "uRad");
-              uFocus = GLES20.glGetUniformLocation(prog, "uFocus");
-              float[] m = new float[(COLS + 1) * 4];
-              for (int i = 0; i <= COLS; i++) {
-                float u = (float) i / COLS;
-                m[i * 4] = u; m[i * 4 + 1] = 0f; m[i * 4 + 2] = u; m[i * 4 + 3] = 1f;
-              }
-              mesh = ByteBuffer.allocateDirect(m.length * 4).order(ByteOrder.nativeOrder()).asFloatBuffer();
-              mesh.put(m); mesh.position(0);
-              GLES20.glDisable(GLES20.GL_DEPTH_TEST);
-              GLES20.glDisable(GLES20.GL_CULL_FACE);
-              GLES20.glEnable(GLES20.GL_BLEND);
-              GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE_MINUS_SRC_ALPHA);
-            }
-
-            void ensureTextures() {
-              for (final AppWin w : wins) {
-                if (w.st != null) continue;
-                int[] t = new int[1];
-                GLES20.glGenTextures(1, t, 0);
-                w.texId = t[0];
-                GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, w.texId);
-                GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR);
-                GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
-                GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
-                GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
-                w.st = new SurfaceTexture(w.texId);
-                w.st.setDefaultBufferSize(w.w, w.h);
-                w.hasFrame = false;
-                w.newFrame.set(false);
-                w.st.setOnFrameAvailableListener(new SurfaceTexture.OnFrameAvailableListener() {
-                  @Override public void onFrameAvailable(SurfaceTexture s) { w.newFrame.set(true); requestRender(); }
-                }, main);
-                w.surf = new Surface(w.st);
-                main.post(new Runnable() { public void run() { host.onSurfaceReady(w); } });
-              }
-            }
-
-            /** Libera os recursos GL de uma janela (chamar via post). */
-            public void releaseWin(AppWin w) {
-              if (w.surf != null) { w.surf.release(); w.surf = null; }
-              if (w.st != null) { w.st.setOnFrameAvailableListener(null); w.st.release(); w.st = null; }
-              if (w.texId != 0) { tmp[0] = w.texId; GLES20.glDeleteTextures(1, tmp, 0); w.texId = 0; }
-            }
-
-            void projection(int W, int H) {
-              float sx = 1.2f, sy = 1.2f * W / (float) H, n = 10f, f = 6000f;
-              for (int i = 0; i < 16; i++) proj[i] = 0f;
-              proj[0] = sx; proj[5] = sy;
-              proj[10] = -(f + n) / (f - n); proj[11] = -1f; proj[14] = -2f * f * n / (f - n);
-            }
-
-            static float yc(AppWin w) { return (float) (-w.r * Math.tan(Math.toRadians(w.el))); }
-
-            boolean sees(AppWin w, float sx, float sy) {
-              float az = (float) Math.toRadians(w.az), r = w.r, k = w.kappa, ww = w.ww, hh = w.hh, y0 = yc(w);
-              for (int i = -2; i <= 2; i++) {
-                float s = ww * i / 4f;
-                float px, pz;
-                if (k < 1e-6f) { px = r * (float) Math.sin(az) + s * (float) Math.cos(az); pz = -r * (float) Math.cos(az) + s * (float) Math.sin(az); }
-                else {
-                  float ph = s * k, a = (float) Math.sin(ph) / k, b = ((float) Math.cos(ph) - 1f) / k;
-                  px = (r + b) * (float) Math.sin(az) + a * (float) Math.cos(az);
-                  pz = -(r + b) * (float) Math.cos(az) + a * (float) Math.sin(az);
-                }
-                for (int j = -1; j <= 1; j++) {
-                  float py = y0 + j * hh / 2f;
-                  float qx = mv[0] * px + mv[4] * py + mv[8] * pz;
-                  float qy = mv[1] * px + mv[5] * py + mv[9] * pz;
-                  float qz = mv[2] * px + mv[6] * py + mv[10] * pz;
-                  if (qz < -1f) {
-                    float nx = sx * qx / -qz, ny = sy * qy / -qz;
-                    if (Math.abs(nx) < 1.15f && Math.abs(ny) < 1.15f) return true;
-                  }
-                }
-              }
-              return false;
-            }
-
-            void draw() {
-              EGL14.eglQuerySurface(dpy, srf, EGL14.EGL_WIDTH, tmp, 0); int W = tmp[0];
-              EGL14.eglQuerySurface(dpy, srf, EGL14.EGL_HEIGHT, tmp, 0); int H = tmp[0];
-              if (W < 2 || H < 2) return;
-              for (AppWin w : wins) {
-                if (w.st != null && w.newFrame.getAndSet(false)) {
-                  try { w.st.updateTexImage(); w.st.getTransformMatrix(w.stm); w.hasFrame = true; } catch (Throwable t) { }
-                }
-              }
-              GLES20.glViewport(0, 0, W, H);
-              GLES20.glClearColor(0f, 0f, 0f, 0f);
-              GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);
-              float[] M = vs.M;
-              if (M != null) {
-                // q' = diag(1,-1,1) * A * p, A_ij = M[3i+j]  (matriz coluna-major)
-                for (int i = 0; i < 16; i++) mv[i] = 0f;
-                mv[0] = M[0]; mv[1] = -M[3]; mv[2] = M[6];
-                mv[4] = M[1]; mv[5] = -M[4]; mv[6] = M[7];
-                mv[8] = M[2]; mv[9] = -M[5]; mv[10] = M[8];
-                mv[15] = 1f;
-                projection(W, H);
-                GLES20.glUseProgram(prog);
-                GLES20.glUniformMatrix4fv(uProj, 1, false, proj, 0);
-                GLES20.glUniformMatrix4fv(uMV, 1, false, mv, 0);
-                GLES20.glUniform1i(uTex, 0);
-                GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
-                GLES20.glEnableVertexAttribArray(aUv);
-                mesh.position(0);
-                GLES20.glVertexAttribPointer(aUv, 2, GLES20.GL_FLOAT, false, 0, mesh);
-                for (AppWin w : wins) {
-                  if (w.st == null || !w.placed) continue;
-                  boolean vis = sees(w, proj[0], proj[5]);
-                  w.inView = vis;
-                  if (!vis || !w.hasFrame) continue;
-                  GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, w.texId);
-                  GLES20.glUniformMatrix4fv(uSt, 1, false, w.stm, 0);
-                  GLES20.glUniform4f(uWin, (float) Math.toRadians(w.az), w.r, w.ww, w.hh);
-                  GLES20.glUniform2f(uCurve, w.kappa, yc(w));
-                  GLES20.glUniform2f(uSize, w.ww, w.hh);
-                  GLES20.glUniform1f(uRad, 28f);
-                  GLES20.glUniform1f(uFocus, w.focus);
-                  GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, (COLS + 1) * 2);
-                }
-                GLES20.glDisableVertexAttribArray(aUv);
-              }
-              EGL14.eglSwapBuffers(dpy, srf);
-            }
-
-            void teardown() {
-              try {
-                for (AppWin w : wins) { try { releaseWin(w); } catch (Throwable t) { } }
-                if (prog != 0) GLES20.glDeleteProgram(prog);
-              } catch (Throwable t) { }
-              try {
-                EGL14.eglMakeCurrent(dpy, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_SURFACE, EGL14.EGL_NO_CONTEXT);
-                if (srf != EGL14.EGL_NO_SURFACE) EGL14.eglDestroySurface(dpy, srf);
-                if (ctx != EGL14.EGL_NO_CONTEXT) EGL14.eglDestroyContext(dpy, ctx);
-                EGL14.eglTerminate(dpy);
-              } catch (Throwable t) { }
-            }
-          }
-          EOF
           cat > app/src/main/java/com/vr/launcher/MainActivity.java <<'EOF'
           package com.vr.launcher;
           import android.Manifest;
           import android.app.Activity;
-          import android.content.ComponentName;
           import android.content.Context;
-          import android.content.Intent;
-          import android.content.ServiceConnection;
           import android.content.pm.PackageManager;
           import android.graphics.Canvas;
           import android.graphics.Color;
+          import android.graphics.Outline;
           import android.graphics.Paint;
-          import android.graphics.SurfaceTexture;
           import android.hardware.Sensor;
           import android.hardware.SensorEvent;
           import android.hardware.SensorEventListener;
           import android.hardware.SensorManager;
-          import android.hardware.display.DisplayManager;
-          import android.hardware.display.VirtualDisplay;
           import android.net.Uri;
           import android.os.Bundle;
           import android.os.Handler;
-          import android.os.HandlerThread;
-          import android.os.IBinder;
           import android.os.Looper;
-          import android.view.TextureView;
+          import android.os.SystemClock;
+          import android.view.InputDevice;
+          import android.view.MotionEvent;
           import android.view.View;
-          import android.view.ViewGroup;
+          import android.view.ViewOutlineProvider;
           import android.view.WindowManager;
+          import android.webkit.CookieManager;
           import android.webkit.JavascriptInterface;
           import android.webkit.PermissionRequest;
           import android.webkit.WebChromeClient;
+          import android.webkit.WebResourceError;
           import android.webkit.WebResourceRequest;
           import android.webkit.WebResourceResponse;
           import android.webkit.WebSettings;
           import android.webkit.WebView;
           import android.webkit.WebViewClient;
           import android.widget.FrameLayout;
-          import android.widget.Toast;
           import java.io.InputStream;
-          import java.util.concurrent.CopyOnWriteArrayList;
-          import org.json.JSONObject;
-          import rikka.shizuku.Shizuku;
-          public class MainActivity extends Activity implements SensorEventListener, WinRenderer.Host {
+          import java.util.ArrayList;
+          public class MainActivity extends Activity implements SensorEventListener {
             static final String HOST = "appassets.androidplatform.net";
             static final String HOOK = "window.__r=function(a,x,y,z){Rdev=a;if(!haveSensor){haveSensor=true;haveGyro=true;mode='gyro';setTimeout(recenter,200)}if(st.textContent!=='Sensor nativo OK')st.textContent='Sensor nativo OK';if(window.__a)window.__a(x,y,z)};";
-            static final int MAX_WINS = 3;
-            // {largura, altura, dpi} em pixels do buffer. 19:6 = 1140x360. Mesmo layout (dp) que 1520x480@220 com 44% menos pixels.
-            static final int[] WIDE = {1140, 360, 165};
-            static final int[] TALL = {540, 960, 220};
-            static final int[][] SIZE = {WIDE, TALL, WIDE, WIDE, TALL, WIDE, WIDE, TALL};
-            static final String[] APPN = {"YouTube", "WhatsApp", "Chrome", "Camera", "Galeria", "Musica", "Mapas", "Config."};
-            static final String[][] CAND = {
-              {"com.google.android.youtube"},
-              {"com.whatsapp", "com.whatsapp.w4b"},
-              {"com.android.chrome", "org.mozilla.firefox", "com.brave.browser"},
-              {"com.motorola.camera3", "com.motorola.camera", "com.android.camera2"},
-              {"com.google.android.apps.photos", "com.motorola.gallery"},
-              {"com.google.android.apps.youtube.music", "com.spotify.music"},
-              {"com.google.android.apps.maps"},
-              {"com.android.settings"}
+            static final String[] URLS = {
+              "https://m.youtube.com/", "https://www.google.com/", "https://pt.m.wikipedia.org/", "https://discord.com/app",
+              "https://web.whatsapp.com/", "https://www.reddit.com/", "https://www.openstreetmap.org/", "https://news.google.com/"
             };
+            static final boolean[] DESK = {false, false, false, true, true, false, false, false};
+            static final String UA_DESK = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+            static class Win { int id; WebView v; float x, y, w, h; int pw = 960, ph = 540; }
             static class CursorView extends View {
               Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
               volatile float x, y; volatile boolean show, pinch;
@@ -1080,63 +825,27 @@ jobs:
               }
             }
             class Bridge {
-              @JavascriptInterface public void openApp(final int i) { ui.post(new Runnable() { public void run() { openIdx(i); } }); }
-              @JavascriptInterface public void closeWin(final int id) { ui.post(new Runnable() { public void run() { AppWin w = byId(id); if (w != null) closeWindow(w); } }); }
-              @JavascriptInterface public void resizeWin(final int id) { ui.post(new Runnable() { public void run() { AppWin w = byId(id); if (w != null) toggleRatio(w); } }); }
-              @JavascriptInterface public void frame(String rf, String ws, float cx, float cy, boolean pinch, boolean has) { onFrame(rf, ws, cx, cy, pinch, has); }
+              @JavascriptInterface public void open(final int id, final int idx) { ui.post(() -> openWin(id, idx)); }
+              @JavascriptInterface public void close(final int id) { ui.post(() -> closeWin(id)); }
+              @JavascriptInterface public void front(final int id) { ui.post(() -> frontWin(id)); }
+              @JavascriptInterface public void rects(final String s) { ui.post(() -> applyRects(s)); }
+              @JavascriptInterface public void cursor(final float x, final float y, final boolean p, final boolean h) { ui.post(() -> onCursor(x, y, p, h)); }
             }
-            FrameLayout root; WebView web; CursorView curv; TextureView glv;
+            FrameLayout root; WebView web; CursorView curv;
             SensorManager sm; Sensor rot, lin; boolean ready = false;
             PermissionRequest pending = null;
             float[] m = new float[9]; float[] grav = new float[3]; float lx = 0, ly = 0, lz = 0;
             float density = 1f;
             Handler ui = new Handler(Looper.getMainLooper());
-            HandlerThread ht; Handler th;
-            IShell shell; boolean binding = false;
-            final CopyOnWriteArrayList<AppWin> wins = new CopyOnWriteArrayList<>();
-            final WinRenderer.ViewState vs = new WinRenderer.ViewState();
-            WinRenderer rend;
-            int nextId = 1, pendingIdx = -1;
-            // toque
-            volatile AppWin touchWin; volatile boolean down = false, armed = false, prevPinch = false; volatile float lastX, lastY;
-            Shizuku.OnRequestPermissionResultListener permL = new Shizuku.OnRequestPermissionResultListener() {
-              @Override public void onRequestPermissionResult(int req, int res) {
-                if (res == PackageManager.PERMISSION_GRANTED) ui.post(new Runnable() { public void run() {
-                  if (pendingIdx >= 0) { int i = pendingIdx; pendingIdx = -1; openIdx(i); }
-                } });
-              }
-            };
-            Runnable visTick = new Runnable() { public void run() {
-              long now = System.currentTimeMillis();
-              for (AppWin w : wins) {
-                if (w.vd == null || w.surf == null) continue;
-                if (w.inView) {
-                  w.hiddenSince = 0L;
-                  if (w.paused) { try { w.vd.setSurface(w.surf); } catch (Throwable t) { } w.paused = false; }
-                } else {
-                  if (w.hiddenSince == 0L) w.hiddenSince = now;
-                  else if (!w.paused && now - w.hiddenSince > 700L) { try { w.vd.setSurface(null); } catch (Throwable t) { } w.paused = true; }
-                }
-              }
-              ui.postDelayed(this, 250L);
-            } };
+            ArrayList<Win> wins = new ArrayList<>();
+            Win down = null; boolean armed = false; float lastX, lastY; long downTime = 0;
             boolean hasCam() { return checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED; }
-            void say(final String s) {
-              ui.post(new Runnable() { public void run() {
-                Toast.makeText(MainActivity.this, s, Toast.LENGTH_LONG).show();
-                if (ready) web.evaluateJavascript("window.__msg&&window.__msg(" + JSONObject.quote(s) + ")", null);
-              } });
-            }
-            void js(final String code) {
-              ui.post(new Runnable() { public void run() { if (ready) web.evaluateJavascript(code, null); } });
-            }
-            AppWin byId(int id) { for (AppWin w : wins) if (w.id == id) return w; return null; }
-            @Override public void onError(String msg) { say(msg); }
+            static float clamp(float v, float a, float b) { return Math.max(a, Math.min(b, v)); }
+            Win find(int id) { for (Win w : wins) if (w.id == id) return w; return null; }
             @Override protected void onCreate(Bundle b) {
               super.onCreate(b);
               getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
               density = getResources().getDisplayMetrics().density;
-              ht = new HandlerThread("touch"); ht.start(); th = new Handler(ht.getLooper());
               root = new FrameLayout(this);
               web = new WebView(this);
               web.setBackgroundColor(Color.TRANSPARENT);
@@ -1147,10 +856,10 @@ jobs:
               web.addJavascriptInterface(new Bridge(), "Android");
               web.setWebChromeClient(new WebChromeClient() {
                 @Override public void onPermissionRequest(final PermissionRequest r) {
-                  runOnUiThread(new Runnable() { public void run() {
+                  runOnUiThread(() -> {
                     if (hasCam()) { r.grant(r.getResources()); }
                     else { pending = r; requestPermissions(new String[]{Manifest.permission.CAMERA}, 1); }
-                  } });
+                  });
                 }
               });
               web.setWebViewClient(new WebViewClient() {
@@ -1173,244 +882,124 @@ jobs:
                   ready = true;
                 }
               });
-              glv = new TextureView(this);
-              glv.setOpaque(false);
-              glv.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() {
-                @Override public void onSurfaceTextureAvailable(SurfaceTexture st, int w, int h) {
-                  WinRenderer r = new WinRenderer(st, wins, vs, MainActivity.this);
-                  rend = r; r.start();
-                }
-                @Override public void onSurfaceTextureSizeChanged(SurfaceTexture st, int w, int h) { if (rend != null) rend.requestRender(); }
-                @Override public boolean onSurfaceTextureDestroyed(SurfaceTexture st) {
-                  for (AppWin w : wins) { if (w.vd != null) { try { w.vd.setSurface(null); } catch (Throwable t) { } } }
-                  WinRenderer r = rend; rend = null;
-                  if (r != null) { r.quit(); try { r.join(1500); } catch (InterruptedException e) { } }
-                  return true;
-                }
-                @Override public void onSurfaceTextureUpdated(SurfaceTexture st) { }
-              });
               curv = new CursorView(this);
-              root.addView(web, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-              root.addView(glv, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-              root.addView(curv, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+              root.addView(web, new FrameLayout.LayoutParams(-1, -1));
+              root.addView(curv, new FrameLayout.LayoutParams(-1, -1));
               setContentView(root);
               if (!hasCam()) requestPermissions(new String[]{Manifest.permission.CAMERA}, 1);
               web.loadUrl("https://" + HOST + "/index.html");
-              try { Shizuku.addRequestPermissionResultListener(permL); } catch (Throwable t) { }
               sm = (SensorManager) getSystemService(SENSOR_SERVICE);
               rot = sm.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR);
               if (rot == null) rot = sm.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
               lin = sm.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION);
               if (lin == null) lin = sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
             }
-            boolean shizukuReady() {
-              try {
-                if (!Shizuku.pingBinder()) { say("Shizuku não está ativo. Abra o app Shizuku e inicie o serviço."); return false; }
-                if (Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
-                  if (Shizuku.shouldShowRequestPermissionRationale()) { say("Permissão negada. Libere o VR Launcher dentro do app Shizuku."); return false; }
-                  Shizuku.requestPermission(100);
-                  say("Autorize o VR Launcher no Shizuku.");
-                  return false;
+            void openWin(int id, int idx) {
+              if (idx < 0 || idx >= URLS.length || find(id) != null) return;
+              final Win w = new Win(); w.id = id;
+              WebView v = new WebView(this); w.v = v;
+              v.setBackgroundColor(Color.BLACK);
+              WebSettings s = v.getSettings();
+              s.setJavaScriptEnabled(true);
+              s.setDomStorageEnabled(true);
+              s.setMediaPlaybackRequiresUserGesture(false);
+              if (DESK[idx]) {
+                s.setUserAgentString(UA_DESK);
+                s.setUseWideViewPort(true);
+                s.setLoadWithOverviewMode(true);
+              }
+              CookieManager.getInstance().setAcceptThirdPartyCookies(v, true);
+              v.setWebViewClient(new WebViewClient() {
+                @Override public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest r) {
+                  String u = r.getUrl().toString();
+                  return !(u.startsWith("http:") || u.startsWith("https:") || u.startsWith("about:") || u.startsWith("blob:") || u.startsWith("data:"));
                 }
-                return true;
-              } catch (Throwable t) { say("Shizuku: " + t); return false; }
-            }
-            void bind() {
-              if (binding) return;
-              binding = true;
-              ServiceConnection sc = new ServiceConnection() {
-                @Override public void onServiceConnected(ComponentName n, IBinder b) {
-                  shell = IShell.Stub.asInterface(b); binding = false;
-                  try { String inf = shell.info(); if (!"ok".equals(inf)) say("Toque indisponível: " + inf); } catch (Throwable t) { }
-                  if (pendingIdx >= 0) { int i = pendingIdx; pendingIdx = -1; openIdx(i); }
+                @Override public void onReceivedError(WebView view, WebResourceRequest r, WebResourceError e) {
+                  if (r.isForMainFrame()) {
+                    view.loadData("<body style='margin:0;background:#111;color:#fff;font:28px sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;text-align:center'><div>Sem conexão<br><small>" + e.getDescription() + "</small></div></body>", "text/html; charset=utf-8", "UTF-8");
+                  }
                 }
-                @Override public void onServiceDisconnected(ComponentName n) { shell = null; binding = false; }
-              };
-              try {
-                Shizuku.bindUserService(new Shizuku.UserServiceArgs(new ComponentName(getPackageName(), ShellService.class.getName()))
-                  .daemon(false).processNameSuffix("sh").debuggable(false).version(1), sc);
-              } catch (Throwable t) { binding = false; say("Shizuku: " + t); }
-            }
-            void toFront(AppWin w) {
-              wins.remove(w); wins.add(w);
-              for (AppWin o : wins) o.focus = (o == w) ? 1f : 0f;
-              if (rend != null) rend.requestRender();
-            }
-            void openIdx(int idx) {
-              if (idx < 0 || idx >= CAND.length) return;
-              for (AppWin o : wins) if (o.idx == idx) { toFront(o); say(APPN[idx] + " já está aberto"); return; }
-              if (wins.size() >= MAX_WINS) { say("Máximo de " + MAX_WINS + " janelas. Feche uma primeiro."); return; }
-              PackageManager pm = getPackageManager();
-              Intent li = null; String pkg = null;
-              for (String c : CAND[idx]) { li = pm.getLaunchIntentForPackage(c); if (li != null) { pkg = c; break; } }
-              if (li == null || li.getComponent() == null) { say(APPN[idx] + " não está instalado"); return; }
-              pendingIdx = idx;
-              if (!shizukuReady()) return;
-              if (shell == null) { say("Conectando ao Shizuku…"); bind(); return; }
-              pendingIdx = -1;
-              if (rend == null) { say("Renderizador iniciando, tente de novo"); return; }
-              int[] sz = SIZE[idx];
-              AppWin w = new AppWin(nextId++, idx, sz[0], sz[1], sz[2]);
-              w.pkg = pkg; w.comp = li.getComponent().flattenToShortString();
+              });
+              v.setOutlineProvider(new ViewOutlineProvider() {
+                @Override public void getOutline(View vw, Outline o) { o.setRoundRect(0, 0, vw.getWidth(), vw.getHeight(), 36f); }
+              });
+              v.setClipToOutline(true);
+              v.setPivotX(0f); v.setPivotY(0f);
+              v.setTranslationX(-5000f);
+              root.addView(v, root.indexOfChild(curv), new FrameLayout.LayoutParams(w.pw, w.ph));
               wins.add(w);
-              toFront(w);
-              js("window.__winAdd&&window.__winAdd(" + w.id + "," + idx + "," + w.w + "," + w.h + ")");
-              rend.requestRender();
+              v.loadUrl(URLS[idx]);
             }
-            /** Chamado na UI quando o renderizador criou a Surface da janela (ou recriou depois de pausa). */
-            @Override public void onSurfaceReady(AppWin w) {
-              if (!wins.contains(w)) return;
-              if (w.vd != null) { try { w.vd.setSurface(w.surf); } catch (Throwable t) { } w.paused = false; return; }
-              makeDisplay(w);
-            }
-            void makeDisplay(final AppWin w) {
-              DisplayManager dm = (DisplayManager) getSystemService(Context.DISPLAY_SERVICE);
-              int[] fl = {1 | 8 | 64 | 256, 1 | 8, 1};
-              String err = "";
-              VirtualDisplay vd = null;
-              for (int f : fl) {
-                try {
-                  vd = dm.createVirtualDisplay("vrapp" + w.id, w.w, w.h, w.dpi, w.surf, f);
-                  if (vd != null && vd.getDisplay() != null) break;
-                } catch (Throwable t) { err = String.valueOf(t); }
-              }
-              if (vd == null || vd.getDisplay() == null) { say("Tela virtual falhou: " + err); closeWindow(w); js("window.__winDel&&window.__winDel(" + w.id + ")"); return; }
-              w.vd = vd;
-              w.dispId = vd.getDisplay().getDisplayId();
-              final String cmd = "am start --display " + w.dispId + " -n " + w.comp;
-              final IShell s = shell;
-              new Thread(new Runnable() { public void run() {
-                try {
-                  String out = s.run(cmd);
-                  if (out.contains("Error") || out.contains("Exception") || out.contains("Warning")) say("am start: " + out.trim());
-                } catch (Throwable t) { say("Falha ao abrir: " + t); }
-              } }).start();
-            }
-            void closeWindow(final AppWin w) {
+            void closeWin(int id) {
+              Win w = find(id);
+              if (w == null) return;
+              if (down == w) down = null;
               wins.remove(w);
-              if (touchWin == w) { touchWin = null; down = false; }
-              if (w.vd != null) { try { w.vd.release(); } catch (Throwable t) { } w.vd = null; }
-              final WinRenderer r = rend;
-              if (r != null) r.post(new Runnable() { public void run() { r.releaseWin(w); } });
-              if (wins.isEmpty()) { curv.show = false; curv.postInvalidate(); }
-              boolean shared = false;
-              for (AppWin o : wins) if (w.pkg != null && w.pkg.equals(o.pkg)) shared = true;
-              final IShell s = shell; final String p = w.pkg;
-              if (s != null && p != null && !shared) new Thread(new Runnable() { public void run() {
-                try { s.run("am force-stop " + p); } catch (Throwable t) { }
-              } }).start();
-              if (!wins.isEmpty()) toFront(wins.get(wins.size() - 1));
+              root.removeView(w.v);
+              w.v.stopLoading();
+              w.v.destroy();
             }
-            /** Alterna 19:6 <-> retrato na janela (experimental: depende do app reagir ao resize). */
-            void toggleRatio(AppWin w) {
-              int[] n = (w.w >= w.h) ? TALL : WIDE;
-              w.w = n[0]; w.h = n[1]; w.dpi = n[2];
-              if (w.st != null) w.st.setDefaultBufferSize(w.w, w.h);
-              if (w.vd != null) {
-                try { w.vd.resize(w.w, w.h, w.dpi); w.vd.setSurface(w.surf); } catch (Throwable t) { say("Resize: " + t); }
-              }
-              js("window.__winSize&&window.__winSize(" + w.id + "," + w.w + "," + w.h + ")");
+            void frontWin(int id) {
+              Win w = find(id);
+              if (w == null) return;
+              wins.remove(w); wins.add(w);
+              w.v.bringToFront(); curv.bringToFront();
             }
-            // ---- ponte JS -> nativo, uma chamada por quadro ----
-            void onFrame(String rf, String ws, float x, float y, boolean pinch, boolean has) {
-              if (rf != null && rf.length() > 10) {
-                String[] p = rf.split(",");
-                if (p.length >= 9) {
-                  float[] M = new float[9];
-                  try { for (int i = 0; i < 9; i++) M[i] = Float.parseFloat(p[i]); vs.M = M; } catch (Throwable t) { }
-                }
+            void applyRects(String s) {
+              for (String part : s.split(";")) {
+                String[] a = part.split(",");
+                if (a.length < 7) continue;
+                try {
+                  Win w = find(Integer.parseInt(a[0]));
+                  if (w == null) continue;
+                  w.x = Float.parseFloat(a[1]) * density; w.y = Float.parseFloat(a[2]) * density;
+                  w.w = Float.parseFloat(a[3]) * density; w.h = Float.parseFloat(a[4]) * density;
+                  int pw = Integer.parseInt(a[5]), ph = Integer.parseInt(a[6]);
+                  if (pw != w.pw || ph != w.ph) { w.pw = pw; w.ph = ph; w.v.setLayoutParams(new FrameLayout.LayoutParams(pw, ph)); }
+                  if (w.w > 1f) {
+                    w.v.setTranslationX(w.x); w.v.setTranslationY(w.y);
+                    w.v.setScaleX(w.w / w.pw); w.v.setScaleY(w.h / w.ph);
+                    w.v.setVisibility(View.VISIBLE);
+                  } else {
+                    w.v.setVisibility(View.INVISIBLE);
+                  }
+                } catch (Exception e) { }
               }
-              if (ws != null && !ws.equals("-")) {
-                for (String part : ws.split(";")) {
-                  if (part.length() < 3) continue;
-                  String[] q = part.split(",");
-                  if (q.length < 7) continue;
-                  try {
-                    AppWin w = byId(Integer.parseInt(q[0]));
-                    if (w == null) continue;
-                    w.az = Float.parseFloat(q[1]); w.el = Float.parseFloat(q[2]); w.r = Float.parseFloat(q[3]);
-                    w.ww = Float.parseFloat(q[4]); w.hh = Float.parseFloat(q[5]); w.kappa = Float.parseFloat(q[6]);
-                    w.placed = true;
-                  } catch (Throwable t) { }
-                }
-              }
-              if (rend != null && !wins.isEmpty()) rend.requestRender();
-              onCursor(x, y, pinch, has);
             }
-            static float clamp(float v, float a, float b) { return Math.max(a, Math.min(b, v)); }
-            /** Raio do cursor (px CSS) contra a faixa de cilindro da janela. Retorna {u,v} (v=0 no topo) ou null. */
-            float[] project(AppWin w, float x, float y, boolean clampOut) {
-              float[] M = vs.M;
-              if (M == null || !w.placed) return null;
-              float W = web.getWidth() / density, H = web.getHeight() / density, P = 0.6f * W;
-              double qx = x - W / 2f, qy = y - H / 2f, qz = -P;
-              // d = A^T q, A_ij = M[3i+j]
-              double dx = M[0] * qx + M[3] * qy + M[6] * qz;
-              double dy = M[1] * qx + M[4] * qy + M[7] * qz;
-              double dz = M[2] * qx + M[5] * qy + M[8] * qz;
-              double az = Math.toRadians(w.az), r = w.r, k = w.kappa;
-              double fx = Math.sin(az), fz = -Math.cos(az), rx = Math.cos(az), rz = Math.sin(az);
-              double s, t;
-              if (k < 1e-6) {
-                double den = dx * fx + dz * fz;
-                if (den <= 1e-6) return null;
-                t = r / den; s = (t * dx) * rx + (t * dz) * rz;
-              } else {
-                double rho = 1.0 / k, cx = (r - rho) * fx, cz = (r - rho) * fz;
-                double a = dx * dx + dz * dz;
-                if (a < 1e-9) return null;
-                double b = dx * cx + dz * cz, c = cx * cx + cz * cz - rho * rho;
-                double disc = b * b - a * c;
-                if (disc < 0) return null;
-                t = (b + Math.sqrt(disc)) / a;
-                double hx = t * dx - cx, hz = t * dz - cz;
-                double cosp = (hx * fx + hz * fz) / rho, sinp = (hx * rx + hz * rz) / rho;
-                if (cosp <= 0) return null;
-                s = Math.atan2(sinp, cosp) * rho;
-              }
-              if (t <= 0) return null;
-              double yc = -r * Math.tan(Math.toRadians(w.el));
-              double u = s / w.ww + 0.5, v = (t * dy - (yc - w.hh / 2.0)) / w.hh;
-              if (!clampOut && (u < 0 || u > 1 || v < 0 || v > 1)) return null;
-              return new float[]{ clamp((float) u, 0f, 1f), clamp((float) v, 0f, 1f) };
-            }
-            AppWin hit(float x, float y) {
-              for (int i = wins.size() - 1; i >= 0; i--) {
-                AppWin w = wins.get(i);
-                if (project(w, x, y, false) != null) return w;
-              }
-              return null;
-            }
-            void send(final int a, final float px, final float py, final AppWin w) {
-              final IShell s = shell; final int d = w.dispId;
-              if (s == null || d < 0) return;
-              th.post(new Runnable() { public void run() { try { s.touch(a, px, py, d); } catch (Throwable t) { } } });
+            void send(Win w, int action, float cx, float cy) {
+              if (w.w < 1f) return;
+              float px = clamp((cx - w.x) / w.w * w.pw, 0f, w.pw - 1f);
+              float py = clamp((cy - w.y) / w.h * w.ph, 0f, w.ph - 1f);
+              long now = SystemClock.uptimeMillis();
+              if (action == MotionEvent.ACTION_DOWN) downTime = now;
+              MotionEvent e = MotionEvent.obtain(downTime, now, action, px, py, 0);
+              e.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+              w.v.dispatchTouchEvent(e);
+              e.recycle();
             }
             void onCursor(float x, float y, boolean pinch, boolean has) {
-              curv.x = x * density; curv.y = y * density; curv.pinch = pinch; curv.show = has && !wins.isEmpty();
+              float cx = x * density, cy = y * density;
+              Win hit = null;
+              if (has) {
+                for (int i = wins.size() - 1; i >= 0; i--) {
+                  Win w = wins.get(i);
+                  if (w.w > 1f && w.v.getVisibility() == View.VISIBLE && cx >= w.x && cx <= w.x + w.w && cy >= w.y && cy <= w.y + w.h) { hit = w; break; }
+                }
+              }
+              curv.x = cx; curv.y = cy; curv.pinch = pinch;
+              curv.show = has && (hit != null || down != null);
               curv.postInvalidate();
-              if (wins.isEmpty() || shell == null) { prevPinch = false; down = false; return; }
-              if (!has) {
-                if (down && touchWin != null) { send(1, lastX, lastY, touchWin); }
-                down = false; armed = false; prevPinch = false; return;
+              if (down != null) {
+                if (pinch && has) { lastX = cx; lastY = cy; send(down, MotionEvent.ACTION_MOVE, cx, cy); }
+                else { Win w = down; down = null; send(w, MotionEvent.ACTION_UP, lastX, lastY); }
+              } else {
+                if (!pinch || !has) armed = true;
+                if (pinch && has && armed && hit != null) {
+                  down = hit; lastX = cx; lastY = cy;
+                  frontWin(hit.id);
+                  send(hit, MotionEvent.ACTION_DOWN, cx, cy);
+                }
               }
-              if (pinch && !prevPinch) {
-                AppWin h = hit(x, y);
-                armed = h != null;
-                if (h != null) { touchWin = h; if (wins.get(wins.size() - 1) != h) ui.post(new Runnable() { public void run() { AppWin t = touchWin; if (t != null && wins.contains(t)) toFront(t); } }); }
-              }
-              prevPinch = pinch;
-              AppWin w = touchWin;
-              if (!pinch) {
-                if (down && w != null) { send(1, lastX, lastY, w); }
-                down = false; armed = false; return;
-              }
-              if (!armed || w == null) return;
-              float[] uv = project(w, x, y, true);
-              if (uv == null) return;
-              float px = clamp(uv[0] * w.w, 0f, w.w - 1f), py = clamp(uv[1] * w.h, 0f, w.h - 1f);
-              if (!down) { down = true; lastX = px; lastY = py; send(0, px, py, w); }
-              else { lastX = px; lastY = py; send(2, px, py, w); }
             }
             @Override public void onRequestPermissionsResult(int c, String[] p, int[] res) {
               if (pending != null) {
@@ -1428,13 +1017,10 @@ jobs:
               super.onResume();
               if (rot != null) sm.registerListener(this, rot, SensorManager.SENSOR_DELAY_GAME);
               if (lin != null) sm.registerListener(this, lin, SensorManager.SENSOR_DELAY_GAME);
-              ui.postDelayed(visTick, 250L);
             }
-            @Override protected void onPause() { super.onPause(); sm.unregisterListener(this); ui.removeCallbacks(visTick); }
+            @Override protected void onPause() { super.onPause(); sm.unregisterListener(this); }
             @Override protected void onDestroy() {
-              for (AppWin w : wins) closeWindow(w);
-              try { Shizuku.removeRequestPermissionResultListener(permL); } catch (Throwable t) { }
-              ht.quit();
+              for (Win w : new ArrayList<>(wins)) closeWin(w.id);
               super.onDestroy();
             }
             @Override public void onSensorChanged(SensorEvent e) {
@@ -1459,159 +1045,6 @@ jobs:
             }
             @Override public void onAccuracyChanged(Sensor s, int a) { }
           }
-          EOF
-          cat > app/src/main/assets/apps.js <<'EOF'
-          (function () {
-            var B = window.Android, UI = window.UI, WS = UI.WS;
-            if (!B || !B.openApp) return;
-            var W = [], winItems = [], lastWs = '', dockSaved = null;
-            function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
-            function norm(a) { a = ((a + 180) % 360 + 360) % 360 - 180; return a; }
-            function angDiff(a, b) { return Math.abs(norm(a - b)); }
-
-            var css = document.createElement('style');
-            css.textContent = [
-              '.wh{position:absolute;left:0;top:0;backface-visibility:hidden;display:flex;align-items:center;justify-content:space-between;padding:0 10px 0 18px;border-radius:999px;background:rgba(18,26,48,.66);border:1px solid rgba(255,255,255,.32);box-shadow:0 8px 28px rgba(0,0,0,.35);color:#fff;font-family:system-ui,sans-serif}',
-              '.wh.hand{border-color:rgba(255,255,255,.75)}',
-              '.wt{display:flex;align-items:center;gap:10px;font-size:24px;font-weight:500;white-space:nowrap}',
-              '.wi{font-size:30px}',
-              '.wbs{display:flex;gap:8px}',
-              '.wb{width:52px;height:52px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.3);font-size:28px;font-weight:500;transition:transform .12s,background .12s}',
-              '.wb svg{width:28px;height:28px;stroke:#fff;fill:none;stroke-width:2.2;stroke-linecap:round;stroke-linejoin:round}',
-              '.wb.hand{background:rgba(255,255,255,.5)!important;transform:scale(1.12)}',
-              '.wb.x{background:rgba(220,60,60,.35)}'
-            ].join('');
-            document.head.appendChild(css);
-
-            function msg(t) {
-              var d = document.createElement('div');
-              d.style.cssText = 'position:fixed;top:44px;left:50%;transform:translateX(-50%);z-index:20;background:rgba(0,0,0,.8);color:#fff;font:13px sans-serif;padding:6px 12px;border-radius:999px;max-width:90%';
-              d.textContent = t; document.body.appendChild(d);
-              d.onclick = function () { d.remove(); };
-              setTimeout(function () { d.remove(); }, 4500);
-            }
-            window.__msg = msg;
-
-            var HW = 540, HH = 68;
-            function dims(w) {
-              if (w.pw >= w.ph) { w.ww0 = 860; w.hh0 = 860 * w.ph / w.pw; }
-              else { w.hh0 = 500; w.ww0 = 500 * w.pw / w.ph; }
-            }
-            function Rn(w) { return clamp(w.R - (WS.L || 0), 240, 2400); }
-            function hs(w) { return clamp(w.s, 0.8, 1.25); }
-
-            var ICON_CURVE = '<svg viewBox="0 0 24 24"><path d="M3 15 Q12 5 21 15"/></svg>';
-            var ICON_RATIO = '<svg viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="10" rx="2"/><path d="M9 4v3M15 4v3" opacity=".0"/></svg>';
-
-            function act(w, a) {
-              if (a === 'x') { B.closeWin(w.id); removeW(w); return; }
-              if (a === 'sm') w.s = Math.max(0.5, w.s / 1.1);
-              else if (a === 'bg') w.s = Math.min(2.4, w.s * 1.1);
-              else if (a === 'curve') w.curve = w.curve === 1 ? 0.5 : (w.curve === 0.5 ? 0 : 1);
-              else if (a === 'ratio') B.resizeWin(w.id);
-              lastWs = '';
-            }
-            function buildHandle(w) {
-              var app = APPS[w.idx];
-              w.hEl = mk('wh', '<div class="wt"><span class="wi">' + app[0] + '</span><span>' + app[1] + '</span></div><div class="wbs">' +
-                '<div class="wb" data-a="curve">' + ICON_CURVE + '</div><div class="wb" data-a="sm">&#8722;</div><div class="wb" data-a="bg">+</div>' +
-                '<div class="wb" data-a="ratio">' + ICON_RATIO + '</div><div class="wb x" data-a="x">&#10005;</div></div>');
-              w.hEl.style.width = HW + 'px'; w.hEl.style.height = HH + 'px';
-              w.hEl.style.marginLeft = -HW / 2 + 'px'; w.hEl.style.marginTop = -HH / 2 + 'px';
-              var arr = [{ k: 'win', ws: w, el: w.hEl, az: 0, e: 0, hw: 0, hh: 0 }];
-              w.hEl.querySelectorAll('.wb').forEach(function (b) {
-                var a = b.getAttribute('data-a');
-                arr.push({ k: 'btn', el: b, fn: function () { act(w, a); }, rep: a === 'sm' || a === 'bg', az: 0, e: 0, hw: 0, hh: 0 });
-              });
-              w.items = arr;
-            }
-            function rebuildItems() {
-              winItems = [];
-              W.forEach(function (w) { winItems = winItems.concat(w.items); });
-              setItems();
-            }
-            function removeW(w) {
-              var i = W.indexOf(w); if (i < 0) return;
-              W.splice(i, 1);
-              if (w.hEl) w.hEl.remove();
-              rebuildItems(); adjustDock(); lastWs = '';
-            }
-            function spawnAz() {
-              var base = gaze.az, step = 58, order = [0, 1, -1, 2, -2];
-              for (var i = 0; i < order.length; i++) {
-                var c = norm(base + order[i] * step), free = true;
-                for (var j = 0; j < W.length; j++) if (angDiff(W[j].az, c) < 45) free = false;
-                if (free) return c;
-              }
-              return norm(base + (W.length * 20));
-            }
-            // empurra o dock (barra de apps) para baixo das janelas, estilo Quest; devolve ao fechar a ultima
-            function adjustDock() {
-              if (!W.length) {
-                if (dockSaved !== null) { WS.el = dockSaved; dockSaved = null; UI.layout(); }
-                return;
-              }
-              if (dockSaved === null) dockSaved = WS.el;
-              var low = 1e9;
-              W.forEach(function (w) {
-                var bot = w.el - Math.atan((w.hh0 * w.s / 2 + 14 + HH * hs(w)) / Rn(w)) / D;
-                if (bot < low) low = bot;
-              });
-              var need = low - 3 - 10 * WS.s;
-              if (WS.el > need) { WS.el = Math.max(-60, need); UI.layout(); }
-            }
-
-            window.__winAdd = function (id, idx, pw, ph) {
-              var w = { id: id, idx: idx, pw: pw, ph: ph, s: 1, R: 900, curve: 1, az: 0, el: 0, key: '' };
-              dims(w);
-              w.az = spawnAz(); w.el = clamp(gaze.el, -10, 10);
-              buildHandle(w); W.push(w);
-              rebuildItems(); adjustDock(); lastWs = '';
-            };
-            window.__winDel = function (id) { W.slice().forEach(function (w) { if (w.id === id) removeW(w); }); };
-            window.__winSize = function (id, pw, ph) { W.forEach(function (w) { if (w.id === id) { w.pw = pw; w.ph = ph; dims(w); lastWs = ''; adjustDock(); } }); };
-
-            // a barra de apps passa a abrir janelas (sem esconder o launcher)
-            openApp = function (a) { B.openApp(APPS.indexOf(a)); };
-            closeApp = function () { };
-            setItems = function () { items = (UI.WS.min ? [UI.bubItem] : ring).concat(winItems); };
-            setItems();
-
-            // centralizar: leva as janelas junto com o dock, mantendo o arranjo
-            var rcb = document.getElementById('rc'), prevRc = rcb.onclick;
-            rcb.onclick = function () {
-              var base = WS.az;
-              if (prevRc) prevRc();
-              W.forEach(function (w) { w.az = norm(w.az - base); });
-              if (dockSaved !== null) dockSaved = 0;
-              adjustDock(); lastWs = '';
-            };
-
-            function place2(w) {
-              var R = Rn(w), s = hs(w), yc = -R * Math.tan(w.el * D);
-              var y = yc + w.hh0 * w.s / 2 + 14 + HH * s / 2;
-              var x = R * Math.sin(w.az * D), z = -R * Math.cos(w.az * D);
-              w.hEl.style.transform = 'translate3d(' + x.toFixed(1) + 'px,' + y.toFixed(1) + 'px,' + z.toFixed(1) + 'px) rotateY(' + (-w.az).toFixed(2) + 'deg) scale(' + s.toFixed(3) + ')';
-              var ea = -Math.atan(y / R) / D, hw = Math.atan(HW * s / 2 / R) / D, hh = Math.atan(HH * s / 2 / R) / D;
-              w.items.forEach(function (it) { it.az = w.az; it.e = ea; it.hw = hw; it.hh = hh; });
-            }
-
-            (function loop() {
-              requestAnimationFrame(loop);
-              if (!W.length) { if (lastWs !== '') { B.frame('', '', 0, 0, false, false); lastWs = ''; } return; }
-              var parts = [];
-              for (var i = 0; i < W.length; i++) {
-                var w = W[i], R = Rn(w);
-                var key = w.az.toFixed(2) + '|' + w.el.toFixed(2) + '|' + R.toFixed(0) + '|' + w.s.toFixed(3) + '|' + w.curve + '|' + w.pw + 'x' + w.ph;
-                if (key !== w.key) { w.key = key; place2(w); }
-                parts.push([w.id, w.az.toFixed(3), w.el.toFixed(3), R.toFixed(1), (w.ww0 * w.s).toFixed(1), (w.hh0 * w.s).toFixed(1), (w.curve / R).toFixed(6)].join(','));
-              }
-              var s = parts.join(';');
-              var M = window.__M, h = window.handCursor || {};
-              B.frame(M ? M.join(',') : '', s === lastWs ? '-' : s, h.x || 0, h.y || 0, !!h.pinch, !!h.has);
-              lastWs = s;
-            })();
-          })();
           EOF
       - name: Compilar
         run: gradle assembleDebug --no-daemon
