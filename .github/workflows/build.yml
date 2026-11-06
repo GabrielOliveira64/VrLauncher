@@ -1046,6 +1046,594 @@ jobs:
             @Override public void onAccuracyChanged(Sensor s, int a) { }
           }
           EOF
+      - name: Corrigir janelas
+        run: |
+          sed -i 's/if (hsA > 0 \&\& g.s0 > 0) {/if (false) {/' app/src/main/assets/hand.js
+          sed -i 's/0\.02 ? 0 : p - (p > 0 ? 0\.02 : -0\.02)/0.04 ? 0 : p - (p > 0 ? 0.04 : -0.04)/' app/src/main/assets/lean.js
+          cat > app/src/main/assets/ui.js <<'EOF'
+          (function () {
+            var A = window.Android || null;
+            function nOpen(i, k) { if (A) A.open(i, k); }
+            function nClose(i) { if (A) A.close(i); }
+            function nFront(i) { if (A) A.front(i); }
+            function nRects(s) { if (A) A.rects(s); }
+            function nCur(x, y, p, h) { if (A) A.cursor(x, y, p, h); }
+            function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+            function angd(a, b) { var d = (((a - b) % 360) + 360) % 360; return d > 180 ? d - 360 : d; }
+
+            var css = document.createElement('style');
+            css.textContent = [
+              '.gw,.wf{position:absolute;left:0;top:0;will-change:transform;color:#fff;font-family:system-ui,sans-serif}',
+              '.gw{padding:22px;border-radius:36px;background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.3);-webkit-backdrop-filter:blur(24px) saturate(1.5);backdrop-filter:blur(24px) saturate(1.5);box-shadow:0 12px 48px rgba(0,0,0,.28)}',
+              '.gh{display:flex;align-items:center;justify-content:space-between;height:44px;margin-bottom:12px;font-size:22px;font-weight:300;letter-spacing:1px}',
+              '.gbs{display:flex;gap:8px}',
+              '.gb{width:42px;height:42px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.28);font-size:17px;font-weight:500;letter-spacing:0;transition:transform .12s,background .12s}',
+              '.gr{display:flex;justify-content:center}',
+              '.gt2{width:78px;height:92px;display:flex;flex-direction:column;align-items:center;gap:6px;transition:transform .15s}',
+              '.gi{width:64px;height:64px;border-radius:20px;display:flex;align-items:center;justify-content:center;font-size:34px;box-shadow:inset 0 0 0 1px rgba(255,255,255,.25)}',
+              '.gl{font-size:14px;opacity:.8;white-space:nowrap}',
+              '.gmin{padding:0;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:44px}',
+              '.wf{padding:12px;border-radius:30px;background:rgba(18,22,32,.78);border:1px solid rgba(255,255,255,.3);box-shadow:0 12px 40px rgba(0,0,0,.35)}',
+              '.wh{display:flex;align-items:center;justify-content:space-between;height:48px;margin-bottom:8px;padding:0 6px;border-radius:18px}',
+              '.wt{display:flex;align-items:center;gap:10px;font-size:24px;font-weight:500}',
+              '.ws{width:720px;height:405px;border-radius:18px;background:rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center;font-size:26px}',
+              '.rh{position:absolute;right:-30px;bottom:-30px;width:40px;height:40px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.2);border:1px solid rgba(255,255,255,.4);font-size:20px;transition:transform .12s,background .12s}',
+              '.rh.hand{transform:scale(1.25);background:rgba(255,255,255,.45)}'
+            ].join('');
+            document.head.appendChild(css);
+
+            var wl = document.createElement('div');
+            wl.id = 'wl';
+            wl.style.cssText = 'position:fixed;left:0;top:0;width:100%;height:100%;z-index:5;pointer-events:none;overflow:hidden';
+            document.body.appendChild(wl);
+
+            clock.remove(); win.remove(); closeBtn.remove();
+            ring.forEach(function (r) { r.el.remove(); });
+            ring.length = 0;
+            items = [];
+            setItems = function () { items = []; };
+            scene.style.display = 'none';
+
+            var WAPPS = [
+              ['▶️', 'YouTube', '#b91c1c', '#7f1d1d'], ['🔎', 'Google', '#1d4ed8', '#1e3a8a'],
+              ['📖', 'Wikipédia', '#475569', '#1e293b'], ['🎮', 'Discord', '#4f46e5', '#312e81'],
+              ['💬', 'WhatsApp', '#15803d', '#14532d'], ['👽', 'Reddit', '#c2410c', '#7c2d12'],
+              ['🗺️', 'Mapas', '#0f766e', '#134e4a'], ['📰', 'Notícias', '#be185d', '#831843']
+            ];
+            var HUB = { az: 0, ev: 0, R: 900, s: 1, hidden: true };
+            try {
+              var sv = JSON.parse(localStorage.getItem('vrws2') || 'null');
+              if (sv) { HUB.R = clamp(sv.R || 900, 500, 1600); HUB.s = clamp(sv.s || 1, 0.6, 2); }
+            } catch (e) {}
+            function save() { try { localStorage.setItem('vrws2', JSON.stringify({ R: HUB.R, s: HUB.s })); } catch (e) {} }
+
+            var WS = { L: 0 };
+            var WINS = [], nextId = 1, T_hub = [], hubBtns = [];
+            var UI = window.UI = {
+              WS: WS, layout: function () {}, save: save, T: [], TL: [], WINS: WINS,
+              showHub: function () { showHub(); }, hideHub: function () { hideHub(); },
+              focus: function (W) { focusWin(W); }, hubHidden: function () { return HUB.hidden; }
+            };
+
+            function mk2(cls, html) {
+              var d = document.createElement('div');
+              d.className = cls; d.innerHTML = html; wl.appendChild(d);
+              return d;
+            }
+            function sz(el, w, h) {
+              el.style.width = w + 'px'; el.style.height = h + 'px';
+              el.style.marginLeft = (-w / 2) + 'px'; el.style.marginTop = (-h / 2) + 'px';
+            }
+            function rn(o) { return clamp(o.R - (WS.L || 0), 240, 2400); }
+            function hw(o) { return Math.atan((o === HUB ? 720 : 744) * o.s / 2 / o.R) / D; }
+            function toast(t) {
+              var d = document.createElement('div');
+              d.style.cssText = 'position:fixed;bottom:14px;left:50%;transform:translateX(-50%);z-index:40;background:rgba(0,0,0,.75);color:#fff;font:13px system-ui;padding:7px 14px;border-radius:999px';
+              d.textContent = t; document.body.appendChild(d);
+              setTimeout(function () { d.remove(); }, 2500);
+            }
+
+            var hubEl = mk2('gw', '<div class="gh"><span id="gtime">--:--</span><div class="gbs">' +
+              '<div class="gb" data-a="min">&#8212;</div><div class="gb" data-a="sm">A-</div><div class="gb" data-a="bg">A+</div>' +
+              '<div class="gb" data-a="near">&#8601;</div><div class="gb" data-a="far">&#8599;</div></div></div><div class="gr"></div>');
+            sz(hubEl, 720, 192);
+            hubEl.style.display = 'none';
+            hubEl.style.zIndex = 5;
+            document.body.classList.add('vrh');
+            function tick() {
+              var d = new Date();
+              document.getElementById('gtime').textContent = ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
+            }
+            tick(); setInterval(tick, 1000);
+
+            var row = hubEl.querySelector('.gr');
+            WAPPS.forEach(function (a, i) {
+              var t = document.createElement('div');
+              t.className = 'gt2';
+              t.innerHTML = '<div class="gi" style="background:linear-gradient(145deg,' + a[2] + ',' + a[3] + ')">' + a[0] + '</div><div class="gl">' + a[1] + '</div>';
+              row.appendChild(t);
+              T_hub.push({ k: 'btn', el: t, fn: function () { openWin(i); } });
+            });
+            var hubActs = {
+              min: function () { hideHub(); },
+              sm: function () { HUB.s = clamp(HUB.s / 1.12, 0.6, 2); save(); },
+              bg: function () { HUB.s = clamp(HUB.s * 1.12, 0.6, 2); save(); },
+              near: function () { HUB.R = clamp(HUB.R - 80, 500, 1600); save(); },
+              far: function () { HUB.R = clamp(HUB.R + 80, 500, 1600); save(); }
+            };
+            [].forEach.call(hubEl.querySelectorAll('.gb'), function (b) {
+              var a = b.getAttribute('data-a');
+              hubBtns.push({ k: 'btn', el: b, fn: hubActs[a], rep: a !== 'min' });
+            });
+
+            function rebuild() {
+              var t = [], tl = [];
+              if (!HUB.hidden) { t = t.concat(T_hub, hubBtns); tl.push({ k: 'win', w: HUB, el: hubEl }); }
+              WINS.forEach(function (W) {
+                if (W.min) t.push(W.bubT);
+                else { t = t.concat(W.btns); t.push({ k: 'win', w: W, el: W.hdr }); }
+              });
+              UI.T = t; UI.TL = tl;
+            }
+            function showHub() {
+              HUB.hidden = false; HUB.az = gaze.az; HUB.ev = clamp(gaze.el, -35, 35);
+              hubEl.style.display = '';
+              document.body.classList.remove('vrh');
+              rebuild();
+            }
+            function hideHub() {
+              HUB.hidden = true; hubEl.style.display = 'none';
+              document.body.classList.add('vrh');
+              rebuild();
+            }
+            function arrange() {
+              var right = hw(HUB);
+              WINS.forEach(function (W) {
+                var h = hw(W), rel = right + 4 + h;
+                W.az = HUB.az + rel; W.ev = HUB.ev; W.t0 = 0; W.al = 1; W.k = 1;
+                right = rel + h;
+              });
+            }
+
+            function focusWin(W) {
+              if (WINS[WINS.length - 1] === W) return;
+              WINS.splice(WINS.indexOf(W), 1); WINS.push(W);
+              nFront(W.id); rebuild();
+            }
+            function closeWin(W) {
+              nClose(W.id);
+              W.dom.remove(); W.bub.remove();
+              WINS.splice(WINS.indexOf(W), 1);
+              lastR = '';
+              rebuild();
+            }
+            function openWin(idx) {
+              var ex = WINS.filter(function (w) { return w.idx === idx; })[0];
+              if (ex) { ex.min = false; rebuild(); focusWin(ex); return; }
+              if (WINS.length >= 3) { toast('Máximo de 3 janelas abertas'); return; }
+              var a = WAPPS[idx];
+              var W = { id: nextId++, idx: idx, s: 0.85, R: HUB.R, ev: HUB.ev, az: HUB.az, min: false, al: 0, k: 0.85, sx: 0, sy: 0 };
+              var right = hw(HUB), left = -hw(HUB), hn = hw(W);
+              WINS.forEach(function (w) {
+                var rel = angd(w.az, HUB.az), h = hw(w);
+                if (rel + h > right) right = rel + h;
+                if (rel - h < left) left = rel - h;
+              });
+              var rel = right + 4 + hn;
+              if (rel > 150) rel = left - 4 - hn;
+              W.taz = HUB.az + rel;
+              W.az0 = HUB.az + hw(HUB) * 0.5;
+              W.az = W.az0;
+              W.t0 = performance.now();
+              W.dom = mk2('wf', '<div class="wh"><div class="wt"><span>' + a[0] + '</span><span>' + a[1] + '</span></div><div class="gbs">' +
+                '<div class="gb" data-a="min">&#8212;</div><div class="gb" data-a="x">&#10005;</div></div></div>' +
+                '<div class="ws">Carregando…</div><div class="rh">&#8600;</div>');
+              sz(W.dom, 744, 505);
+              W.dom.style.display = 'none';
+              W.hdr = W.dom.querySelector('.wh'); W.rh = W.dom.querySelector('.rh');
+              W.bub = mk2('gw gmin', a[0]);
+              sz(W.bub, 96, 96);
+              W.bub.style.display = 'none';
+              W.bubT = { k: 'btn', el: W.bub, fn: function () { W.min = false; rebuild(); focusWin(W); } };
+              var acts = {
+                min: function () { W.min = true; rebuild(); },
+                x: function () { closeWin(W); }
+              };
+              W.btns = [];
+              [].forEach.call(W.dom.querySelectorAll('.gb'), function (b) {
+                W.btns.push({ k: 'btn', el: b, fn: acts[b.getAttribute('data-a')], rep: false });
+              });
+              WINS.push(W); rebuild();
+              nOpen(W.id, idx);
+            }
+
+            var rcb = document.getElementById('rc'), oc = rcb.onclick;
+            rcb.onclick = function () {
+              if (oc) oc();
+              HUB.az = 0; HUB.ev = 0;
+              arrange();
+            };
+
+            var Mc = [1, 0, 0, 0, 1, 0, 0, 0, 1], roll = 0, lastR = '', lastC = '', rs = null, wasDown = false;
+            function camM() {
+              var Rf = (mode === 'gyro') ? mul(rz(off), Rc) : Rc;
+              return mul(Dm, mul(tr(Rf), Cm));
+            }
+            function proj(az, ev, R) {
+              var x = R * Math.cos(ev * D) * Math.sin(az * D), y = -R * Math.sin(ev * D), z = -R * Math.cos(ev * D) * Math.cos(az * D);
+              var cx = Mc[0] * x + Mc[1] * y + Mc[2] * z, cy = Mc[3] * x + Mc[4] * y + Mc[5] * z, cz = Mc[6] * x + Mc[7] * y + Mc[8] * z;
+              var dep = -cz;
+              if (dep < 60) return null;
+              var S = P / dep;
+              return { x: innerWidth / 2 + cx * S, y: innerHeight / 2 + cy * S, S: S };
+            }
+            function put2(el, p, s, w, h) {
+              if (!p) { el.style.display = 'none'; return false; }
+              var ext = Math.max(w, h) / 2 * p.S * s, W = innerWidth, H = innerHeight;
+              if (Math.abs(p.x - W / 2) > W / 2 + ext || Math.abs(p.y - H / 2) > H / 2 + ext) { el.style.display = 'none'; return false; }
+              el.style.display = '';
+              el.style.transform = 'translate(' + p.x.toFixed(1) + 'px,' + p.y.toFixed(1) + 'px) rotate(' + roll.toFixed(2) + 'deg) scale(' + (p.S * s).toFixed(4) + ')';
+              return true;
+            }
+            function near(h, r, pad) { return r.width > 1 && h.x >= r.left - pad && h.x <= r.right + pad && h.y >= r.top - pad && h.y <= r.bottom + pad; }
+
+            function render(now) {
+              requestAnimationFrame(render);
+              Mc = camM();
+              roll = Math.atan2(-Mc[1], Mc[4]) / D;
+              var h = window.handCursor || {}, down = !!(h.has && h.pinch);
+
+              if (rs) {
+                if (!down || WINS.indexOf(rs.W) < 0) { rs = null; }
+                else {
+                  var dd = Math.hypot(h.x - rs.W.sx, h.y - rs.W.sy);
+                  rs.W.s = clamp(rs.s0 * dd / rs.d0, 0.45, 2.4);
+                }
+              } else if (down && !wasDown) {
+                for (var i = WINS.length - 1; i >= 0; i--) {
+                  var Wi = WINS[i];
+                  if (Wi.min) continue;
+                  if (near(h, Wi.rh.getBoundingClientRect(), 14)) {
+                    rs = { W: Wi, s0: Wi.s, d0: Math.max(30, Math.hypot(h.x - Wi.sx, h.y - Wi.sy)) };
+                    focusWin(Wi);
+                    break;
+                  }
+                }
+              }
+              wasDown = down;
+
+              if (!HUB.hidden) put2(hubEl, proj(HUB.az, HUB.ev, rn(HUB)), HUB.s, 720, 192);
+
+              var parts = [];
+              WINS.forEach(function (W, i) {
+                if (W.t0) {
+                  var pr = Math.min(1, (now - W.t0) / 500), e = 1 - Math.pow(1 - pr, 3);
+                  W.az = W.az0 + (W.taz - W.az0) * e; W.al = e; W.k = 0.85 + 0.15 * e;
+                  if (pr >= 1) W.t0 = 0;
+                }
+                var p = proj(W.az, W.ev, rn(W)), sE = W.s * W.k, vis = false;
+                W.sx = p ? p.x : 0; W.sy = p ? p.y : 0;
+                W.dom.style.zIndex = 10 + i; W.bub.style.zIndex = 10 + i;
+                W.dom.style.opacity = W.al; W.bub.style.opacity = W.al;
+                if (W.min) { W.dom.style.display = 'none'; put2(W.bub, p, W.s, 96, 96); }
+                else { W.bub.style.display = 'none'; vis = put2(W.dom, p, sE, 744, 505); }
+                if (vis) {
+                  var S = p.S * sE, d = 18 * S, th = roll * D;
+                  parts.push([W.id, (p.x - Math.sin(th) * d).toFixed(1), (p.y + Math.cos(th) * d).toFixed(1), (720 * S).toFixed(1), (405 * S).toFixed(1), roll.toFixed(2), 960, 540, W.al.toFixed(2)].join(','));
+                } else {
+                  parts.push([W.id, 0, 0, 0, 0, 0, 960, 540, 1].join(','));
+                }
+                var on = rs ? rs.W === W : (h.has && !W.min && near(h, W.rh.getBoundingClientRect(), 14));
+                W.rh.classList.toggle('hand', !!on);
+              });
+              var s = parts.join(';');
+              if (s !== lastR) { lastR = s; nRects(s); }
+              var c = Math.round(h.x || 0) + ',' + Math.round(h.y || 0) + ',' + (h.pinch ? 1 : 0) + ',' + (h.has ? 1 : 0);
+              if (c !== lastC) { lastC = c; nCur(h.x || 0, h.y || 0, !!h.pinch, !!h.has); }
+            }
+            requestAnimationFrame(render);
+            rebuild();
+          })();
+          EOF
+          cat > app/src/main/java/com/vr/launcher/MainActivity.java <<'EOF'
+          package com.vr.launcher;
+          import android.Manifest;
+          import android.app.Activity;
+          import android.content.Context;
+          import android.content.pm.PackageManager;
+          import android.graphics.Canvas;
+          import android.graphics.Color;
+          import android.graphics.Outline;
+          import android.graphics.Paint;
+          import android.hardware.Sensor;
+          import android.hardware.SensorEvent;
+          import android.hardware.SensorEventListener;
+          import android.hardware.SensorManager;
+          import android.net.Uri;
+          import android.os.Bundle;
+          import android.os.Handler;
+          import android.os.Looper;
+          import android.os.SystemClock;
+          import android.view.InputDevice;
+          import android.view.MotionEvent;
+          import android.view.View;
+          import android.view.ViewOutlineProvider;
+          import android.view.WindowManager;
+          import android.webkit.CookieManager;
+          import android.webkit.JavascriptInterface;
+          import android.webkit.PermissionRequest;
+          import android.webkit.WebChromeClient;
+          import android.webkit.WebResourceError;
+          import android.webkit.WebResourceRequest;
+          import android.webkit.WebResourceResponse;
+          import android.webkit.WebSettings;
+          import android.webkit.WebView;
+          import android.webkit.WebViewClient;
+          import android.widget.FrameLayout;
+          import java.io.InputStream;
+          import java.util.ArrayList;
+          public class MainActivity extends Activity implements SensorEventListener {
+            static final String HOST = "appassets.androidplatform.net";
+            static final String HOOK = "window.__r=function(a,x,y,z){Rdev=a;if(!haveSensor){haveSensor=true;haveGyro=true;mode='gyro';setTimeout(recenter,200)}if(st.textContent!=='Sensor nativo OK')st.textContent='Sensor nativo OK';if(window.__a)window.__a(x,y,z)};";
+            static final String[] URLS = {
+              "https://m.youtube.com/", "https://www.google.com/", "https://pt.m.wikipedia.org/", "https://discord.com/app",
+              "https://web.whatsapp.com/", "https://www.reddit.com/", "https://www.openstreetmap.org/", "https://news.google.com/"
+            };
+            static final boolean[] DESK = {false, false, false, true, true, false, false, false};
+            static final String UA_DESK = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+            static class Win { int id; WebView v; float cx, cy, w, h, rot; int pw = 960, ph = 540; }
+            static class CursorView extends View {
+              Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+              volatile float x, y; volatile boolean show, pinch;
+              CursorView(Context c) { super(c); p.setStrokeWidth(5f); }
+              @Override protected void onDraw(Canvas c) {
+                if (!show) return;
+                p.setColor(pinch ? 0xFF5EEAD4 : 0xFFFFFFFF);
+                p.setStyle(Paint.Style.STROKE);
+                c.drawCircle(x, y, pinch ? 16f : 26f, p);
+                p.setStyle(Paint.Style.FILL);
+                c.drawCircle(x, y, 6f, p);
+              }
+            }
+            class Bridge {
+              @JavascriptInterface public void open(final int id, final int idx) { ui.post(() -> openWin(id, idx)); }
+              @JavascriptInterface public void close(final int id) { ui.post(() -> closeWin(id)); }
+              @JavascriptInterface public void front(final int id) { ui.post(() -> frontWin(id)); }
+              @JavascriptInterface public void rects(final String s) { ui.post(() -> applyRects(s)); }
+              @JavascriptInterface public void cursor(final float x, final float y, final boolean p, final boolean h) { ui.post(() -> onCursor(x, y, p, h)); }
+            }
+            FrameLayout root; WebView web; CursorView curv;
+            SensorManager sm; Sensor rot, lin; boolean ready = false;
+            PermissionRequest pending = null;
+            float[] m = new float[9]; float[] grav = new float[3]; float lx = 0, ly = 0, lz = 0;
+            float density = 1f;
+            Handler ui = new Handler(Looper.getMainLooper());
+            ArrayList<Win> wins = new ArrayList<>();
+            Win down = null; boolean armed = false; float lastX, lastY; long downTime = 0;
+            boolean hasCam() { return checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED; }
+            static float clamp(float v, float a, float b) { return Math.max(a, Math.min(b, v)); }
+            Win find(int id) { for (Win w : wins) if (w.id == id) return w; return null; }
+            @Override protected void onCreate(Bundle b) {
+              super.onCreate(b);
+              getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+              density = getResources().getDisplayMetrics().density;
+              root = new FrameLayout(this);
+              web = new WebView(this);
+              web.setBackgroundColor(Color.TRANSPARENT);
+              WebSettings s = web.getSettings();
+              s.setJavaScriptEnabled(true);
+              s.setDomStorageEnabled(true);
+              s.setMediaPlaybackRequiresUserGesture(false);
+              web.addJavascriptInterface(new Bridge(), "Android");
+              web.setWebChromeClient(new WebChromeClient() {
+                @Override public void onPermissionRequest(final PermissionRequest r) {
+                  runOnUiThread(() -> {
+                    if (hasCam()) { r.grant(r.getResources()); }
+                    else { pending = r; requestPermissions(new String[]{Manifest.permission.CAMERA}, 1); }
+                  });
+                }
+              });
+              web.setWebViewClient(new WebViewClient() {
+                @Override public WebResourceResponse shouldInterceptRequest(WebView v, WebResourceRequest r) {
+                  Uri u = r.getUrl();
+                  if (!HOST.equals(u.getHost())) return null;
+                  String p = u.getPath();
+                  if (p == null || p.equals("/")) p = "/index.html";
+                  try {
+                    InputStream in = getAssets().open(p.substring(1));
+                    String mime = "text/html"; String enc = "UTF-8";
+                    if (p.endsWith(".js") || p.endsWith(".mjs") || p.endsWith(".cjs")) mime = "application/javascript";
+                    else if (p.endsWith(".wasm")) { mime = "application/wasm"; enc = null; }
+                    else if (p.endsWith(".task")) { mime = "application/octet-stream"; enc = null; }
+                    return new WebResourceResponse(mime, enc, in);
+                  } catch (Exception e) { return null; }
+                }
+                @Override public void onPageFinished(WebView v, String u) {
+                  v.evaluateJavascript(HOOK, null);
+                  ready = true;
+                }
+              });
+              curv = new CursorView(this);
+              root.addView(web, new FrameLayout.LayoutParams(-1, -1));
+              root.addView(curv, new FrameLayout.LayoutParams(-1, -1));
+              setContentView(root);
+              if (!hasCam()) requestPermissions(new String[]{Manifest.permission.CAMERA}, 1);
+              web.loadUrl("https://" + HOST + "/index.html");
+              sm = (SensorManager) getSystemService(SENSOR_SERVICE);
+              rot = sm.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR);
+              if (rot == null) rot = sm.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
+              lin = sm.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION);
+              if (lin == null) lin = sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
+            }
+            void openWin(int id, int idx) {
+              if (idx < 0 || idx >= URLS.length || find(id) != null) return;
+              final Win w = new Win(); w.id = id;
+              WebView v = new WebView(this); w.v = v;
+              v.setBackgroundColor(Color.BLACK);
+              WebSettings s = v.getSettings();
+              s.setJavaScriptEnabled(true);
+              s.setDomStorageEnabled(true);
+              s.setMediaPlaybackRequiresUserGesture(false);
+              if (DESK[idx]) {
+                s.setUserAgentString(UA_DESK);
+                s.setUseWideViewPort(true);
+                s.setLoadWithOverviewMode(true);
+              }
+              CookieManager.getInstance().setAcceptThirdPartyCookies(v, true);
+              v.setWebViewClient(new WebViewClient() {
+                @Override public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest r) {
+                  String u = r.getUrl().toString();
+                  return !(u.startsWith("http:") || u.startsWith("https:") || u.startsWith("about:") || u.startsWith("blob:") || u.startsWith("data:"));
+                }
+                @Override public void onReceivedError(WebView view, WebResourceRequest r, WebResourceError e) {
+                  if (r.isForMainFrame()) {
+                    view.loadData("<body style='margin:0;background:#111;color:#fff;font:28px sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;text-align:center'><div>Sem conexão<br><small>" + e.getDescription() + "</small></div></body>", "text/html; charset=utf-8", "UTF-8");
+                  }
+                }
+              });
+              v.setOutlineProvider(new ViewOutlineProvider() {
+                @Override public void getOutline(View vw, Outline o) { o.setRoundRect(0, 0, vw.getWidth(), vw.getHeight(), 24f); }
+              });
+              v.setClipToOutline(true);
+              v.setTranslationX(-5000f);
+              v.setVisibility(View.INVISIBLE);
+              root.addView(v, root.indexOfChild(curv), new FrameLayout.LayoutParams(w.pw, w.ph));
+              wins.add(w);
+              v.loadUrl(URLS[idx]);
+            }
+            void closeWin(int id) {
+              Win w = find(id);
+              if (w == null) return;
+              if (down == w) down = null;
+              wins.remove(w);
+              root.removeView(w.v);
+              w.v.stopLoading();
+              w.v.destroy();
+            }
+            void frontWin(int id) {
+              Win w = find(id);
+              if (w == null) return;
+              wins.remove(w); wins.add(w);
+              w.v.bringToFront(); curv.bringToFront();
+            }
+            void applyRects(String s) {
+              for (String part : s.split(";")) {
+                String[] a = part.split(",");
+                if (a.length < 9) continue;
+                try {
+                  Win w = find(Integer.parseInt(a[0]));
+                  if (w == null) continue;
+                  w.cx = Float.parseFloat(a[1]) * density; w.cy = Float.parseFloat(a[2]) * density;
+                  w.w = Float.parseFloat(a[3]) * density; w.h = Float.parseFloat(a[4]) * density;
+                  w.rot = Float.parseFloat(a[5]);
+                  int pw = Integer.parseInt(a[6]), ph = Integer.parseInt(a[7]);
+                  float al = Float.parseFloat(a[8]);
+                  if (pw != w.pw || ph != w.ph) { w.pw = pw; w.ph = ph; w.v.setLayoutParams(new FrameLayout.LayoutParams(pw, ph)); }
+                  if (w.w > 1f) {
+                    w.v.setPivotX(w.pw / 2f); w.v.setPivotY(w.ph / 2f);
+                    w.v.setTranslationX(w.cx - w.pw / 2f); w.v.setTranslationY(w.cy - w.ph / 2f);
+                    w.v.setScaleX(w.w / w.pw); w.v.setScaleY(w.h / w.ph);
+                    w.v.setRotation(w.rot);
+                    w.v.setAlpha(al);
+                    w.v.setVisibility(View.VISIBLE);
+                  } else {
+                    w.v.setVisibility(View.INVISIBLE);
+                  }
+                } catch (Exception e) { }
+              }
+            }
+            float[] loc(Win w, float x, float y) {
+              double r = Math.toRadians(w.rot);
+              float c = (float) Math.cos(r), s = (float) Math.sin(r);
+              float dx = x - w.cx, dy = y - w.cy;
+              return new float[]{dx * c + dy * s, -dx * s + dy * c};
+            }
+            boolean inside(Win w, float x, float y) {
+              float[] l = loc(w, x, y);
+              return Math.abs(l[0]) <= w.w / 2f && Math.abs(l[1]) <= w.h / 2f;
+            }
+            void send(Win w, int action, float x, float y) {
+              if (w.w < 1f) return;
+              float[] l = loc(w, x, y);
+              float k = w.w / w.pw;
+              float px = clamp(l[0] / k + w.pw / 2f, 0f, w.pw - 1f);
+              float py = clamp(l[1] / k + w.ph / 2f, 0f, w.ph - 1f);
+              long now = SystemClock.uptimeMillis();
+              if (action == MotionEvent.ACTION_DOWN) downTime = now;
+              MotionEvent e = MotionEvent.obtain(downTime, now, action, px, py, 0);
+              e.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+              w.v.dispatchTouchEvent(e);
+              e.recycle();
+            }
+            void onCursor(float x, float y, boolean pinch, boolean has) {
+              float cx = x * density, cy = y * density;
+              Win hit = null;
+              if (has) {
+                for (int i = wins.size() - 1; i >= 0; i--) {
+                  Win w = wins.get(i);
+                  if (w.w > 1f && w.v.getVisibility() == View.VISIBLE && inside(w, cx, cy)) { hit = w; break; }
+                }
+              }
+              curv.x = cx; curv.y = cy; curv.pinch = pinch;
+              curv.show = has && (hit != null || down != null);
+              curv.postInvalidate();
+              if (down != null) {
+                if (pinch && has) { lastX = cx; lastY = cy; send(down, MotionEvent.ACTION_MOVE, cx, cy); }
+                else { Win w = down; down = null; send(w, MotionEvent.ACTION_UP, lastX, lastY); }
+              } else {
+                if (!pinch || !has) armed = true;
+                if (pinch && has && armed && hit != null) {
+                  down = hit; lastX = cx; lastY = cy;
+                  frontWin(hit.id);
+                  send(hit, MotionEvent.ACTION_DOWN, cx, cy);
+                }
+              }
+            }
+            @Override public void onRequestPermissionsResult(int c, String[] p, int[] res) {
+              if (pending != null) {
+                if (res.length > 0 && res[0] == PackageManager.PERMISSION_GRANTED) pending.grant(pending.getResources());
+                else pending.deny();
+                pending = null;
+              }
+            }
+            @Override public void onWindowFocusChanged(boolean f) {
+              super.onWindowFocusChanged(f);
+              if (f) web.setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY | View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
+            }
+            @Override protected void onResume() {
+              super.onResume();
+              if (rot != null) sm.registerListener(this, rot, SensorManager.SENSOR_DELAY_GAME);
+              if (lin != null) sm.registerListener(this, lin, SensorManager.SENSOR_DELAY_GAME);
+            }
+            @Override protected void onPause() { super.onPause(); sm.unregisterListener(this); }
+            @Override protected void onDestroy() {
+              for (Win w : new ArrayList<>(wins)) closeWin(w.id);
+              super.onDestroy();
+            }
+            @Override public void onSensorChanged(SensorEvent e) {
+              int ty = e.sensor.getType();
+              if (ty == Sensor.TYPE_LINEAR_ACCELERATION || ty == Sensor.TYPE_ACCELEROMETER) {
+                float x = e.values[0], y = e.values[1], z = e.values[2];
+                if (ty == Sensor.TYPE_ACCELEROMETER) {
+                  grav[0] = 0.95f * grav[0] + 0.05f * x;
+                  grav[1] = 0.95f * grav[1] + 0.05f * y;
+                  grav[2] = 0.95f * grav[2] + 0.05f * z;
+                  x -= grav[0]; y -= grav[1]; z -= grav[2];
+                }
+                lx = x; ly = y; lz = z;
+                return;
+              }
+              if (!ready) return;
+              SensorManager.getRotationMatrixFromVector(m, e.values);
+              StringBuilder sb = new StringBuilder("__r([");
+              for (int i = 0; i < 9; i++) { sb.append(m[i]); if (i < 8) sb.append(','); }
+              sb.append("],").append(lx).append(',').append(ly).append(',').append(lz).append(')');
+              web.evaluateJavascript(sb.toString(), null);
+            }
+            @Override public void onAccuracyChanged(Sensor s, int a) { }
+          }
+          EOF
       - name: Compilar
         run: gradle assembleDebug --no-daemon
       - uses: actions/upload-artifact@v4
