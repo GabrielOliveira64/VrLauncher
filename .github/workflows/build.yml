@@ -787,6 +787,475 @@ jobs:
             requestAnimationFrame(frame);
           })();
           EOF
+      - name: Integração de apps
+        run: |
+          mkdir -p app/src/main/aidl/com/vr/launcher
+          sed -i 's#</body>#<script src="apps.js"></script></body>#' app/src/main/assets/index.html
+          printf 'android.useAndroidX=true\norg.gradle.jvmargs=-Xmx2g\n' > gradle.properties
+          cat > app/build.gradle <<'EOF'
+          plugins { id 'com.android.application' }
+          android {
+            namespace 'com.vr.launcher'
+            compileSdk 34
+            defaultConfig {
+              applicationId 'com.vr.launcher'
+              minSdk 24
+              targetSdk 34
+              versionCode 10
+              versionName '2.0'
+            }
+            buildFeatures {
+              aidl true
+            }
+          }
+          dependencies {
+            implementation 'dev.rikka.shizuku:api:13.1.5'
+            implementation 'dev.rikka.shizuku:provider:13.1.5'
+          }
+          EOF
+          cat > app/src/main/AndroidManifest.xml <<'EOF'
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+            <uses-permission android:name="android.permission.CAMERA"/>
+            <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"/>
+            <uses-feature android:name="android.hardware.camera" android:required="false"/>
+            <queries>
+              <package android:name="moe.shizuku.privileged.api"/>
+            </queries>
+            <application android:label="VR Launcher" android:theme="@android:style/Theme.NoTitleBar.Fullscreen">
+              <provider android:name="rikka.shizuku.ShizukuProvider"
+                android:authorities="com.vr.launcher.shizuku"
+                android:multiprocess="false"
+                android:enabled="true"
+                android:exported="true"
+                android:permission="android.permission.INTERACT_ACROSS_USERS_FULL"/>
+              <activity android:name=".MainActivity" android:exported="true"
+                android:screenOrientation="sensorLandscape"
+                android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize">
+                <intent-filter>
+                  <action android:name="android.intent.action.MAIN"/>
+                  <category android:name="android.intent.category.LAUNCHER"/>
+                </intent-filter>
+              </activity>
+            </application>
+          </manifest>
+          EOF
+          cat > app/src/main/aidl/com/vr/launcher/IShell.aidl <<'EOF'
+          package com.vr.launcher;
+          interface IShell {
+            void destroy() = 16777114;
+            String run(String cmd) = 1;
+            oneway void touch(int action, float x, float y, int displayId) = 2;
+            String info() = 3;
+          }
+          EOF
+          cat > app/src/main/java/com/vr/launcher/ShellService.java <<'EOF'
+          package com.vr.launcher;
+          import android.os.SystemClock;
+          import android.view.InputDevice;
+          import android.view.InputEvent;
+          import android.view.MotionEvent;
+          import java.io.BufferedReader;
+          import java.io.InputStreamReader;
+          import java.lang.reflect.Method;
+          public class ShellService extends IShell.Stub {
+            Object im; Method inject, setDisp; String err = "ok"; long downTime = 0;
+            public ShellService() {
+              try {
+                Class<?> c = Class.forName("android.hardware.input.InputManager");
+                im = c.getMethod("getInstance").invoke(null);
+                inject = c.getMethod("injectInputEvent", InputEvent.class, int.class);
+                setDisp = InputEvent.class.getMethod("setDisplayId", int.class);
+              } catch (Throwable t) { err = String.valueOf(t); }
+            }
+            @Override public void destroy() { System.exit(0); }
+            @Override public String run(String cmd) {
+              try {
+                Process p = new ProcessBuilder("sh", "-c", cmd).redirectErrorStream(true).start();
+                BufferedReader r = new BufferedReader(new InputStreamReader(p.getInputStream()));
+                StringBuilder sb = new StringBuilder(); String l;
+                while ((l = r.readLine()) != null) sb.append(l).append('\n');
+                p.waitFor();
+                return sb.toString();
+              } catch (Throwable t) { return "Error: " + t; }
+            }
+            @Override public String info() { return err; }
+            @Override public void touch(int a, float x, float y, int d) {
+              if (inject == null) return;
+              try {
+                long now = SystemClock.uptimeMillis();
+                if (a == 0) downTime = now;
+                MotionEvent e = MotionEvent.obtain(downTime, now, a, x, y, a == 1 ? 0f : 1f, 1f, 0, 1f, 1f, 0, 0);
+                e.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+                setDisp.invoke(e, d);
+                inject.invoke(im, e, 0);
+                e.recycle();
+              } catch (Throwable t) { err = String.valueOf(t); }
+            }
+          }
+          EOF
+          cat > app/src/main/java/com/vr/launcher/MainActivity.java <<'EOF'
+          package com.vr.launcher;
+          import android.Manifest;
+          import android.app.Activity;
+          import android.content.ComponentName;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.content.ServiceConnection;
+          import android.content.pm.PackageManager;
+          import android.graphics.Canvas;
+          import android.graphics.Color;
+          import android.graphics.Outline;
+          import android.graphics.Paint;
+          import android.graphics.SurfaceTexture;
+          import android.hardware.Sensor;
+          import android.hardware.SensorEvent;
+          import android.hardware.SensorEventListener;
+          import android.hardware.SensorManager;
+          import android.hardware.display.DisplayManager;
+          import android.hardware.display.VirtualDisplay;
+          import android.net.Uri;
+          import android.os.Bundle;
+          import android.os.Handler;
+          import android.os.HandlerThread;
+          import android.os.IBinder;
+          import android.os.Looper;
+          import android.view.Surface;
+          import android.view.TextureView;
+          import android.view.View;
+          import android.view.ViewGroup;
+          import android.view.ViewOutlineProvider;
+          import android.view.WindowManager;
+          import android.webkit.JavascriptInterface;
+          import android.webkit.PermissionRequest;
+          import android.webkit.WebChromeClient;
+          import android.webkit.WebResourceRequest;
+          import android.webkit.WebResourceResponse;
+          import android.webkit.WebSettings;
+          import android.webkit.WebView;
+          import android.webkit.WebViewClient;
+          import android.widget.FrameLayout;
+          import android.widget.Toast;
+          import java.io.InputStream;
+          import org.json.JSONObject;
+          import rikka.shizuku.Shizuku;
+          public class MainActivity extends Activity implements SensorEventListener {
+            static final String HOST = "appassets.androidplatform.net";
+            static final String HOOK = "window.__r=function(a,x,y,z){Rdev=a;if(!haveSensor){haveSensor=true;haveGyro=true;mode='gyro';setTimeout(recenter,200)}if(st.textContent!=='Sensor nativo OK')st.textContent='Sensor nativo OK';if(window.__a)window.__a(x,y,z)};";
+            static final int DW = 540, DH = 960, DPI = 220;
+            static final String[] APPN = {"YouTube", "WhatsApp", "Chrome", "Camera", "Galeria", "Musica", "Mapas", "Config."};
+            static final String[][] CAND = {
+              {"com.google.android.youtube"},
+              {"com.whatsapp", "com.whatsapp.w4b"},
+              {"com.android.chrome", "org.mozilla.firefox", "com.brave.browser"},
+              {"com.motorola.camera3", "com.motorola.camera", "com.android.camera2"},
+              {"com.google.android.apps.photos", "com.motorola.gallery"},
+              {"com.google.android.apps.youtube.music", "com.spotify.music"},
+              {"com.google.android.apps.maps"},
+              {"com.android.settings"}
+            };
+            static class CursorView extends View {
+              Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+              volatile float x, y; volatile boolean show, pinch;
+              CursorView(Context c) { super(c); p.setStrokeWidth(5f); }
+              @Override protected void onDraw(Canvas c) {
+                if (!show) return;
+                p.setColor(pinch ? 0xFF5EEAD4 : 0xFFFFFFFF);
+                p.setStyle(Paint.Style.STROKE);
+                c.drawCircle(x, y, pinch ? 16f : 26f, p);
+                p.setStyle(Paint.Style.FILL);
+                c.drawCircle(x, y, 6f, p);
+              }
+            }
+            class Bridge {
+              @JavascriptInterface public void openApp(final int i) { ui.post(new Runnable() { public void run() { openIdx(i); } }); }
+              @JavascriptInterface public void closeApp() { ui.post(new Runnable() { public void run() { closeUi(); } }); }
+              @JavascriptInterface public void rect(final float x, final float y, final float w, final float h) {
+                ui.post(new Runnable() { public void run() { applyRect(x, y, w, h); } });
+              }
+              @JavascriptInterface public void cursor(float x, float y, boolean p, boolean h) { onCursor(x, y, p, h); }
+            }
+            FrameLayout root; WebView web; CursorView curv; TextureView tv;
+            SensorManager sm; Sensor rot, lin; boolean ready = false;
+            PermissionRequest pending = null;
+            float[] m = new float[9]; float[] grav = new float[3]; float lx = 0, ly = 0, lz = 0;
+            float density = 1f;
+            Handler ui = new Handler(Looper.getMainLooper());
+            HandlerThread ht; Handler th;
+            IShell shell; boolean binding = false;
+            VirtualDisplay vd; Surface surf; int dispId = -1; String curPkg, curComp; int pendingIdx = -1;
+            volatile float rx, ry, rw, rh; volatile boolean down = false, armed = false; float lastX, lastY;
+            Shizuku.OnRequestPermissionResultListener permL = new Shizuku.OnRequestPermissionResultListener() {
+              @Override public void onRequestPermissionResult(int req, int res) {
+                if (res == PackageManager.PERMISSION_GRANTED) ui.post(new Runnable() { public void run() {
+                  if (pendingIdx >= 0 && tv == null) openIdx(pendingIdx);
+                } });
+              }
+            };
+            boolean hasCam() { return checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED; }
+            void say(final String s) {
+              ui.post(new Runnable() { public void run() {
+                Toast.makeText(MainActivity.this, s, Toast.LENGTH_LONG).show();
+                if (ready) web.evaluateJavascript("window.__msg&&window.__msg(" + JSONObject.quote(s) + ")", null);
+              } });
+            }
+            @Override protected void onCreate(Bundle b) {
+              super.onCreate(b);
+              getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+              density = getResources().getDisplayMetrics().density;
+              ht = new HandlerThread("touch"); ht.start(); th = new Handler(ht.getLooper());
+              root = new FrameLayout(this);
+              web = new WebView(this);
+              web.setBackgroundColor(Color.TRANSPARENT);
+              WebSettings s = web.getSettings();
+              s.setJavaScriptEnabled(true);
+              s.setDomStorageEnabled(true);
+              s.setMediaPlaybackRequiresUserGesture(false);
+              web.addJavascriptInterface(new Bridge(), "Android");
+              web.setWebChromeClient(new WebChromeClient() {
+                @Override public void onPermissionRequest(final PermissionRequest r) {
+                  runOnUiThread(new Runnable() { public void run() {
+                    if (hasCam()) { r.grant(r.getResources()); }
+                    else { pending = r; requestPermissions(new String[]{Manifest.permission.CAMERA}, 1); }
+                  } });
+                }
+              });
+              web.setWebViewClient(new WebViewClient() {
+                @Override public WebResourceResponse shouldInterceptRequest(WebView v, WebResourceRequest r) {
+                  Uri u = r.getUrl();
+                  if (!HOST.equals(u.getHost())) return null;
+                  String p = u.getPath();
+                  if (p == null || p.equals("/")) p = "/index.html";
+                  try {
+                    InputStream in = getAssets().open(p.substring(1));
+                    String mime = "text/html"; String enc = "UTF-8";
+                    if (p.endsWith(".js") || p.endsWith(".mjs") || p.endsWith(".cjs")) mime = "application/javascript";
+                    else if (p.endsWith(".wasm")) { mime = "application/wasm"; enc = null; }
+                    else if (p.endsWith(".task")) { mime = "application/octet-stream"; enc = null; }
+                    return new WebResourceResponse(mime, enc, in);
+                  } catch (Exception e) { return null; }
+                }
+                @Override public void onPageFinished(WebView v, String u) {
+                  v.evaluateJavascript(HOOK, null);
+                  ready = true;
+                }
+              });
+              curv = new CursorView(this);
+              root.addView(web, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+              root.addView(curv, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+              setContentView(root);
+              if (!hasCam()) requestPermissions(new String[]{Manifest.permission.CAMERA}, 1);
+              web.loadUrl("https://" + HOST + "/index.html");
+              try { Shizuku.addRequestPermissionResultListener(permL); } catch (Throwable t) { }
+              sm = (SensorManager) getSystemService(SENSOR_SERVICE);
+              rot = sm.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR);
+              if (rot == null) rot = sm.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
+              lin = sm.getDefaultSensor(Sensor.TYPE_LINEAR_ACCELERATION);
+              if (lin == null) lin = sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
+            }
+            boolean shizukuReady() {
+              try {
+                if (!Shizuku.pingBinder()) { say("Shizuku não está ativo. Abra o app Shizuku e inicie o serviço."); return false; }
+                if (Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
+                  if (Shizuku.shouldShowRequestPermissionRationale()) { say("Permissão negada. Libere o VR Launcher dentro do app Shizuku."); return false; }
+                  Shizuku.requestPermission(100);
+                  say("Autorize o VR Launcher no Shizuku.");
+                  return false;
+                }
+                return true;
+              } catch (Throwable t) { say("Shizuku: " + t); return false; }
+            }
+            void bind() {
+              if (binding) return;
+              binding = true;
+              ServiceConnection sc = new ServiceConnection() {
+                @Override public void onServiceConnected(ComponentName n, IBinder b) {
+                  shell = IShell.Stub.asInterface(b); binding = false;
+                  try { String inf = shell.info(); if (!"ok".equals(inf)) say("Toque indisponível: " + inf); } catch (Throwable t) { }
+                  if (pendingIdx >= 0 && tv == null) startWindow();
+                }
+                @Override public void onServiceDisconnected(ComponentName n) { shell = null; binding = false; }
+              };
+              try {
+                Shizuku.bindUserService(new Shizuku.UserServiceArgs(new ComponentName(getPackageName(), ShellService.class.getName()))
+                  .daemon(false).processNameSuffix("sh").debuggable(false).version(1), sc);
+              } catch (Throwable t) { binding = false; say("Shizuku: " + t); }
+            }
+            void openIdx(int idx) {
+              if (tv != null || idx < 0 || idx >= CAND.length) return;
+              PackageManager pm = getPackageManager();
+              Intent li = null; String pkg = null;
+              for (String c : CAND[idx]) { li = pm.getLaunchIntentForPackage(c); if (li != null) { pkg = c; break; } }
+              if (li == null || li.getComponent() == null) { say(APPN[idx] + " não está instalado"); return; }
+              curPkg = pkg; curComp = li.getComponent().flattenToShortString(); pendingIdx = idx;
+              if (!shizukuReady()) return;
+              if (shell == null) { say("Conectando ao Shizuku…"); bind(); return; }
+              startWindow();
+            }
+            void startWindow() {
+              if (tv != null) return;
+              armed = false; down = false;
+              tv = new TextureView(this);
+              tv.setTranslationX(-5000f);
+              tv.setPivotX(0f); tv.setPivotY(0f);
+              tv.setOutlineProvider(new ViewOutlineProvider() {
+                @Override public void getOutline(View v, Outline o) { o.setRoundRect(0, 0, v.getWidth(), v.getHeight(), 36f); }
+              });
+              tv.setClipToOutline(true);
+              tv.setSurfaceTextureListener(new TextureView.SurfaceTextureListener() {
+                @Override public void onSurfaceTextureAvailable(SurfaceTexture st, int w, int h) {
+                  st.setDefaultBufferSize(DW, DH);
+                  surf = new Surface(st);
+                  makeDisplay();
+                }
+                @Override public void onSurfaceTextureSizeChanged(SurfaceTexture st, int w, int h) { }
+                @Override public boolean onSurfaceTextureDestroyed(SurfaceTexture st) { return true; }
+                @Override public void onSurfaceTextureUpdated(SurfaceTexture st) { }
+              });
+              root.addView(tv, 1, new FrameLayout.LayoutParams(DW, DH));
+            }
+            void makeDisplay() {
+              DisplayManager dm = (DisplayManager) getSystemService(Context.DISPLAY_SERVICE);
+              int[] fl = {1 | 8 | 64 | 256, 1 | 8, 1};
+              String err = "";
+              vd = null;
+              for (int f : fl) {
+                try {
+                  vd = dm.createVirtualDisplay("vrapp", DW, DH, DPI, surf, f);
+                  if (vd != null && vd.getDisplay() != null) break;
+                } catch (Throwable t) { err = String.valueOf(t); }
+              }
+              if (vd == null || vd.getDisplay() == null) { say("Tela virtual falhou: " + err); return; }
+              dispId = vd.getDisplay().getDisplayId();
+              final String cmd = "am start --display " + dispId + " -n " + curComp;
+              final IShell s = shell;
+              new Thread(new Runnable() { public void run() {
+                try {
+                  String out = s.run(cmd);
+                  if (out.contains("Error") || out.contains("Exception") || out.contains("Warning")) say("am start: " + out.trim());
+                } catch (Throwable t) { say("Falha ao abrir: " + t); }
+              } }).start();
+            }
+            void closeUi() {
+              pendingIdx = -1; down = false; dispId = -1; rw = 0f;
+              if (vd != null) { try { vd.release(); } catch (Throwable t) { } vd = null; }
+              if (surf != null) { surf.release(); surf = null; }
+              if (tv != null) { root.removeView(tv); tv = null; }
+              curv.show = false; curv.postInvalidate();
+              final IShell s = shell; final String p = curPkg;
+              if (s != null && p != null) new Thread(new Runnable() { public void run() {
+                try { s.run("am force-stop " + p); } catch (Throwable t) { }
+              } }).start();
+              curPkg = null;
+            }
+            void applyRect(float x, float y, float w, float h) {
+              rx = x * density; ry = y * density; rw = w * density; rh = h * density;
+              if (tv != null && rw > 1f) {
+                tv.setTranslationX(rx); tv.setTranslationY(ry);
+                tv.setScaleX(rw / DW); tv.setScaleY(rh / DH);
+              }
+            }
+            static float clamp(float v, float a, float b) { return Math.max(a, Math.min(b, v)); }
+            void send(final int a, final float x, final float y) {
+              final IShell s = shell; final int d = dispId;
+              if (s == null || d < 0) return;
+              th.post(new Runnable() { public void run() { try { s.touch(a, x, y, d); } catch (Throwable t) { } } });
+            }
+            void onCursor(float x, float y, boolean pinch, boolean has) {
+              float cx = x * density, cy = y * density;
+              boolean open = tv != null && dispId >= 0 && rw > 1f;
+              curv.x = cx; curv.y = cy; curv.pinch = pinch; curv.show = has && tv != null;
+              curv.postInvalidate();
+              if (!open) return;
+              boolean inside = has && cx >= rx && cx <= rx + rw && cy >= ry && cy <= ry + rh;
+              if (!pinch || !has) armed = true;
+              float px = clamp((cx - rx) / rw * DW, 0f, DW - 1f), py = clamp((cy - ry) / rh * DH, 0f, DH - 1f);
+              if (!down) {
+                if (pinch && has && armed && inside) { down = true; lastX = px; lastY = py; send(0, px, py); }
+              } else if (pinch && has) {
+                lastX = px; lastY = py; send(2, px, py);
+              } else {
+                down = false; send(1, lastX, lastY);
+              }
+            }
+            @Override public void onRequestPermissionsResult(int c, String[] p, int[] res) {
+              if (pending != null) {
+                if (res.length > 0 && res[0] == PackageManager.PERMISSION_GRANTED) pending.grant(pending.getResources());
+                else pending.deny();
+                pending = null;
+              }
+            }
+            @Override public void onWindowFocusChanged(boolean f) {
+              super.onWindowFocusChanged(f);
+              if (f) web.setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY | View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
+            }
+            @Override protected void onResume() {
+              super.onResume();
+              if (rot != null) sm.registerListener(this, rot, SensorManager.SENSOR_DELAY_GAME);
+              if (lin != null) sm.registerListener(this, lin, SensorManager.SENSOR_DELAY_GAME);
+            }
+            @Override protected void onPause() { super.onPause(); sm.unregisterListener(this); }
+            @Override protected void onDestroy() {
+              closeUi();
+              try { Shizuku.removeRequestPermissionResultListener(permL); } catch (Throwable t) { }
+              ht.quit();
+              super.onDestroy();
+            }
+            @Override public void onSensorChanged(SensorEvent e) {
+              int ty = e.sensor.getType();
+              if (ty == Sensor.TYPE_LINEAR_ACCELERATION || ty == Sensor.TYPE_ACCELEROMETER) {
+                float x = e.values[0], y = e.values[1], z = e.values[2];
+                if (ty == Sensor.TYPE_ACCELEROMETER) {
+                  grav[0] = 0.95f * grav[0] + 0.05f * x;
+                  grav[1] = 0.95f * grav[1] + 0.05f * y;
+                  grav[2] = 0.95f * grav[2] + 0.05f * z;
+                  x -= grav[0]; y -= grav[1]; z -= grav[2];
+                }
+                lx = x; ly = y; lz = z;
+                return;
+              }
+              if (!ready) return;
+              SensorManager.getRotationMatrixFromVector(m, e.values);
+              StringBuilder sb = new StringBuilder("__r([");
+              for (int i = 0; i < 9; i++) { sb.append(m[i]); if (i < 8) sb.append(','); }
+              sb.append("],").append(lx).append(',').append(ly).append(',').append(lz).append(')');
+              web.evaluateJavascript(sb.toString(), null);
+            }
+            @Override public void onAccuracyChanged(Sensor s, int a) { }
+          }
+          EOF
+          cat > app/src/main/assets/apps.js <<'EOF'
+          (function () {
+            var B = window.Android, UI = window.UI, WS = UI.WS;
+            if (!B || !B.openApp) return;
+            var last = '';
+            var _place = place;
+            place = function (el, az, e, r, w, h) {
+              if (el === win) { az = WS.az; e = WS.el; w = 300; h = 533; }
+              else if (el === closeBtn) { az = WS.az; e = WS.el - Math.atan((267 * WS.s + 60) / r) / D; }
+              _place(el, az, e, r, w, h);
+              if (el === win || el === closeBtn) el.style.transform += ' scale(' + WS.s + ')';
+            };
+            var _o = openApp, _c = closeApp;
+            openApp = function (a) {
+              _o(a);
+              var s = win.querySelector('.s'); if (s) s.textContent = 'Abrindo…';
+              last = '';
+              B.openApp(APPS.indexOf(a));
+            };
+            closeApp = function () { B.closeApp(); last = ''; _c(); };
+            window.__msg = function (t) { var s = win.querySelector('.s'); if (s) s.textContent = t; };
+            (function loop() {
+              requestAnimationFrame(loop);
+              if (!opened) return;
+              var r = win.getBoundingClientRect();
+              var k = Math.round(r.left * 2) + ',' + Math.round(r.top * 2) + ',' + Math.round(r.width * 2) + ',' + Math.round(r.height * 2);
+              if (k !== last) { last = k; B.rect(r.left, r.top, r.width, r.height); }
+              var h = window.handCursor || {};
+              B.cursor(h.x || 0, h.y || 0, !!h.pinch, !!h.has);
+            })();
+          })();
+          EOF
       - name: Compilar
         run: gradle assembleDebug --no-daemon
       - uses: actions/upload-artifact@v4
