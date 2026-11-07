@@ -1634,6 +1634,384 @@ jobs:
             @Override public void onAccuracyChanged(Sensor s, int a) { }
           }
           EOF
+      - name: Novo design
+        run: |
+          python3 - <<'PY'
+          def patch(path, old, new):
+              s = open(path, encoding='utf-8').read()
+              assert old in s, 'nao achei em ' + path + ': ' + old
+              open(path, 'w', encoding='utf-8').write(s.replace(old, new, 1))
+          A = 'app/src/main/assets/'
+          patch(A + 'hand.js', 'pinch = pinch ? ratio < 0.40 : ratio < 0.25;', 'pinch = pinch ? ratio < 0.40 : ratio < 0.25;\n                var fm = 0; [8, 12, 16, 20].forEach(function (i) { fm = Math.max(fm, dist(hs[i], hs[0]) / palm); }); window.__fist = fm < 1.35;')
+          patch(A + 'boot.js', 'if (!loaded || !UI.hubHidden()', 'if (!loaded || window.__fist || !UI.hubHidden()')
+          J = 'app/src/main/java/com/vr/launcher/MainActivity.java'
+          patch(J, 'volatile float x, y; volatile boolean show, pinch;', 'volatile float x, y, prog; volatile boolean show, pinch;')
+          patch(J, 'if (!show) return;', 'if (prog > 0f) { p.setColor(0xFFFFFFFF); p.setStyle(Paint.Style.STROKE); c.drawCircle(x, y, 40f, p); p.setStyle(Paint.Style.FILL); p.setAlpha(215); c.drawCircle(x, y, 40f * prog, p); p.setAlpha(255); }\n                if (!show) return;')
+          patch(J, 'ui.post(() -> onCursor(x, y, p, h)); }', 'ui.post(() -> onCursor(x, y, p, h)); }\n              @JavascriptInterface public void fist(final float p) { ui.post(() -> { curv.prog = p; curv.postInvalidate(); }); }')
+          PY
+          cat > app/src/main/assets/ui.js <<'EOF'
+          (function () {
+            var A = window.Android || null, lastF = -1;
+            function nOpen(i, k) { if (A) A.open(i, k); }
+            function nClose(i) { if (A) A.close(i); }
+            function nFront(i) { if (A) A.front(i); }
+            function nRects(s) { if (A) A.rects(s); }
+            function nCur(x, y, p, h) { if (A) A.cursor(x, y, p, h); }
+            function nFist(p) { if (p === lastF) return; lastF = p; if (A && A.fist) A.fist(p); }
+            function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+            function angd(a, b) { var d = (((a - b) % 360) + 360) % 360; return d > 180 ? d - 360 : d; }
+            function hwd(w, s, R) { return Math.atan(w * s / 2 / R) / D; }
+
+            var css = document.createElement('style');
+            css.textContent = [
+              '#wl>div{position:absolute;left:0;top:0;will-change:transform;color:#fff;font-family:system-ui,-apple-system,sans-serif}',
+              '.hub{width:360px;height:640px;margin:-320px 0 0 -180px;padding:22px;border-radius:44px;background:rgba(14,16,22,.5);border:1px solid rgba(255,255,255,.16);-webkit-backdrop-filter:blur(26px) saturate(1.4);backdrop-filter:blur(26px) saturate(1.4);box-shadow:0 18px 60px rgba(0,0,0,.35);display:grid;grid-template-columns:1fr 1fr;grid-template-rows:repeat(3,1fr);grid-auto-flow:column;gap:14px}',
+              '.mi{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;border-radius:30px;background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.1);font-size:19px;font-weight:300;letter-spacing:.5px;transition:background .12s,color .12s}',
+              '.mi svg{width:46px;height:46px;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round}',
+              '.mi.on{background:rgba(255,255,255,.22)}',
+              '.mi.hand,.ai.hand{background:#fff;color:#000}',
+              '.tab{width:760px;height:340px;margin:-170px 0 0 -380px;padding:24px;border-radius:40px;background:rgba(14,16,22,.5);border:1px solid rgba(255,255,255,.16);-webkit-backdrop-filter:blur(26px) saturate(1.4);backdrop-filter:blur(26px) saturate(1.4);box-shadow:0 18px 60px rgba(0,0,0,.35);display:none;flex-direction:column;gap:14px}',
+              '.tt{font-size:20px;font-weight:300;letter-spacing:2px;opacity:.7;height:26px}',
+              '.ag{flex:1;display:grid;grid-template-columns:repeat(3,1fr);grid-template-rows:repeat(3,1fr);gap:12px}',
+              '.ai{display:flex;align-items:center;gap:16px;padding:0 16px;border-radius:26px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.12);font-size:21px;transition:background .12s,color .12s}',
+              '.lg{width:46px;height:46px;border-radius:14px;background:#fff;color:#000;font-weight:600;font-size:24px;display:flex;align-items:center;justify-content:center;overflow:hidden;flex:none}',
+              '.lg img{width:30px;height:30px}',
+              '.hg{flex:1;display:grid;grid-template-columns:1fr 1fr;grid-template-rows:repeat(4,1fr);grid-auto-flow:column;gap:8px 26px}',
+              '.hi{display:flex;align-items:center;font-size:17px;font-weight:300;line-height:1.25;opacity:.92}',
+              '.hi b{font-weight:600}',
+              '.aw{width:720px;height:405px;margin:-202.5px 0 0 -360px}',
+              '.bar{position:absolute;left:50%;top:100%;width:280px;height:44px;margin:4px 0 0 -140px}',
+              '.bar::after{content:"";position:absolute;left:50%;top:50%;width:200px;height:8px;margin:-4px 0 0 -100px;border-radius:4px;background:#fff;opacity:.85;transition:width .15s,margin .15s,opacity .15s}',
+              '.bar.hand::after{width:250px;margin-left:-125px;opacity:1}',
+              '.rh{position:absolute;right:-10px;bottom:-10px;width:44px;height:44px;border-right:5px solid rgba(255,255,255,.9);border-bottom:5px solid rgba(255,255,255,.9);border-bottom-right-radius:28px;transition:transform .15s}',
+              '.rh.hand{transform:scale(1.25);border-color:#fff}',
+              '.bub{width:96px;height:96px;margin:-48px 0 0 -48px;border-radius:50%;background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.3);-webkit-backdrop-filter:blur(20px);backdrop-filter:blur(20px);display:none;align-items:center;justify-content:center}',
+              '.bub .lg{width:56px;height:56px}',
+              '.bub.hand{background:rgba(255,255,255,.4)}'
+            ].join('');
+            document.head.appendChild(css);
+
+            var wl = document.createElement('div');
+            wl.id = 'wl';
+            wl.style.cssText = 'position:fixed;left:0;top:0;width:100%;height:100%;z-index:5;pointer-events:none;overflow:hidden';
+            document.body.appendChild(wl);
+
+            clock.remove(); win.remove(); closeBtn.remove();
+            ring.forEach(function (r) { r.el.remove(); });
+            ring.length = 0;
+            items = [];
+            setItems = function () { items = []; };
+            scene.style.display = 'none';
+
+            var NAMES = ['YouTube', 'Google', 'Wikipédia', 'Discord', 'WhatsApp', 'Reddit', 'Mapas', 'Notícias'];
+            var DOM = ['youtube.com', 'google.com', 'wikipedia.org', 'discord.com', 'whatsapp.com', 'reddit.com', 'openstreetmap.org', 'news.google.com'];
+            function logo(i) {
+              var d = document.createElement('div'); d.className = 'lg';
+              var im = new Image();
+              im.onerror = function () { d.textContent = NAMES[i].charAt(0); im.remove(); };
+              im.src = 'https://www.google.com/s2/favicons?domain=' + DOM[i] + '&sz=128';
+              d.appendChild(im);
+              return d;
+            }
+            var IC = {
+              home: '<path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/>',
+              search: '<circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/>',
+              help: '<circle cx="12" cy="12" r="9"/><path d="M9.6 9.4a2.5 2.5 0 1 1 3.6 2.2c-.8.4-1.2.9-1.2 1.8"/><path d="M12 17h.01"/>',
+              space: '<circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="9" ry="3.6"/><ellipse cx="12" cy="12" rx="3.6" ry="9"/>',
+              apps: '<rect x="4" y="4" width="6.5" height="6.5" rx="1.8"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.8"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.8"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.8"/>',
+              cfg: '<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>'
+            };
+
+            var HUB = { az: 0, ev: 0, R: 1100, s: 1, hidden: true, off: 0 };
+            var TAB = null, lastHide = 0, WS = { L: 0 };
+            var WINS = [], nextId = 1, T_hub = [], T_apps = [], miApps = null, miHelp = null;
+            var UI = window.UI = {
+              WS: WS, layout: function () {}, save: function () {}, T: [], TL: [], WINS: WINS,
+              showHub: function () { showHub(); }, hideHub: function () { hideHub(); },
+              focus: function (W) { if (W && W.dom) focusWin(W); }, hubHidden: function () { return HUB.hidden; }
+            };
+
+            function mk2(cls, html) {
+              var d = document.createElement('div');
+              d.className = cls; if (html) d.innerHTML = html; wl.appendChild(d);
+              return d;
+            }
+            function rn(o) { return clamp(o.R - (WS.L || 0), 240, 2400); }
+            function toast(t) {
+              var d = document.createElement('div');
+              d.style.cssText = 'position:fixed;bottom:14px;left:50%;transform:translateX(-50%);z-index:40;background:rgba(0,0,0,.75);color:#fff;font:13px system-ui;padding:7px 14px;border-radius:999px';
+              d.textContent = t; document.body.appendChild(d);
+              setTimeout(function () { d.remove(); }, 2200);
+            }
+            function soon() { toast('Em breve'); }
+
+            var hubEl = mk2('hub', '');
+            hubEl.style.display = 'none';
+            hubEl.style.zIndex = 5;
+            document.body.classList.add('vrh');
+            var MENU = [
+              ['home', 'Home', function () { closeTab(); }],
+              ['search', 'Google', function () { openWin(1); }],
+              ['help', 'Ajuda', function () { setTab('help'); }],
+              ['space', 'Espacial', soon],
+              ['apps', 'Apps', function () { setTab('apps'); }],
+              ['cfg', 'Configurações', soon]
+            ];
+            MENU.forEach(function (m) {
+              var d = document.createElement('div'); d.className = 'mi';
+              d.innerHTML = '<svg viewBox="0 0 24 24">' + IC[m[0]] + '</svg><span>' + m[1] + '</span>';
+              hubEl.appendChild(d);
+              T_hub.push({ k: 'btn', el: d, fn: m[2] });
+              if (m[0] === 'apps') miApps = d;
+              if (m[0] === 'help') miHelp = d;
+            });
+
+            var tabApps = mk2('tab', '<div class="tt">APPS</div><div class="ag"></div>');
+            var ag = tabApps.querySelector('.ag');
+            NAMES.forEach(function (n, i) {
+              var d = document.createElement('div'); d.className = 'ai';
+              d.appendChild(logo(i));
+              var sp = document.createElement('span'); sp.textContent = n; d.appendChild(sp);
+              ag.appendChild(d);
+              T_apps.push({ k: 'btn', el: d, fn: function () { openWin(i); } });
+            });
+            var tabHelp = mk2('tab', '<div class="tt">GESTOS</div><div class="hg">' +
+              '<div class="hi"><span><b>Pinça</b> — toca e clica</span></div>' +
+              '<div class="hi"><span><b>Pinça por 1 s</b> com o menu fechado — abre o menu</span></div>' +
+              '<div class="hi"><span><b>Pinça na barra branca</b> e arrastar — move a janela</span></div>' +
+              '<div class="hi"><span><b>Pinça no canto</b> e puxar — muda o tamanho</span></div>' +
+              '<div class="hi"><span><b>Toque duplo na barra</b> — minimiza a janela</span></div>' +
+              '<div class="hi"><span><b>Punho fechado por 1 s</b> na janela — fecha a janela</span></div>' +
+              '<div class="hi"><span><b>Punho fechado por 1 s</b> no menu — fecha o menu</span></div></div>');
+
+            function updTabs() {
+              tabApps.style.display = TAB === 'apps' ? 'flex' : 'none';
+              tabHelp.style.display = TAB === 'help' ? 'flex' : 'none';
+              miApps.classList.toggle('on', TAB === 'apps');
+              miHelp.classList.toggle('on', TAB === 'help');
+            }
+            function closeTab() { TAB = null; updTabs(); rebuild(); }
+            function setTab(t) { TAB = (TAB === t) ? null : t; updTabs(); rebuild(); }
+
+            function rebuild() {
+              var t = [], tl = [];
+              if (!HUB.hidden) {
+                t = t.concat(T_hub);
+                tl.push({ k: 'win', w: HUB, el: hubEl });
+                if (TAB === 'apps') { t = t.concat(T_apps); tl.push({ k: 'win', w: HUB, el: tabApps }); }
+                else if (TAB === 'help') tl.push({ k: 'win', w: HUB, el: tabHelp });
+              }
+              WINS.forEach(function (W) { t.push(W.min ? W.bubT : W.barT); });
+              UI.T = t; UI.TL = tl;
+            }
+            function showHub() {
+              if (!HUB.hidden) return;
+              if (performance.now() - lastHide < 1500) return;
+              HUB.hidden = false; HUB.az = gaze.az; HUB.ev = clamp(gaze.el, -35, 35); HUB.off = 0;
+              TAB = null; updTabs();
+              hubEl.style.display = '';
+              document.body.classList.remove('vrh');
+              rebuild();
+            }
+            function hideHub() {
+              HUB.hidden = true; TAB = null; updTabs();
+              hubEl.style.display = 'none';
+              document.body.classList.add('vrh');
+              lastHide = performance.now();
+              rebuild();
+            }
+
+            var bp = null, rs = null;
+            function mvOK(W) {
+              if (!bp || bp.W !== W || bp.moved) return true;
+              var h = window.handCursor || {};
+              if (Math.hypot(h.x - bp.x, h.y - bp.y) > 28) { bp.moved = true; return true; }
+              return false;
+            }
+            function focusWin(W) {
+              if (WINS[WINS.length - 1] === W) return;
+              WINS.splice(WINS.indexOf(W), 1); WINS.push(W);
+              nFront(W.id); rebuild();
+            }
+            function closeWin(W) {
+              nClose(W.id);
+              if (bp && bp.W === W) bp = null;
+              if (rs && rs.W === W) rs = null;
+              W.dom.remove(); W.bub.remove();
+              WINS.splice(WINS.indexOf(W), 1);
+              lastR = '';
+              rebuild();
+            }
+            function openWin(idx) {
+              closeTab();
+              var ex = null;
+              WINS.forEach(function (w) { if (w.idx === idx) ex = w; });
+              if (ex) { ex.min = false; rebuild(); focusWin(ex); return; }
+              if (WINS.length >= 3) { toast('Máximo de 3 janelas abertas'); return; }
+              var W = { id: nextId++, idx: idx, s: 0.85, R: 800, ev: HUB.ev, az: HUB.az, min: false, al: 0, k: 0.88, sx: 0, sy: 0, tapT: 0, t0: performance.now() };
+              var hn = hwd(720, W.s, W.R), right = hwd(360, HUB.s, HUB.R), left = -right;
+              WINS.forEach(function (w) {
+                var rel = angd(w.az, HUB.az), h = hwd(720, w.s, w.R);
+                if (rel + h > right) right = rel + h;
+                if (rel - h < left) left = rel - h;
+              });
+              var rel2 = right + 3 + hn;
+              if (rel2 > 140) rel2 = left - 3 - hn;
+              W.taz = HUB.az + rel2;
+              W.dom = mk2('aw', '<div class="rh"></div><div class="bar"></div>');
+              W.rh = W.dom.querySelector('.rh'); W.bar = W.dom.querySelector('.bar');
+              W.bub = mk2('bub', ''); W.bub.appendChild(logo(idx));
+              W.bubT = { k: 'btn', el: W.bub, fn: function () { W.min = false; rebuild(); focusWin(W); } };
+              W.mv = {
+                get az() { return W.az; }, set az(v) { if (mvOK(W)) W.az = v; },
+                get ev() { return W.ev; }, set ev(v) { if (mvOK(W)) W.ev = v; },
+                get R() { return W.R; }, set R(v) { }
+              };
+              W.barT = { k: 'win', w: W.mv, el: W.bar };
+              WINS.push(W); rebuild();
+              nOpen(W.id, idx);
+            }
+            function arrange() {
+              var right = hwd(360, HUB.s, HUB.R);
+              WINS.forEach(function (W) {
+                var h = hwd(720, W.s, W.R);
+                W.az = HUB.az + right + 3 + h; W.ev = HUB.ev; W.t0 = 0; W.al = 1; W.k = 1;
+                right += 3 + 2 * h;
+              });
+            }
+            var rcb = document.getElementById('rc'), oc = rcb.onclick;
+            rcb.onclick = function () { if (oc) oc(); HUB.az = 0; HUB.ev = 0; arrange(); };
+
+            var Mc = [1, 0, 0, 0, 1, 0, 0, 0, 1], roll = 0, lastR = '', lastC = '', wasDown = false, fistT = null, fistS = 0, fistLock = false;
+            function camM() {
+              var Rf = (mode === 'gyro') ? mul(rz(off), Rc) : Rc;
+              return mul(Dm, mul(tr(Rf), Cm));
+            }
+            function proj(az, ev, R) {
+              var x = R * Math.cos(ev * D) * Math.sin(az * D), y = -R * Math.sin(ev * D), z = -R * Math.cos(ev * D) * Math.cos(az * D);
+              var cx = Mc[0] * x + Mc[1] * y + Mc[2] * z, cy = Mc[3] * x + Mc[4] * y + Mc[5] * z, cz = Mc[6] * x + Mc[7] * y + Mc[8] * z;
+              var dep = -cz;
+              if (dep < 60) return null;
+              var S = P / dep;
+              return { x: innerWidth / 2 + cx * S, y: innerHeight / 2 + cy * S, S: S };
+            }
+            function put2(el, p, s, w, h, tilt) {
+              if (!p) { el.style.visibility = 'hidden'; el.style.transform = 'translate(-9999px,-9999px)'; return false; }
+              var ext = Math.max(w, h) / 2 * p.S * s, W = innerWidth, H = innerHeight;
+              if (Math.abs(p.x - W / 2) > W / 2 + ext || Math.abs(p.y - H / 2) > H / 2 + ext) {
+                el.style.visibility = 'hidden'; el.style.transform = 'translate(-9999px,-9999px)'; return false;
+              }
+              el.style.visibility = 'visible';
+              el.style.transform = 'translate(' + p.x.toFixed(1) + 'px,' + p.y.toFixed(1) + 'px) rotate(' + roll.toFixed(2) + 'deg) scale(' + (p.S * s).toFixed(4) + ')' + (tilt ? ' perspective(1100px) rotateY(' + tilt + 'deg)' : '');
+              return true;
+            }
+            function inR(h, r, pad) { return r.width > 1 && h.x >= r.left - pad && h.x <= r.right + pad && h.y >= r.top - pad && h.y <= r.bottom + pad; }
+
+            function render(now) {
+              requestAnimationFrame(render);
+              Mc = camM();
+              roll = Math.atan2(-Mc[1], Mc[4]) / D;
+              var h = window.handCursor || {};
+              var fist = !!(h.has && window.__fist);
+              var down = !!(h.has && h.pinch && !fist);
+              var i, W;
+
+              if (rs) {
+                if (!down || WINS.indexOf(rs.W) < 0) rs = null;
+                else rs.W.s = clamp(rs.s0 * Math.hypot(h.x - rs.W.sx, h.y - rs.W.sy) / rs.d0, 0.45, 2.4);
+              } else if (down && !wasDown) {
+                for (i = WINS.length - 1; i >= 0; i--) {
+                  W = WINS[i];
+                  if (W.min) continue;
+                  if (inR(h, W.rh.getBoundingClientRect(), 18)) {
+                    rs = { W: W, s0: W.s, d0: Math.max(30, Math.hypot(h.x - W.sx, h.y - W.sy)) };
+                    focusWin(W);
+                    break;
+                  }
+                }
+                if (!rs) for (i = WINS.length - 1; i >= 0; i--) {
+                  W = WINS[i];
+                  if (!W.min && inR(h, W.bar.getBoundingClientRect(), 12)) {
+                    bp = { W: W, t: now, x: h.x, y: h.y, moved: false };
+                    focusWin(W);
+                    break;
+                  }
+                }
+              }
+              if (!down && wasDown && bp) {
+                if (!bp.moved && now - bp.t < 400 && Math.hypot(h.x - bp.x, h.y - bp.y) < 40 && WINS.indexOf(bp.W) >= 0) {
+                  var bw = bp.W;
+                  if (bw.tapT && now - bw.tapT < 700) { bw.tapT = 0; bw.min = true; rebuild(); }
+                  else bw.tapT = now;
+                }
+                bp = null;
+              }
+              wasDown = down;
+
+              var tgt = TAB ? -(2.5 + 2 * hwd(760, HUB.s, HUB.R)) / 2 : 0;
+              HUB.off += (tgt - HUB.off) * 0.15;
+              var haz = HUB.az + HUB.off, hh = hwd(360, HUB.s, HUB.R), th = hwd(760, HUB.s, HUB.R);
+              if (!HUB.hidden) {
+                put2(hubEl, proj(haz, HUB.ev, rn(HUB)), HUB.s, 360, 640, 12);
+                var act = TAB === 'apps' ? tabApps : (TAB === 'help' ? tabHelp : null);
+                if (act) put2(act, proj(haz + hh + 2.5 + th, HUB.ev, rn(HUB)), HUB.s, 760, 340, -12);
+              }
+
+              var blk = !!rs, parts = [];
+              WINS.forEach(function (Wn, idx) {
+                if (Wn.t0) {
+                  var pr = Math.min(1, (now - Wn.t0) / 500), e = 1 - Math.pow(1 - pr, 3);
+                  Wn.az = HUB.az + (Wn.taz - HUB.az) * e; Wn.al = e; Wn.k = 0.88 + 0.12 * e;
+                  if (pr >= 1) Wn.t0 = 0;
+                }
+                var p = proj(Wn.az, Wn.ev, rn(Wn)), sE = Wn.s * Wn.k, vis = false;
+                Wn.sx = p ? p.x : 0; Wn.sy = p ? p.y : 0;
+                Wn.dom.style.zIndex = 10 + idx; Wn.bub.style.zIndex = 10 + idx;
+                Wn.dom.style.opacity = Wn.al; Wn.bub.style.opacity = Wn.al;
+                if (Wn.min) {
+                  Wn.dom.style.display = 'none'; Wn.bub.style.display = 'flex';
+                  put2(Wn.bub, p, Wn.s, 96, 96);
+                } else {
+                  Wn.dom.style.display = 'block'; Wn.bub.style.display = 'none';
+                  vis = put2(Wn.dom, p, sE, 720, 405);
+                }
+                if (vis) {
+                  var S = p.S * sE;
+                  parts.push([Wn.id, p.x.toFixed(1), p.y.toFixed(1), (720 * S).toFixed(1), (405 * S).toFixed(1), roll.toFixed(2), 960, 540, Wn.al.toFixed(2)].join(','));
+                } else parts.push([Wn.id, 0, 0, 0, 0, 0, 960, 540, 1].join(','));
+                var on = rs ? rs.W === Wn : (h.has && !Wn.min && inR(h, Wn.rh.getBoundingClientRect(), 18));
+                Wn.rh.classList.toggle('hand', !!on);
+                if (on) blk = true;
+              });
+              var s = parts.join(';');
+              if (s !== lastR) { lastR = s; nRects(s); }
+
+              if (!fist) { fistLock = false; fistT = null; nFist(0); }
+              else if (!fistLock) {
+                var tg = null;
+                for (i = WINS.length - 1; i >= 0; i--) {
+                  if (!WINS[i].min && inR(h, WINS[i].dom.getBoundingClientRect(), 0)) { tg = WINS[i]; break; }
+                }
+                if (!tg && !HUB.hidden && (inR(h, hubEl.getBoundingClientRect(), 0) || (TAB && inR(h, (TAB === 'apps' ? tabApps : tabHelp).getBoundingClientRect(), 0)))) tg = 'hub';
+                if (tg !== fistT) { fistT = tg; fistS = now; }
+                if (tg) {
+                  var pf = Math.min(1, (now - fistS) / 1000);
+                  nFist(pf);
+                  if (pf >= 1) {
+                    fistLock = true; fistT = null; nFist(0);
+                    if (tg === 'hub') hideHub(); else closeWin(tg);
+                  }
+                } else nFist(0);
+              }
+
+              var c = Math.round(h.x || 0) + ',' + Math.round(h.y || 0) + ',' + ((h.pinch && !fist && !blk) ? 1 : 0) + ',' + (h.has ? 1 : 0);
+              if (c !== lastC) { lastC = c; nCur(h.x || 0, h.y || 0, !!(h.pinch && !fist && !blk), !!h.has); }
+            }
+            requestAnimationFrame(render);
+            updTabs();
+            rebuild();
+          })();
+          EOF
       - name: Compilar
         run: gradle assembleDebug --no-daemon
       - uses: actions/upload-artifact@v4
