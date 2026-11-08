@@ -2566,6 +2566,58 @@ jobs:
             rebuild();
           })();
           EOF
+      - name: Corrigir zoom e grupos
+        run: |
+          python3 - <<'PY'
+          def patch(path, old, new):
+              s = open(path, encoding='utf-8').read()
+              assert old in s, 'nao achei em ' + path + ': ' + old
+              open(path, 'w', encoding='utf-8').write(s.replace(old, new, 1))
+          A = 'app/src/main/assets/'
+          U = A + 'ui.js'
+          patch(U, 'y: innerHeight / 2 + cy * S, S: S };', 'y: innerHeight / 2 + cy * S, S: P / R };')
+          patch(U, 'margin:246px 0 0 -140px', 'margin:-22px 0 0 -140px')
+          patch(U, 'margin:168px 0 0 326px', 'margin:-22px 0 0 -22px')
+          patch(U, 'margin:206px 0 0 -20px', 'margin:-20px 0 0 -20px')
+          patch(U, 'function inR(h, r, pad) {', '''function gput(el, pc, s, ox, oy) {
+              if (!pc) { el.style.visibility = 'hidden'; el.style.transform = 'translate(-9999px,-9999px)'; return; }
+              var S2 = pc.S * s, rr = roll * D, c = Math.cos(rr), sn = Math.sin(rr);
+              var x = pc.x + (ox * c - oy * sn) * S2, y = pc.y + (ox * sn + oy * c) * S2;
+              if (x < -300 || x > innerWidth + 300 || y < -300 || y > innerHeight + 300) { el.style.visibility = 'hidden'; el.style.transform = 'translate(-9999px,-9999px)'; return; }
+              el.style.visibility = 'visible';
+              el.style.transform = 'translate(' + x.toFixed(1) + 'px,' + y.toFixed(1) + 'px) rotate(' + roll.toFixed(2) + 'deg) scale(' + S2.toFixed(4) + ')';
+            }
+            function inR(h, r, pad) {''')
+          patch(U, 'var p = proj(Wn.az, Wn.ev, rn(Wn)), sE = Wn.s * Wn.k, vis = false;', '''var p = proj(Wn.az, Wn.ev, rn(Wn)), sE = Wn.s * Wn.k, vis = false;
+                if (Wn.grp) {
+                  var Gm = Wn.grp, pcm = proj(Gm.az, Gm.ev, rn(Gm));
+                  if (pcm) {
+                    var nm = Gm.list.length, om = (Gm.list.indexOf(Wn) - (nm - 1) / 2) * 720 * 1.008 * pcm.S * Gm.s, rr = roll * D;
+                    var tx2 = pcm.x + om * Math.cos(rr), ty2 = pcm.y + om * Math.sin(rr);
+                    if (now < (Wn.ga || 0) && Wn.px != null) { Wn.px += (tx2 - Wn.px) * 0.25; Wn.py += (ty2 - Wn.py) * 0.25; }
+                    else { Wn.px = tx2; Wn.py = ty2; }
+                    p = { x: Wn.px, y: Wn.py, S: pcm.S };
+                  } else p = null;
+                } else if (p) { Wn.px = p.x; Wn.py = p.y; }''')
+          patch(U, 'put2(G.bar, pc, G.s, 720, 405);', 'gput(G.bar, pc, G.s, 0, 268);')
+          patch(U, 'put2(G.rh, proj(G.az + ((n - 1) / 2) * dl, G.ev, Rn), G.s, 720, 405);', 'gput(G.rh, pc, G.s, ((n - 1) / 2) * 725.76 + 348, 190.5);')
+          patch(U, 'put2(e.el, proj(G.az + ((li + 0.5) - (n - 1) / 2) * dl, G.ev, Rn), G.s, 720, 405);', 'gput(e.el, pc, G.s, ((li + 0.5) - (n - 1) / 2) * 725.76, 226);')
+          patch(U, 'function doMerge(E, tw) {', '''function settle(G) {
+              var pc = proj(G.az, G.ev, rn(G));
+              if (!pc) return;
+              var a0 = Math.atan((pc.x - innerWidth / 2) / P);
+              G.list.forEach(function (w) {
+                if (w.px == null) return;
+                w.az = G.az + (Math.atan((w.px - innerWidth / 2) / P) - a0) / D;
+                w.ev = G.ev; w.s = G.s; w.R = G.R;
+              });
+            }
+            function doMerge(E, tw) {''')
+          patch(U, 'var L = G.list.slice(0, i + 1), Rr = G.list.slice(i + 1);', 'var L = G.list.slice(0, i + 1), Rr = G.list.slice(i + 1);\n              settle(G);')
+          patch(U, 'if (G.list.length < 2) { var rem = G.list[0]; killGroup(G); if (rem) loose(rem); }', 'if (G.list.length < 2) { var rem = G.list[0]; settle(G); killGroup(G); if (rem) loose(rem); }')
+          patch(A + 'lean.js', 'var on = true, v = 0,', 'var on = false, v = 0,')
+          patch(A + 'lean.js', "var tb = document.createElement('button'); tb.textContent = '↕ Inclinar: sim';", "var tb = document.createElement('button'); tb.textContent = '↕ Inclinar: não';")
+          PY
       - name: Compilar
         run: gradle assembleDebug --no-daemon
       - uses: actions/upload-artifact@v4
