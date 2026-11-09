@@ -2828,6 +2828,66 @@ jobs:
             }
             float[] loc(Win w, float x, float y) {''')
           PY
+      - name: Ajustes de abertura, gesto e fixação
+        run: |
+          sed -i 's#<script src="lean.js"></script>#<script src="fix.js"></script>#' app/src/main/assets/index.html
+          cat > app/src/main/assets/fix.js <<'EOF'
+          (function () {
+            var L = 100, K = 0.6;
+            try {
+              var sv = JSON.parse(localStorage.getItem('vrfix') || 'null');
+              if (sv) { L = Math.max(0, Math.min(400, +sv.L || 0)); K = Math.max(0.4, Math.min(1, +sv.K || 0.6)); }
+            } catch (e) {}
+            function save() { try { localStorage.setItem('vrfix', JSON.stringify({ L: L, K: K })); } catch (e) {} }
+            var buf = [], orig = null;
+            function wrap(a, x, y, z) {
+              var now = performance.now();
+              if (orig) orig(a, x, y, z);
+              buf.push([now, a]);
+              while (buf.length > 1 && buf[1][0] <= now - L) buf.shift();
+              Rdev = buf[0][1];
+            }
+            Object.defineProperty(window, '__r', { configurable: true, get: function () { return wrap; }, set: function (f) { orig = f; } });
+            function applyK() { P = innerWidth * K; view.style.perspective = P + 'px'; }
+            addEventListener('resize', applyK);
+            applyK();
+            var bar = document.getElementById('ui');
+            if (bar) {
+              bar.style.flexWrap = 'wrap';
+              var lab = document.createElement('span');
+              var txt = function () { lab.textContent = 'atraso ' + L + ' ms · zoom ' + K.toFixed(2); };
+              var mkb = function (t, f) { var b = document.createElement('button'); b.textContent = t; b.onclick = f; bar.appendChild(b); };
+              mkb('Atraso −', function () { L = Math.max(0, L - 20); save(); txt(); });
+              mkb('Atraso +', function () { L = Math.min(400, L + 20); save(); txt(); });
+              mkb('Zoom −', function () { K = Math.max(0.4, +(K - 0.05).toFixed(2)); save(); applyK(); txt(); });
+              mkb('Zoom +', function () { K = Math.min(1, +(K + 0.05).toFixed(2)); save(); applyK(); txt(); });
+              bar.appendChild(lab); txt();
+            }
+          })();
+          EOF
+          python3 - <<'PY'
+          def patch(path, old, new):
+              s = open(path, encoding='utf-8').read()
+              assert old in s, 'nao achei em ' + path + ': ' + old
+              open(path, 'w', encoding='utf-8').write(s.replace(old, new, 1))
+          A = 'app/src/main/assets/'
+          U = A + 'ui.js'
+          patch(U, 'if (!Wq.min && ghR.length) {', 'if (!Wq.min && !Wq.t0 && ghR.length) {')
+          patch(U, 'var bp = null, rs = null, mg = null, sw = null, lastPk = 0;', 'var bp = null, rs = null, mg = null, sw = null, lastPk = 0, swo = null, lastPo = 0;')
+          patch(U, 'var pk = !!(h.has && window.__peace && window.__pt && !HUB.hidden);', """var po0 = !!(HUB.hidden && h.has && window.__peace && window.__pt && !document.getElementById('boot'));
+              if (po0) {
+                lastPo = now;
+                var po = window.__pt;
+                if (!swo || now - swo.t > 1200) swo = { y0: po.y, t: now };
+                else if (po.y < swo.y0) { swo.y0 = po.y; swo.t = now; }
+                else if (po.y - swo.y0 > innerHeight * 0.25) { swo = null; showHub(); }
+              } else if (now - lastPo > 300) swo = null;
+              var pk = !!(h.has && window.__peace && window.__pt && !HUB.hidden);""")
+          patch(U, '<b>Pinça por 1 s</b> com o menu fechado — abre o menu', '<b>Dois dedos juntos</b> descendo, com o menu fechado — abre o menu')
+          patch(U, 'HUB.off = 0; HUB.taz = null;', "HUB.off = 0; HUB.taz = null; var hn0 = document.getElementById('hint'); if (hn0) hn0.remove();")
+          patch(A + 'boot.js', 'if (!loaded || window.__fist || !UI.hubHidden()', 'if (true || !loaded || window.__fist || !UI.hubHidden()')
+          patch(A + 'boot.js', 'Faça a pinça por 1 segundo para abrir o menu', 'Passe indicador e médio juntos, de cima para baixo, para abrir o menu')
+          PY
       - name: Compilar
         run: gradle assembleDebug --no-daemon
       - uses: actions/upload-artifact@v4
