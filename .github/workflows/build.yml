@@ -2685,6 +2685,23 @@ jobs:
             }
           }
           EOF
+      - name: Calibrar escala das janelas
+        run: |
+          python3 - <<'PY'
+          def patch(path, old, new):
+              s = open(path, encoding='utf-8').read()
+              assert old in s, 'nao achei em ' + path + ': ' + old
+              open(path, 'w', encoding='utf-8').write(s.replace(old, new, 1))
+          A = 'app/src/main/assets/'
+          J = 'app/src/main/java/com/vr/launcher/MainActivity.java'
+          patch(J, 'float density = 1f;', 'float density = 1f; float kx = 0f, ky = 0f;\n            float sx() { return kx > 0f ? kx : density; }\n            float sy() { return ky > 0f ? ky : density; }')
+          patch(J, '@JavascriptInterface public void close(final int id) { ui.post(() -> closeWin(id)); }', '@JavascriptInterface public void close(final int id) { ui.post(() -> closeWin(id)); }\n              @JavascriptInterface public void calib(final float iw, final float ih) { ui.post(() -> { if (iw > 50f && ih > 50f && web != null && web.getWidth() > 0) { kx = web.getWidth() / iw; ky = web.getHeight() / ih; } }); }')
+          patch(J, 'w.cx = Float.parseFloat(a[1]) * density; w.cy = Float.parseFloat(a[2]) * density;', 'w.cx = Float.parseFloat(a[1]) * sx(); w.cy = Float.parseFloat(a[2]) * sy();')
+          patch(J, 'w.w = Float.parseFloat(a[3]) * density; w.h = Float.parseFloat(a[4]) * density;', 'w.w = Float.parseFloat(a[3]) * sx(); w.h = Float.parseFloat(a[4]) * sx();')
+          patch(J, 'float cx = x * density, cy = y * density;', 'float cx = x * sx(), cy = y * sy();')
+          patch(A + 'ui.js', 'if (s !== lastR) { lastR = s; nRects(s); }', 'if (s !== lastR) { lastR = s; nRects(s); }\n              if (A && A.calib && now - (window.__cal || -5000) > 1000) { window.__cal = now; A.calib(innerWidth, innerHeight); }')
+          patch(A + 'hand.js', "(idle ? ' · repouso' : (has ? '' : ' · sem mão')));", "(idle ? ' · repouso' : (has ? '' : ' · sem mão')) + ' · ' + innerWidth + 'x' + innerHeight + ' @' + (window.devicePixelRatio || 1).toFixed(2));")
+          PY
       - name: Compilar
         run: gradle assembleDebug --no-daemon
       - uses: actions/upload-artifact@v4
