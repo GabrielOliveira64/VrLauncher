@@ -2702,6 +2702,132 @@ jobs:
           patch(A + 'ui.js', 'if (s !== lastR) { lastR = s; nRects(s); }', 'if (s !== lastR) { lastR = s; nRects(s); }\n              if (A && A.calib && now - (window.__cal || -5000) > 1000) { window.__cal = now; A.calib(innerWidth, innerHeight); }')
           patch(A + 'hand.js', "(idle ? ' · repouso' : (has ? '' : ' · sem mão')));", "(idle ? ' · repouso' : (has ? '' : ' · sem mão')) + ' · ' + innerWidth + 'x' + innerHeight + ' @' + (window.devicePixelRatio || 1).toFixed(2));")
           PY
+      - name: Melhorias de janelas
+        run: |
+          python3 - <<'PY'
+          def patch(path, old, new):
+              s = open(path, encoding='utf-8').read()
+              assert old in s, 'nao achei em ' + path + ': ' + old
+              open(path, 'w', encoding='utf-8').write(s.replace(old, new, 1))
+          A = 'app/src/main/assets/'
+          U = A + 'ui.js'
+          J = 'app/src/main/java/com/vr/launcher/MainActivity.java'
+          patch(U, 'if (ex) { ex.min = false; rebuild(); focusWin(ex); return; }', '')
+          patch(U, """'.aw{width:720px;height:405px;margin:-202.5px 0 0 -360px}',""", """'.aw{width:720px;height:405px;margin:-202.5px 0 0 -360px}',
+              '.aw.gst{outline:2px solid rgba(255,255,255,.3);outline-offset:-2px;border-radius:24px;background:rgba(255,255,255,.05)}',""")
+          patch(U, 'hubEl.style.zIndex = 5;', 'hubEl.style.zIndex = 200;')
+          patch(U, 'function updTabs() {', 'tabApps.style.zIndex = 200; tabHelp.style.zIndex = 200;\n            function updTabs() {')
+          patch(U, 'function showHub() {', '''function occ(ref) {
+              var out = [];
+              WINS.forEach(function (w) {
+                if (w.min) return;
+                var az = w.t0 ? w.taz : w.az, hf = Math.atan(720 * w.s / 2 / w.R) / D, c = angd(az, ref);
+                out.push([c - hf - 2, c + hf + 2]);
+              });
+              return out;
+            }
+            function freeAz(half, ref) {
+              var oc = occ(ref), cands = [0], best = null, bd = 1e9;
+              oc.forEach(function (o) { cands.push(o[0] - half, o[1] + half); });
+              cands.forEach(function (c) {
+                if (Math.abs(c) > 50) return;
+                var ok = oc.every(function (o) { return c + half <= o[0] || c - half >= o[1]; });
+                if (ok && Math.abs(c) < bd) { bd = Math.abs(c); best = c; }
+              });
+              return best === null ? null : ref + best;
+            }
+            function showHub() {''')
+          patch(U, 'HUB.hidden = false; HUB.az = gaze.az; HUB.ev = clamp(gaze.el, -35, 35); HUB.off = 0;', 'HUB.hidden = false; HUB.az = gaze.az; HUB.ev = clamp(gaze.el, -35, 35); HUB.off = 0; HUB.taz = null;\n              var fz = freeAz(hwd(360, HUB.s, HUB.R) + 2, gaze.az); if (fz !== null) HUB.az = fz;')
+          patch(U, 'function setTab(t) { TAB = (TAB === t) ? null : t; updTabs(); rebuild(); }', '''function setTab(t) {
+              TAB = (TAB === t) ? null : t; updTabs(); rebuild();
+              if (TAB) {
+                var hf = hwd(360, HUB.s, HUB.R) + hwd(760, HUB.s, HUB.R) + 3.25;
+                var fz = freeAz(hf, HUB.az);
+                if (fz !== null) HUB.taz = fz;
+              }
+            }''')
+          patch(U, 'HUB.off += (tgt - HUB.off) * 0.15;', '''HUB.off += (tgt - HUB.off) * 0.15;
+              if (HUB.taz != null) { var dz = angd(HUB.taz, HUB.az); HUB.az += dz * 0.15; if (Math.abs(dz) < 0.05) { HUB.az = HUB.taz; HUB.taz = null; } }''')
+          patch(U, 'var blk = !!rs, parts = [];', """var blk = !!rs || !!bp, parts = [];
+              var ghR = [];
+              if (!HUB.hidden) {
+                ghR.push(hubEl.getBoundingClientRect());
+                if (TAB) ghR.push((TAB === 'apps' ? tabApps : tabHelp).getBoundingClientRect());
+              }
+              WINS.forEach(function (Wq) {
+                var gq = false;
+                if (!Wq.min && ghR.length) {
+                  var rq = Wq.dom.getBoundingClientRect();
+                  ghR.forEach(function (g) { if (g.width > 1 && rq.width > 1 && rq.left < g.right && rq.right > g.left && rq.top < g.bottom && rq.bottom > g.top) gq = true; });
+                }
+                Wq.gh = gq;
+                Wq.dom.classList.toggle('gst', gq);
+              });""")
+          patch(U, 'var p = proj(Wn.az, Wn.ev, rn(Wn)), sE = Wn.s * Wn.k, vis = false;', 'var p = proj(Wn.az, Wn.ev, rn(Wn)), sE = Wn.s * Wn.k * (Wn.lift ? 1.04 : 1), vis = false;')
+          patch(U, 'parts.push([Wn.id, p.x.toFixed(1), p.y.toFixed(1), (720 * S).toFixed(1), (405 * S).toFixed(1), roll.toFixed(2), 960, 540, Wn.al.toFixed(2), cf].join(\',\'));', '''if (Wn.gh) parts.push([Wn.id, 0, 0, 0, 0, 0, 960, 540, 1, cf].join(','));
+                  else { Wn.sw = 720 * S; Wn.sh = 405 * S; parts.push([Wn.id, p.x.toFixed(1), p.y.toFixed(1), (720 * S).toFixed(1), (405 * S).toFixed(1), roll.toFixed(2), 960, 540, Wn.al.toFixed(2), cf].join(',')); }''')
+          patch(U, 'var pk = !!(h.has && window.__peace && window.__pt && !HUB.hidden);', """WINS.forEach(function (wq) { wq.lift = false; });
+              if (bp && bp.moved && down && !bp.E.list) bp.E.lift = true;
+              var dv = '';
+              if (mg && bp && bp.moved && down && mg.tw.sw > 0) {
+                var tW = mg.tw, dE = bp.E;
+                dv = [tW.sx.toFixed(1), tW.sy.toFixed(1), tW.sw.toFixed(1), tW.sh.toFixed(1), roll.toFixed(2), dE.sx < tW.sx ? '-1' : '1'].join(',');
+                dv += ';' + ((!dE.list && dE.sw > 0) ? [dE.sx.toFixed(1), dE.sy.toFixed(1), dE.sw.toFixed(1), dE.sh.toFixed(1)].join(',') : '');
+              }
+              if (A && A.drag && dv !== window.__dv) { window.__dv = dv; A.drag(dv); }
+              var pk = !!(h.has && window.__peace && window.__pt && !HUB.hidden);""")
+          patch(U, 'if (!WINS[i].min && inR(h, WINS[i].dom.getBoundingClientRect(), 0)) { tg = WINS[i]; break; }', 'if (!WINS[i].min && !WINS[i].gh && inR(h, WINS[i].dom.getBoundingClientRect(), 0)) { tg = WINS[i]; break; }')
+          patch(J, 'Win down = null; boolean armed = false;', 'Win down = null; boolean armed = false, pinchPrev = false;')
+          patch(J, 'if (!pinch || !has) armed = true;', 'boolean was = pinchPrev; pinchPrev = pinch && has;\n                if (!(pinch && has)) armed = true; else if (!was) armed = (hit != null);')
+          patch(J, 'volatile float x, y, prog; volatile boolean show, pinch;', '''volatile float x, y, prog; volatile boolean show, pinch;
+              float[] tg = null, dg = null; int side = 0;
+              void drawDrag(Canvas c) {
+                if (tg == null) return;
+                Paint q = new Paint(Paint.ANTI_ALIAS_FLAG);
+                float hw = tg[2] / 2f, hh = tg[3] / 2f, r = 24f * tg[2] / 960f;
+                c.save(); c.translate(tg[0], tg[1]); c.rotate(tg[4]);
+                q.setStyle(Paint.Style.FILL); q.setColor(0xA6000000);
+                c.drawRoundRect(-hw, -hh, hw, hh, r, r, q);
+                if (side != 0) {
+                  c.save();
+                  c.clipRect(side < 0 ? -hw : 0f, -hh, side < 0 ? 0f : hw, hh);
+                  q.setColor(0x55FFFFFF);
+                  c.drawRoundRect(-hw, -hh, hw, hh, r, r, q);
+                  c.restore();
+                }
+                c.restore();
+                if (dg != null) {
+                  c.save(); c.translate(dg[0], dg[1]); c.rotate(tg[4]);
+                  float dw = dg[2] / 2f, dh = dg[3] / 2f, dr = 24f * dg[2] / 960f;
+                  q.setStyle(Paint.Style.STROKE); q.setStrokeWidth(6f);
+                  for (int i = 4; i >= 1; i--) {
+                    q.setColor((i * 14) << 24);
+                    c.drawRoundRect(-dw - i * 7f, -dh - i * 7f, dw + i * 7f, dh + i * 7f, dr + i * 7f, dr + i * 7f, q);
+                  }
+                  q.setStrokeWidth(4f); q.setColor(0xDDFFFFFF);
+                  c.drawRoundRect(-dw, -dh, dw, dh, dr, dr, q);
+                  c.restore();
+                }
+              }''')
+          patch(J, '@Override protected void onDraw(Canvas c) {', '@Override protected void onDraw(Canvas c) {\n                drawDrag(c);')
+          patch(J, '@JavascriptInterface public void front(final int id) { ui.post(() -> frontWin(id)); }', '@JavascriptInterface public void front(final int id) { ui.post(() -> frontWin(id)); }\n              @JavascriptInterface public void drag(final String s) { ui.post(() -> setDrag(s)); }')
+          patch(J, 'float[] loc(Win w, float x, float y) {', '''void setDrag(String s) {
+              try {
+                if (s == null || s.length() < 5) { curv.tg = null; curv.dg = null; curv.side = 0; curv.invalidate(); return; }
+                String[] parts = s.split(";");
+                String[] a = parts[0].split(",");
+                curv.tg = new float[]{ Float.parseFloat(a[0]) * sx(), Float.parseFloat(a[1]) * sy(), Float.parseFloat(a[2]) * sx(), Float.parseFloat(a[3]) * sx(), Float.parseFloat(a[4]) };
+                curv.side = Integer.parseInt(a[5]);
+                curv.dg = null;
+                if (parts.length > 1 && parts[1].length() > 3) {
+                  String[] b = parts[1].split(",");
+                  curv.dg = new float[]{ Float.parseFloat(b[0]) * sx(), Float.parseFloat(b[1]) * sy(), Float.parseFloat(b[2]) * sx(), Float.parseFloat(b[3]) * sx() };
+                }
+              } catch (Exception e) { curv.tg = null; curv.dg = null; curv.side = 0; }
+              curv.invalidate();
+            }
+            float[] loc(Win w, float x, float y) {''')
+          PY
       - name: Compilar
         run: gradle assembleDebug --no-daemon
       - uses: actions/upload-artifact@v4
