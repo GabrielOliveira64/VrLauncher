@@ -2620,7 +2620,7 @@ jobs:
           patch(A + 'lean.js', 'var on = true, v = 0,', 'var on = false, v = 0,')
           patch(A + 'lean.js', "var tb = document.createElement('button'); tb.textContent = '↕ Inclinar: sim';", "var tb = document.createElement('button'); tb.textContent = '↕ Inclinar: não';")
           PY
-            - name: Corrigir permissão e tela cheia
+      - name: Corrigir permissão e tela cheia
         run: |
           python3 - <<'PY'
           def patch(path, old, new):
