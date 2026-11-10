@@ -2901,6 +2901,310 @@ jobs:
                 else { Wq.gT1 = 0; Wq.gT0 = Wq.gT0 || now; if (now - Wq.gT0 > 350) Wq.gh = false; }''')
           patch(U, "Wq.dom.classList.toggle('gst', gq);", "Wq.dom.classList.toggle('gst', !!Wq.gh);")
           PY
+      - name: Modo espacial
+        run: |
+          sed -i 's#<script src="boot.js"></script>#<script src="spatial.js"></script><script src="boot.js"></script>#' app/src/main/assets/index.html
+          cat > app/src/main/assets/spatial.js <<'EOF'
+          (function () {
+            var A = window.Android, UI = window.UI, cam = document.getElementById('cam');
+            if (!A || !A.spList || !UI || !UI.tabSpace) return;
+            var css = document.createElement('style');
+            css.textContent = [
+              '.sh{display:flex;align-items:center;justify-content:space-between;height:44px;font-size:20px;font-weight:300;letter-spacing:2px}',
+              '.sh>span{opacity:.7}',
+              '.sc{display:flex;align-items:center;gap:8px}',
+              '.pl{font-size:16px;opacity:.7;min-width:34px;text-align:center}',
+              '.sb{display:flex;align-items:center;justify-content:center;gap:8px;height:44px;min-width:44px;padding:0 16px;border-radius:22px;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.14);font-size:20px;letter-spacing:.5px;transition:background .12s,color .12s}',
+              '.sb span{font-size:17px}',
+              '.sb svg,.st svg{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}',
+              '.sb.hand{background:#fff;color:#000}',
+              '.sg{flex:1;display:grid;grid-template-columns:repeat(4,1fr);grid-template-rows:repeat(2,1fr);gap:12px}',
+              '.st{position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;border-radius:22px;overflow:hidden;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.12);font-size:16px;transition:transform .15s,background .12s,border-color .12s}',
+              '.st svg{width:34px;height:34px}',
+              '.st.th{background-size:cover;background-position:center}',
+              '.st .nm{position:absolute;left:0;right:0;bottom:0;padding:18px 10px 6px;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:linear-gradient(transparent,rgba(0,0,0,.7))}',
+              '.st.hand{border-color:#fff;transform:scale(1.04)}',
+              '.st.add.hand{background:#fff;color:#000}',
+              '.st.on::after{content:"";position:absolute;right:8px;top:8px;width:10px;height:10px;border-radius:50%;background:#5eead4}',
+              '.st.sel{z-index:5;transform:scale(1.25);border-color:#fff}',
+              '.st .cf{position:absolute;left:0;top:0;right:0;bottom:0;background:rgba(8,10,14,.86);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;font-size:13px;line-height:1.2;text-align:center;padding:6px}',
+              '.cf .bs{display:flex;gap:8px}',
+              '.cf .b{width:56px;height:30px;border-radius:15px;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.16);font-size:14px;transition:background .12s,color .12s}',
+              '.cf .b.hand{background:#fff;color:#000}'
+            ].join('');
+            document.head.appendChild(css);
+
+            var tab = UI.tabSpace, sg = tab.querySelector('.sg'), sc = tab.querySelector('.sc'), T = UI.T_space;
+            var items = [], page = 0, sel = null, active = null, PER = 7, running = false;
+            var ICON_PLUS = '<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>';
+            var ICON_OUT = '<svg viewBox="0 0 24 24"><path d="M14 4h5a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-5"/><path d="M10 16l-4-4 4-4M6 12h10"/></svg>';
+
+            function toast(t) {
+              var d = document.createElement('div');
+              d.style.cssText = 'position:fixed;bottom:14px;left:50%;transform:translateX(-50%);z-index:40;background:rgba(0,0,0,.75);color:#fff;font:13px system-ui;padding:7px 14px;border-radius:999px;max-width:90%';
+              d.textContent = t; document.body.appendChild(d);
+              setTimeout(function () { d.remove(); }, 3200);
+            }
+            function ensureCam() {
+              try {
+                var s = cam.srcObject;
+                var ok = s && s.getVideoTracks().some(function (t) { return t.readyState === 'live'; });
+                if (ok) return;
+                navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: { ideal: 960 }, height: { ideal: 540 }, frameRate: { ideal: 30 } }, audio: false })
+                  .then(function (st) { cam.srcObject = st; cam.play(); }).catch(function () {});
+              } catch (e) {}
+            }
+
+            var cv = document.createElement('canvas');
+            cv.id = 'sp';
+            cv.style.cssText = 'position:fixed;left:0;top:0;width:100%;height:100%;z-index:1;display:none;opacity:0;transition:opacity .6s;pointer-events:none;background:#000';
+            document.body.appendChild(cv);
+            var gl = null, prog = null, uM, uS, uF, tex = null;
+            function initGL() {
+              if (gl) return true;
+              gl = cv.getContext('webgl', { alpha: false, antialias: false, depth: false, stencil: false, powerPreference: 'high-performance' });
+              if (!gl) return false;
+              function sh(type, src) {
+                var s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+                if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+                return s;
+              }
+              try {
+                var vs = sh(gl.VERTEX_SHADER, 'attribute vec2 a;varying vec2 p;void main(){p=a;gl_Position=vec4(a,0.,1.);}');
+                var fs = sh(gl.FRAGMENT_SHADER, [
+                  '#ifdef GL_FRAGMENT_PRECISION_HIGH', 'precision highp float;', '#else', 'precision mediump float;', '#endif',
+                  'uniform sampler2D t;uniform mat3 m;uniform vec2 s;uniform float f;varying vec2 p;',
+                  'void main(){vec3 r=vec3(p.x*s.x*.5,-p.y*s.y*.5,-f);vec3 w=m*r;',
+                  'float az=atan(w.x,-w.z);float el=atan(-w.y,length(vec2(w.x,w.z)));',
+                  'gl_FragColor=vec4(texture2D(t,vec2(az*.15915494+.5,.5-el*.31830989)).rgb,1.);}'
+                ].join('\n'));
+                prog = gl.createProgram(); gl.attachShader(prog, vs); gl.attachShader(prog, fs); gl.linkProgram(prog);
+                if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+              } catch (e) { gl = null; return false; }
+              gl.useProgram(prog);
+              var buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+              gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+              var la = gl.getAttribLocation(prog, 'a'); gl.enableVertexAttribArray(la); gl.vertexAttribPointer(la, 2, gl.FLOAT, false, 0, 0);
+              uM = gl.getUniformLocation(prog, 'm'); uS = gl.getUniformLocation(prog, 's'); uF = gl.getUniformLocation(prog, 'f');
+              gl.uniform1i(gl.getUniformLocation(prog, 't'), 0);
+              return true;
+            }
+            function loop() {
+              if (!running) return;
+              requestAnimationFrame(loop);
+              var rs = Math.min(window.devicePixelRatio || 1, 1.25), w = Math.round(innerWidth * rs), h = Math.round(innerHeight * rs);
+              if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; gl.viewport(0, 0, w, h); }
+              var Rf = (mode === 'gyro') ? mul(rz(off), Rc) : Rc;
+              var M = mul(Dm, mul(tr(Rf), Cm));
+              gl.uniformMatrix3fv(uM, false, M);
+              gl.uniform2f(uS, innerWidth, innerHeight);
+              gl.uniform1f(uF, P);
+              gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+            }
+            function startView(url) {
+              var img = new Image();
+              img.onload = function () {
+                if (!initGL()) { toast('WebGL indisponível'); active = null; build(); return; }
+                if (tex) gl.deleteTexture(tex);
+                tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
+                gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+                gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, img);
+                var iw = img.naturalWidth, ih = img.naturalHeight, pot = (iw & (iw - 1)) === 0 && (ih & (ih - 1)) === 0;
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, pot ? gl.REPEAT : gl.CLAMP_TO_EDGE);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+                cv.style.display = 'block'; void cv.offsetWidth; cv.style.opacity = '1';
+                if (window.__lag) window.__lag(0);
+                if (!running) { running = true; requestAnimationFrame(loop); }
+              };
+              img.onerror = function () { toast('Não consegui abrir a imagem'); active = null; build(); };
+              img.src = url;
+            }
+            function stopView() {
+              running = false; cv.style.opacity = '0';
+              setTimeout(function () {
+                if (!running) { cv.style.display = 'none'; if (gl && tex) { gl.deleteTexture(tex); tex = null; } }
+              }, 650);
+              if (window.__lag) window.__lag(null);
+            }
+
+            function maxPage() { return Math.max(0, Math.ceil(items.length / PER) - 1); }
+            function mkBtn(cls, html, fn, parent) {
+              var d = document.createElement('div'); d.className = cls; d.innerHTML = html; parent.appendChild(d);
+              T.push({ k: 'btn', el: d, fn: fn });
+              return d;
+            }
+            function enter(id) { sel = null; active = id; build(); startView('/spatial/' + id + '.jpg'); UI.hideHub(); }
+            function exit() { stopView(); active = null; build(); }
+            function build() {
+              sg.innerHTML = ''; sc.innerHTML = ''; T.length = 0;
+              var np = maxPage() + 1;
+              if (np > 1) {
+                mkBtn('sb', '&#8249;', function () { page = (page + np - 1) % np; sel = null; build(); }, sc);
+                var pl = document.createElement('span'); pl.className = 'pl'; pl.textContent = (page + 1) + '/' + np; sc.appendChild(pl);
+                mkBtn('sb', '&#8250;', function () { page = (page + 1) % np; sel = null; build(); }, sc);
+              }
+              if (active) mkBtn('sb', ICON_OUT + '<span>Sair</span>', exit, sc);
+              mkBtn('st add', ICON_PLUS + '<span>Importar</span>', function () { A.spImport(); }, sg);
+              items.slice(page * PER, page * PER + PER).forEach(function (it) {
+                var d = mkBtn('st th' + (it.id === active ? ' on' : '') + (it.id === sel ? ' sel' : ''), '<div class="nm"></div>', function () { sel = (sel === it.id) ? null : it.id; build(); }, sg);
+                d.style.backgroundImage = 'url(/spatial/' + it.id + '_t.jpg)';
+                d.querySelector('.nm').textContent = it.name;
+                if (it.id === sel) {
+                  var cf = document.createElement('div'); cf.className = 'cf';
+                  cf.innerHTML = '<span>Entrar no modo espacial?</span><div class="bs"></div>';
+                  d.appendChild(cf);
+                  var bs = cf.querySelector('.bs');
+                  mkBtn('b', 'Sim', function () { enter(it.id); }, bs);
+                  mkBtn('b', 'Não', function () { sel = null; build(); }, bs);
+                }
+              });
+              UI.rebuild();
+            }
+            function load() {
+              try { items = JSON.parse(A.spList() || '[]'); } catch (e) { items = []; }
+              if (page > maxPage()) page = maxPage();
+              build();
+            }
+            window.SP = { onTab: function (on) { if (on) load(); else sel = null; } };
+            window.__spBack = function (m) {
+              ensureCam(); setTimeout(ensureCam, 1200);
+              if (m) toast(m);
+              page = 0; load();
+            };
+            document.addEventListener('visibilitychange', function () { if (!document.hidden) ensureCam(); });
+          })();
+          EOF
+          python3 - <<'PY'
+          def patch(path, old, new):
+              s = open(path, encoding='utf-8').read()
+              assert old in s, 'nao achei em ' + path + ': ' + old
+              open(path, 'w', encoding='utf-8').write(s.replace(old, new, 1))
+          A = 'app/src/main/assets/'
+          U = A + 'ui.js'
+          J = 'app/src/main/java/com/vr/launcher/MainActivity.java'
+          patch(A + 'fix.js', 'var buf = [], orig = null;', 'var buf = [], orig = null, Lx = null;\n            window.__lag = function (v) { Lx = v; };')
+          patch(A + 'fix.js', 'while (buf.length > 1 && buf[1][0] <= now - L) buf.shift();', 'while (buf.length > 1 && buf[1][0] <= now - (Lx != null ? Lx : L)) buf.shift();')
+          patch(U, "['space', 'Espacial', soon],", "['space', 'Espacial', function () { setTab('space'); }],")
+          patch(U, 'T_hub = [], T_apps = [], miApps = null, miHelp = null;', 'T_hub = [], T_apps = [], T_space = [], miApps = null, miHelp = null, miSpace = null;')
+          patch(U, "if (m[0] === 'help') miHelp = d;", "if (m[0] === 'help') miHelp = d;\n              if (m[0] === 'space') miSpace = d;")
+          patch(U, 'focus: function (W) { if (W && W.dom) focusWin(W); }, hubHidden: function () { return HUB.hidden; }', 'focus: function (W) { if (W && W.dom) focusWin(W); }, hubHidden: function () { return HUB.hidden; }, rebuild: function () { rebuild(); }, closeTab: function () { closeTab(); }, get T_space() { return T_space; }, get tabSpace() { return tabSpace; }')
+          patch(U, 'function updTabs() {', """var tabSpace = mk2('tab', '<div class="sh"><span>ESPACIAL</span><div class="sc"></div></div><div class="sg"></div>');
+            tabSpace.style.zIndex = 200;
+            function updTabs() {""")
+          patch(U, "miHelp.classList.toggle('on', TAB === 'help');", """miHelp.classList.toggle('on', TAB === 'help');
+              tabSpace.style.display = TAB === 'space' ? 'flex' : 'none';
+              miSpace.classList.toggle('on', TAB === 'space');
+              if (window.SP && window.SP.onTab) window.SP.onTab(TAB === 'space');""")
+          patch(U, "if (TAB === 'apps') t = t.concat(T_apps);", "if (TAB === 'apps') t = t.concat(T_apps);\n                else if (TAB === 'space') t = t.concat(T_space);")
+          patch(U, "var act = TAB === 'apps' ? tabApps : (TAB === 'help' ? tabHelp : null);", "var act = TAB === 'apps' ? tabApps : (TAB === 'help' ? tabHelp : (TAB === 'space' ? tabSpace : null));")
+          patch(U, "if (TAB) ghR.push((TAB === 'apps' ? tabApps : tabHelp).getBoundingClientRect());", "if (TAB) ghR.push((TAB === 'apps' ? tabApps : (TAB === 'space' ? tabSpace : tabHelp)).getBoundingClientRect());")
+          patch('app/src/main/AndroidManifest.xml', '<application android:label="VR Launcher"', '<application android:largeHeap="true" android:label="VR Launcher"')
+          patch(J, 'import java.io.InputStream;', '''import java.io.InputStream;
+          import java.io.File;
+          import java.io.FileOutputStream;
+          import android.content.ClipData;
+          import android.content.Intent;
+          import android.database.Cursor;
+          import android.graphics.Bitmap;
+          import android.graphics.BitmapFactory;
+          import android.provider.OpenableColumns;
+          import org.json.JSONArray;
+          import org.json.JSONObject;''')
+          patch(J, 'else if (p.endsWith(".task")) { mime = "application/octet-stream"; enc = null; }', 'else if (p.endsWith(".task")) { mime = "application/octet-stream"; enc = null; }\n                    else if (p.endsWith(".jpg")) { mime = "image/jpeg"; enc = null; }')
+          patch(J, 'InputStream in = getAssets().open(p.substring(1));', r'''InputStream in;
+                    if (p.startsWith("/spatial/")) in = new java.io.FileInputStream(new File(getFilesDir(), "spatial/" + new File(p).getName()));
+                    else in = getAssets().open(p.substring(1));''')
+          patch(J, '@JavascriptInterface public void front(final int id) { ui.post(() -> frontWin(id)); }', '''@JavascriptInterface public void front(final int id) { ui.post(() -> frontWin(id)); }
+              @JavascriptInterface public void spImport() { ui.post(() -> spPick()); }
+              @JavascriptInterface public String spList() { return spListJson(); }''')
+          patch(J, 'float[] loc(Win w, float x, float y) {', r'''static final int REQ_SP = 77; int spCnt = 0;
+            void jsCall(final String js) { ui.post(() -> { if (web != null) web.evaluateJavascript(js, null); }); }
+            void spPick() {
+              try {
+                Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                i.addCategory(Intent.CATEGORY_OPENABLE);
+                i.setType("image/*");
+                i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+                startActivityForResult(i, REQ_SP);
+              } catch (Exception e) { jsCall("window.__spBack&&window.__spBack(" + JSONObject.quote("Não consegui abrir o seletor") + ")"); }
+            }
+            @Override protected void onActivityResult(int req, int res, Intent data) {
+              super.onActivityResult(req, res, data);
+              if (req != REQ_SP) return;
+              final ArrayList<Uri> uris = new ArrayList<>();
+              if (res == RESULT_OK && data != null) {
+                ClipData cd = data.getClipData();
+                if (cd != null) { for (int i = 0; i < cd.getItemCount(); i++) uris.add(cd.getItemAt(i).getUri()); }
+                else if (data.getData() != null) uris.add(data.getData());
+              }
+              if (uris.isEmpty()) { jsCall("window.__spBack&&window.__spBack()"); return; }
+              new Thread(() -> {
+                int ok = 0; String err = "";
+                for (Uri u : uris) {
+                  try { spImportOne(u); ok++; } catch (Throwable t) { err = String.valueOf(t.getMessage()); }
+                }
+                String msg = ok > 0 ? (ok == 1 ? "Imagem importada" : ok + " imagens importadas") : ("Não consegui importar: " + err);
+                jsCall("window.__spBack&&window.__spBack(" + JSONObject.quote(msg) + ")");
+              }).start();
+            }
+            void spImportOne(Uri u) throws Exception {
+              String name = "imagem";
+              Cursor c = getContentResolver().query(u, new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null);
+              if (c != null) { try { if (c.moveToFirst() && c.getString(0) != null) name = c.getString(0); } finally { c.close(); } }
+              int dot = name.lastIndexOf('.'); if (dot > 0) name = name.substring(0, dot);
+              BitmapFactory.Options o = new BitmapFactory.Options(); o.inJustDecodeBounds = true;
+              InputStream in = getContentResolver().openInputStream(u);
+              try { BitmapFactory.decodeStream(in, null, o); } finally { if (in != null) in.close(); }
+              if (o.outWidth <= 0 || o.outHeight <= 0) throw new Exception("formato não suportado (use JPG ou PNG)");
+              int tw = o.outWidth >= 3072 ? 4096 : (o.outWidth >= 1536 ? 2048 : 1024), th = tw / 2;
+              int ss = 1; while (o.outWidth / (ss * 2) >= tw) ss *= 2;
+              BitmapFactory.Options o2 = new BitmapFactory.Options(); o2.inSampleSize = ss;
+              Bitmap b;
+              in = getContentResolver().openInputStream(u);
+              try { b = BitmapFactory.decodeStream(in, null, o2); } finally { if (in != null) in.close(); }
+              if (b == null) throw new Exception("não consegui ler a imagem");
+              Bitmap s = (b.getWidth() == tw && b.getHeight() == th) ? b : Bitmap.createScaledBitmap(b, tw, th, true);
+              if (s != b) b.recycle();
+              File dir = new File(getFilesDir(), "spatial"); dir.mkdirs();
+              String id = String.valueOf(System.currentTimeMillis() * 10 + (spCnt++ % 10));
+              FileOutputStream fo = new FileOutputStream(new File(dir, id + ".jpg"));
+              try { s.compress(Bitmap.CompressFormat.JPEG, 90, fo); } finally { fo.close(); }
+              Bitmap t = Bitmap.createScaledBitmap(s, 320, 160, true);
+              fo = new FileOutputStream(new File(dir, id + "_t.jpg"));
+              try { t.compress(Bitmap.CompressFormat.JPEG, 80, fo); } finally { fo.close(); }
+              fo = new FileOutputStream(new File(dir, id + ".txt"));
+              try { fo.write(name.getBytes("UTF-8")); } finally { fo.close(); }
+              t.recycle(); s.recycle();
+            }
+            String spListJson() {
+              JSONArray arr = new JSONArray();
+              try {
+                File dir = new File(getFilesDir(), "spatial");
+                File[] fs = dir.listFiles();
+                if (fs != null) {
+                  ArrayList<String> ids = new ArrayList<>();
+                  for (File f : fs) { String n = f.getName(); if (n.endsWith(".txt")) ids.add(n.substring(0, n.length() - 4)); }
+                  java.util.Collections.sort(ids, java.util.Collections.reverseOrder());
+                  for (String id : ids) {
+                    if (!new File(dir, id + ".jpg").exists()) continue;
+                    String nm = id;
+                    try {
+                      File tf = new File(dir, id + ".txt");
+                      java.io.FileInputStream fi = new java.io.FileInputStream(tf);
+                      byte[] bb = new byte[(int) tf.length()];
+                      int rd = fi.read(bb); fi.close();
+                      nm = new String(bb, 0, Math.max(rd, 0), "UTF-8");
+                    } catch (Exception e) { }
+                    JSONObject jo = new JSONObject(); jo.put("id", id); jo.put("name", nm); arr.put(jo);
+                  }
+                }
+              } catch (Exception e) { }
+              return arr.toString();
+            }
+            float[] loc(Win w, float x, float y) {''')
+          PY
       - name: Compilar
         run: gradle assembleDebug --no-daemon
       - uses: actions/upload-artifact@v4
