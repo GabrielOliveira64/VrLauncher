@@ -3205,6 +3205,259 @@ jobs:
             }
             float[] loc(Win w, float x, float y) {''')
           PY
+      - name: Lixeira, ajustes fixos e gesto do menu
+        run: |
+          cat > app/src/main/assets/fix.js <<'EOF'
+          (function () {
+            var L = 20, K = 0.40;
+            var buf = [], orig = null, Lx = null;
+            window.__lag = function (v) { Lx = v; };
+            function wrap(a, x, y, z) {
+              var now = performance.now();
+              if (orig) orig(a, x, y, z);
+              buf.push([now, a]);
+              while (buf.length > 1 && buf[1][0] <= now - (Lx != null ? Lx : L)) buf.shift();
+              Rdev = buf[0][1];
+            }
+            Object.defineProperty(window, '__r', { configurable: true, get: function () { return wrap; }, set: function (f) { orig = f; } });
+            function applyK() { P = innerWidth * K; view.style.perspective = P + 'px'; }
+            addEventListener('resize', applyK);
+            applyK();
+          })();
+          EOF
+          cat > app/src/main/assets/spatial.js <<'EOF'
+          (function () {
+            var A = window.Android, UI = window.UI, cam = document.getElementById('cam');
+            if (!A || !UI || !A.spList || !UI.tabSpace) return;
+            var css = document.createElement('style');
+            css.textContent = [
+              '.sh{display:flex;align-items:center;justify-content:space-between;height:44px;font-size:20px;font-weight:300;letter-spacing:2px}',
+              '.sl{display:flex;align-items:center}',
+              '.stt{opacity:.7}',
+              '.sc{display:flex;align-items:center;gap:8px}',
+              '.pl{font-size:16px;opacity:.7;min-width:34px;text-align:center}',
+              '.sb{display:flex;align-items:center;justify-content:center;gap:8px;height:44px;min-width:44px;padding:0 16px;border-radius:22px;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.14);font-size:20px;letter-spacing:.5px;transition:background .12s,color .12s}',
+              '.sb span{font-size:17px}',
+              '.sb svg,.st svg{width:22px;height:22px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}',
+              '.sb.on{background:rgba(255,255,255,.28)}',
+              '.sb.hand{background:#fff;color:#000}',
+              '.sg{flex:1;display:grid;grid-template-columns:repeat(4,1fr);grid-template-rows:repeat(2,1fr);gap:12px}',
+              '.st{position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;border-radius:22px;overflow:hidden;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.12);font-size:16px;transition:transform .15s,background .12s,border-color .12s}',
+              '.st svg{width:34px;height:34px}',
+              '.st.th{background-size:cover;background-position:center}',
+              '.st .nm{position:absolute;left:0;right:0;bottom:0;padding:18px 10px 6px;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:linear-gradient(transparent,rgba(0,0,0,.7))}',
+              '.st.rm{border-color:rgba(255,130,130,.75)}',
+              '.st.dis{opacity:.3}',
+              '.st.hand{border-color:#fff;transform:scale(1.04)}',
+              '.st.add.hand{background:#fff;color:#000}',
+              '.st.on::after{content:"";position:absolute;right:8px;top:8px;width:10px;height:10px;border-radius:50%;background:#5eead4}',
+              '.st.sel{z-index:5;transform:scale(1.25);border-color:#fff}',
+              '.st .cf{position:absolute;left:0;top:0;right:0;bottom:0;background:rgba(8,10,14,.86);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;font-size:13px;line-height:1.2;text-align:center;padding:6px}',
+              '.cf .bs{display:flex;gap:8px}',
+              '.cf .b{width:56px;height:30px;border-radius:15px;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.16);font-size:14px;transition:background .12s,color .12s}',
+              '.cf .b.hand{background:#fff;color:#000}'
+            ].join('');
+            document.head.appendChild(css);
+
+            var tab = UI.tabSpace, sg = tab.querySelector('.sg'), sc = tab.querySelector('.sc'), T = UI.T_space;
+            var shEl = tab.querySelector('.sh'), sl = document.createElement('div');
+            sl.className = 'sl';
+            shEl.replaceChild(sl, shEl.firstElementChild);
+            var items = [], page = 0, sel = null, active = null, PER = 7, running = false, selMode = false;
+            var ICON_PLUS = '<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>';
+            var ICON_OUT = '<svg viewBox="0 0 24 24"><path d="M14 4h5a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-5"/><path d="M10 16l-4-4 4-4M6 12h10"/></svg>';
+            var ICON_TRASH = '<svg viewBox="0 0 24 24"><path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 13h10l1-13"/><path d="M10 11v6M14 11v6"/></svg>';
+            var ICON_X = '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>';
+
+            function toast(t) {
+              var d = document.createElement('div');
+              d.style.cssText = 'position:fixed;bottom:14px;left:50%;transform:translateX(-50%);z-index:40;background:rgba(0,0,0,.75);color:#fff;font:13px system-ui;padding:7px 14px;border-radius:999px;max-width:90%';
+              d.textContent = t; document.body.appendChild(d);
+              setTimeout(function () { d.remove(); }, 3200);
+            }
+            function ensureCam() {
+              try {
+                var s = cam.srcObject;
+                var ok = s && s.getVideoTracks().some(function (t) { return t.readyState === 'live'; });
+                if (ok) return;
+                navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment', width: { ideal: 960 }, height: { ideal: 540 }, frameRate: { ideal: 30 } }, audio: false })
+                  .then(function (st) { cam.srcObject = st; cam.play(); }).catch(function () {});
+              } catch (e) {}
+            }
+
+            var cv = document.createElement('canvas');
+            cv.id = 'sp';
+            cv.style.cssText = 'position:fixed;left:0;top:0;width:100%;height:100%;z-index:1;display:none;opacity:0;transition:opacity .6s;pointer-events:none;background:#000';
+            document.body.appendChild(cv);
+            var gl = null, prog = null, uM, uS, uF, tex = null;
+            function initGL() {
+              if (gl) return true;
+              gl = cv.getContext('webgl', { alpha: false, antialias: false, depth: false, stencil: false, powerPreference: 'high-performance' });
+              if (!gl) return false;
+              function sh(type, src) {
+                var s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+                if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+                return s;
+              }
+              try {
+                var vs = sh(gl.VERTEX_SHADER, 'attribute vec2 a;varying vec2 p;void main(){p=a;gl_Position=vec4(a,0.,1.);}');
+                var fs = sh(gl.FRAGMENT_SHADER, [
+                  '#ifdef GL_FRAGMENT_PRECISION_HIGH', 'precision highp float;', '#else', 'precision mediump float;', '#endif',
+                  'uniform sampler2D t;uniform mat3 m;uniform vec2 s;uniform float f;varying vec2 p;',
+                  'void main(){vec3 r=vec3(p.x*s.x*.5,-p.y*s.y*.5,-f);vec3 w=m*r;',
+                  'float az=atan(w.x,-w.z);float el=atan(-w.y,length(vec2(w.x,w.z)));',
+                  'gl_FragColor=vec4(texture2D(t,vec2(az*.15915494+.5,.5-el*.31830989)).rgb,1.);}'
+                ].join('\n'));
+                prog = gl.createProgram(); gl.attachShader(prog, vs); gl.attachShader(prog, fs); gl.linkProgram(prog);
+                if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+              } catch (e) { gl = null; return false; }
+              gl.useProgram(prog);
+              var buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+              gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+              var la = gl.getAttribLocation(prog, 'a'); gl.enableVertexAttribArray(la); gl.vertexAttribPointer(la, 2, gl.FLOAT, false, 0, 0);
+              uM = gl.getUniformLocation(prog, 'm'); uS = gl.getUniformLocation(prog, 's'); uF = gl.getUniformLocation(prog, 'f');
+              gl.uniform1i(gl.getUniformLocation(prog, 't'), 0);
+              return true;
+            }
+            function loop() {
+              if (!running) return;
+              requestAnimationFrame(loop);
+              var rs = Math.min(window.devicePixelRatio || 1, 1.25), w = Math.round(innerWidth * rs), h = Math.round(innerHeight * rs);
+              if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; gl.viewport(0, 0, w, h); }
+              var Rf = (mode === 'gyro') ? mul(rz(off), Rc) : Rc;
+              var M = mul(Dm, mul(tr(Rf), Cm));
+              gl.uniformMatrix3fv(uM, false, M);
+              gl.uniform2f(uS, innerWidth, innerHeight);
+              gl.uniform1f(uF, P);
+              gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+            }
+            function startView(url) {
+              var img = new Image();
+              img.onload = function () {
+                if (!initGL()) { toast('WebGL indisponível'); active = null; build(); return; }
+                if (tex) gl.deleteTexture(tex);
+                tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
+                gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+                gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, img);
+                var iw = img.naturalWidth, ih = img.naturalHeight, pot = (iw & (iw - 1)) === 0 && (ih & (ih - 1)) === 0;
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, pot ? gl.REPEAT : gl.CLAMP_TO_EDGE);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+                cv.style.display = 'block'; void cv.offsetWidth; cv.style.opacity = '1';
+                if (window.__lag) window.__lag(0);
+                if (!running) { running = true; requestAnimationFrame(loop); }
+              };
+              img.onerror = function () { toast('Não consegui abrir a imagem'); active = null; build(); };
+              img.src = url;
+            }
+            function stopView() {
+              running = false; cv.style.opacity = '0';
+              setTimeout(function () {
+                if (!running) { cv.style.display = 'none'; if (gl && tex) { gl.deleteTexture(tex); tex = null; } }
+              }, 650);
+              if (window.__lag) window.__lag(null);
+            }
+
+            function maxPage() { return Math.max(0, Math.ceil(items.length / PER) - 1); }
+            function mkBtn(cls, html, fn, parent) {
+              var d = document.createElement('div'); d.className = cls; d.innerHTML = html; parent.appendChild(d);
+              T.push({ k: 'btn', el: d, fn: fn });
+              return d;
+            }
+            function enter(id) { sel = null; selMode = false; active = id; build(); startView('/spatial/' + id + '.jpg'); UI.hideHub(); }
+            function exit() { stopView(); active = null; build(); }
+            function delItem(id) {
+              var ok = false;
+              try { ok = A.spDelete ? A.spDelete(id) : false; } catch (e) {}
+              sel = null;
+              if (!ok) toast('Não consegui deletar');
+              load();
+            }
+            function build() {
+              sg.innerHTML = ''; sc.innerHTML = ''; sl.innerHTML = ''; T.length = 0;
+              if (selMode) mkBtn('sb', ICON_X + '<span>Cancelar</span>', function () { selMode = false; sel = null; build(); }, sl);
+              else { var tt = document.createElement('span'); tt.className = 'stt'; tt.textContent = 'ESPACIAL'; sl.appendChild(tt); }
+              var np = maxPage() + 1;
+              if (np > 1) {
+                mkBtn('sb', '&#8249;', function () { page = (page + np - 1) % np; sel = null; build(); }, sc);
+                var pl = document.createElement('span'); pl.className = 'pl'; pl.textContent = (page + 1) + '/' + np; sc.appendChild(pl);
+                mkBtn('sb', '&#8250;', function () { page = (page + 1) % np; sel = null; build(); }, sc);
+              }
+              if (active) mkBtn('sb', ICON_OUT + '<span>Sair</span>', exit, sc);
+              else if (items.length) mkBtn('sb' + (selMode ? ' on' : ''), ICON_TRASH, function () { selMode = !selMode; sel = null; build(); }, sc);
+              if (selMode) {
+                var ad = document.createElement('div'); ad.className = 'st add dis'; ad.innerHTML = ICON_PLUS + '<span>Importar</span>'; sg.appendChild(ad);
+              } else mkBtn('st add', ICON_PLUS + '<span>Importar</span>', function () { A.spImport(); }, sg);
+              items.slice(page * PER, page * PER + PER).forEach(function (it) {
+                var d = mkBtn('st th' + (it.id === active ? ' on' : '') + (selMode ? ' rm' : '') + (it.id === sel ? ' sel' : ''), '<div class="nm"></div>', function () { sel = (sel === it.id) ? null : it.id; build(); }, sg);
+                d.style.backgroundImage = 'url(/spatial/' + it.id + '_t.jpg)';
+                d.querySelector('.nm').textContent = it.name;
+                if (it.id === sel) {
+                  var cf = document.createElement('div'); cf.className = 'cf';
+                  cf.innerHTML = '<span>' + (selMode ? 'Deletar item?' : 'Entrar no modo espacial?') + '</span><div class="bs"></div>';
+                  d.appendChild(cf);
+                  var bs = cf.querySelector('.bs');
+                  mkBtn('b', 'Sim', function () { if (selMode) delItem(it.id); else enter(it.id); }, bs);
+                  mkBtn('b', 'Não', function () { sel = null; build(); }, bs);
+                }
+              });
+              UI.rebuild();
+            }
+            function load() {
+              try { items = JSON.parse(A.spList() || '[]'); } catch (e) { items = []; }
+              if (!items.length) selMode = false;
+              if (page > maxPage()) page = maxPage();
+              build();
+            }
+            window.SP = { onTab: function (on) { if (on) load(); else { sel = null; selMode = false; } } };
+            window.__spBack = function (m) {
+              ensureCam(); setTimeout(ensureCam, 1200);
+              if (m) toast(m);
+              page = 0; load();
+            };
+            document.addEventListener('visibilitychange', function () { if (!document.hidden) ensureCam(); });
+          })();
+          EOF
+          python3 - <<'PY'
+          def patch(path, old, new):
+              s = open(path, encoding='utf-8').read()
+              assert old in s, 'nao achei em ' + path + ': ' + old
+              open(path, 'w', encoding='utf-8').write(s.replace(old, new, 1))
+          U = 'app/src/main/assets/ui.js'
+          J = 'app/src/main/java/com/vr/launcher/MainActivity.java'
+          patch(U, 'lastPk = 0, swo = null, lastPo = 0;', 'lastPk = 0, swo = null, lastPo = 0, swr = null, lastRe = 0;')
+          patch(U, 'function hideHub() {', '''function recenterHub() {
+              var hf = TAB ? hwd(360, HUB.s, HUB.R) + hwd(760, HUB.s, HUB.R) + 3.25 : hwd(360, HUB.s, HUB.R) + 2;
+              HUB.az = gaze.az; HUB.ev = clamp(gaze.el, -35, 35); HUB.taz = null;
+              var fz = freeAz(hf, gaze.az); if (fz !== null) HUB.az = fz;
+              lastRe = performance.now();
+            }
+            function hideHub() {''')
+          patch(U, 'if (hr.width > 1 && pt.x >= hr.left - 40 && pt.x <= hr.right + 40) {', 'if (now - lastRe < 900) { sw = null; } else if (hr.width > 1 && pt.x >= hr.left - 40 && pt.x <= hr.right + 40) {')
+          patch(U, '} else sw = null;', '''} else {
+                  sw = null;
+                  var tR = TAB ? (TAB === 'apps' ? tabApps : (TAB === 'space' ? tabSpace : tabHelp)).getBoundingClientRect() : null;
+                  var inT = !!(tR && tR.width > 1 && pt.x >= tR.left - 40 && pt.x <= tR.right + 40);
+                  if (inT) swr = null;
+                  else if (!swr || now - swr.t > 1200) swr = { y0: pt.y, t: now };
+                  else if (pt.y < swr.y0) { swr.y0 = pt.y; swr.t = now; }
+                  else if (pt.y - swr.y0 > innerHeight * 0.25) { swr = null; recenterHub(); }
+                }''')
+          patch(U, '} else if (now - lastPk > 300) sw = null;', '} else if (now - lastPk > 300) { sw = null; swr = null; }')
+          patch(U, """<b>Corrente entre janelas</b> — desagrupa</span></div></div>');""", """<b>Corrente entre janelas</b> — desagrupa</span></div>' +
+                '<div class="hi"><span><b>Dois dedos descendo fora do menu</b> — traz o menu para onde você olha</span></div></div>');""")
+          patch(J, '@JavascriptInterface public String spList() { return spListJson(); }', '@JavascriptInterface public String spList() { return spListJson(); }\n              @JavascriptInterface public boolean spDelete(final String id) { return spDel(id); }')
+          patch(J, 'static final int REQ_SP = 77; int spCnt = 0;', '''static final int REQ_SP = 77; int spCnt = 0;
+            boolean spDel(String id) {
+              if (id == null || !id.matches("[0-9]+")) return false;
+              File dir = new File(getFilesDir(), "spatial");
+              boolean ok = false;
+              String[] sf = { ".jpg", "_t.jpg", ".txt" };
+              for (String s : sf) { File f = new File(dir, id + s); if (f.exists() && f.delete()) ok = true; }
+              return ok;
+            }''')
+          PY
       - name: Compilar
         run: gradle assembleDebug --no-daemon
       - uses: actions/upload-artifact@v4
