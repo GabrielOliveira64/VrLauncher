@@ -2888,6 +2888,19 @@ jobs:
           patch(A + 'boot.js', 'if (!loaded || window.__fist || !UI.hubHidden()', 'if (true || !loaded || window.__fist || !UI.hubHidden()')
           patch(A + 'boot.js', 'Faça a pinça por 1 segundo para abrir o menu', 'Passe indicador e médio juntos, de cima para baixo, para abrir o menu')
           PY
+      - name: Corrigir piscada de janelas
+        run: |
+          python3 - <<'PY'
+          def patch(path, old, new):
+              s = open(path, encoding='utf-8').read()
+              assert old in s, 'nao achei em ' + path + ': ' + old
+              open(path, 'w', encoding='utf-8').write(s.replace(old, new, 1))
+          U = 'app/src/main/assets/ui.js'
+          patch(U, 'Wq.gh = gq;', '''if (!ghR.length) { Wq.gh = false; Wq.gT0 = 0; Wq.gT1 = 0; }
+                else if (gq) { Wq.gT0 = 0; Wq.gT1 = Wq.gT1 || now; if (now - Wq.gT1 > 150) Wq.gh = true; }
+                else { Wq.gT1 = 0; Wq.gT0 = Wq.gT0 || now; if (now - Wq.gT0 > 350) Wq.gh = false; }''')
+          patch(U, "Wq.dom.classList.toggle('gst', gq);", "Wq.dom.classList.toggle('gst', !!Wq.gh);")
+          PY
       - name: Compilar
         run: gradle assembleDebug --no-daemon
       - uses: actions/upload-artifact@v4
