@@ -3458,6 +3458,303 @@ jobs:
               return ok;
             }''')
           PY
+      - name: Vídeos no modo espacial
+        run: |
+          python3 - <<'PY'
+          def patch(path, old, new):
+              s = open(path, encoding='utf-8').read()
+              assert old in s, 'nao achei em ' + path + ': ' + old
+              open(path, 'w', encoding='utf-8').write(s.replace(old, new, 1))
+          A = 'app/src/main/assets/'
+          S = A + 'spatial.js'
+          J = 'app/src/main/java/com/vr/launcher/MainActivity.java'
+          patch(A + 'boot.js', 'if (true || !loaded', 'if (!(window.__vctl && window.__vctl(h.x, h.y)) || !loaded')
+          patch(A + 'boot.js', 'UI.showHub(); dropHint();', 'if (window.__vopen) window.__vopen(); dropHint();')
+          patch(A + 'ui.js', 'UI.T = t; UI.TL = [];', 'UI.T = t.concat(window.__TV || []); UI.TL = [];')
+          patch(A + 'ui.js', '<div class="hi"><span><b>Corrente entre janelas</b> — desagrupa</span></div>', '<div class="hi"><span><b>Pinça por 1 s</b>, no modo espacial com vídeo — abre os controles do vídeo</span></div>')
+          patch(A + 'ui.js', '<b>Arrastar uma janela sobre outra</b> — agrupa (até 3)</span>', '<b>Arrastar uma janela sobre outra</b> — agrupa (até 3); a <b>corrente</b> desagrupa</span>')
+          patch(S, 'var gl = null, prog = null, uM, uS, uF, tex = null;', 'var gl = null, prog = null, uM, uS, uF, tex = null;\n            var vid = null, isVid = false, lastCt = -1, forceUp = false;')
+          patch(S, 'gl.uniform1f(uF, P);', r'''gl.uniform1f(uF, P);
+              if (isVid && vid && tex && vid.readyState >= 2 && (forceUp || vid.currentTime !== lastCt)) {
+                lastCt = vid.currentTime; forceUp = false;
+                gl.bindTexture(gl.TEXTURE_2D, tex);
+                try { gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGB, gl.UNSIGNED_BYTE, vid); } catch (e) {}
+              }''')
+          patch(S, 'function startView(url) {', 'function startView(url) {\n              endVideo(); isVid = false;')
+          patch(S, "running = false; cv.style.opacity = '0';", "endVideo(); running = false; cv.style.opacity = '0';")
+          patch(S, "startView('/spatial/' + id + '.jpg');", "var itm = items.filter(function (q) { return q.id === id; })[0]; if (itm && itm.type === 'video') startVideo('/spatial/' + id + '.mp4', itm.name); else startView('/spatial/' + id + '.jpg');")
+          patch(S, "var d = mkBtn('st th' + (it.id === active ? ' on' : '')", "var d = mkBtn('st th' + (it.type === 'video' ? ' vd' : '') + (it.id === active ? ' on' : '')")
+          patch(S, "'.st.hand{border-color:#fff;transform:scale(1.04)}',", "'.st.hand{border-color:#fff;transform:scale(1.04)}',\n              '.st.vd::before{content:\"\";position:absolute;left:9px;top:8px;width:0;height:0;border-left:11px solid #fff;border-top:7px solid transparent;border-bottom:7px solid transparent;z-index:2;filter:drop-shadow(0 1px 2px rgba(0,0,0,.6))}',")
+          patch(S, 'window.SP = { onTab:', 'window.__spMsg = toast;\n            window.SP = { onTab:')
+          patch(S, 'function maxPage() {', r'''var ICO = {
+              restart: '<svg viewBox="0 0 24 24"><path d="M6 5v14"/><path d="M18 6l-9 6 9 6z"/></svg>',
+              back: '<svg viewBox="0 0 24 24"><path d="M11 6l-7 6 7 6z"/><path d="M20 6l-7 6 7 6z"/></svg>',
+              play: '<svg viewBox="0 0 24 24"><path d="M8 5l11 7-11 7z"/></svg>',
+              pause: '<svg viewBox="0 0 24 24"><path d="M9 5v14"/><path d="M15 5v14"/></svg>',
+              fwd: '<svg viewBox="0 0 24 24"><path d="M13 6l7 6-7 6z"/><path d="M4 6l7 6-7 6z"/></svg>',
+              vol: '<svg viewBox="0 0 24 24"><path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M16.5 9a4 4 0 0 1 0 6"/><path d="M19 6.5a8 8 0 0 1 0 11"/></svg>',
+              mute: '<svg viewBox="0 0 24 24"><path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M17 9.5l4.5 5M21.5 9.5l-4.5 5"/></svg>',
+              loop: '<svg viewBox="0 0 24 24"><path d="M17 3l3 3-3 3"/><path d="M4 12V9a3 3 0 0 1 3-3h13"/><path d="M7 21l-3-3 3-3"/><path d="M20 12v3a3 3 0 0 1-3 3H4"/></svg>',
+              x: '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>'
+            };
+            var vp = null, T_v = [], pan = { az: 0, ev: 0 }, vpShown = false, barEl, fillEl, knobEl, timeEl, nameEl, btnPlay, btnSpd, btnMute, btnLoop;
+            var tmr = null, wasPlaying = false, vidName = '', SPD = [0.5, 0.75, 1, 1.25, 1.5, 2], spi = 2;
+            var vcss = document.createElement('style');
+            vcss.textContent = [
+              '.vpn{width:760px;height:240px;margin:-120px 0 0 -380px;padding:22px 28px;border-radius:40px;background:rgba(14,16,22,.55);border:1px solid rgba(255,255,255,.16);-webkit-backdrop-filter:blur(26px) saturate(1.4);backdrop-filter:blur(26px) saturate(1.4);box-shadow:0 18px 60px rgba(0,0,0,.35);display:none;flex-direction:column;justify-content:space-between;z-index:210;transition:opacity .25s}',
+              '.vtop{display:flex;justify-content:space-between;align-items:baseline;font-size:19px;font-weight:300;letter-spacing:.5px}',
+              '.vtop .vn{opacity:.7;max-width:430px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
+              '.vtop .vt{font-variant-numeric:tabular-nums}',
+              '.vbar{position:relative;height:44px}',
+              '.vtr{position:absolute;left:0;right:0;top:18px;height:8px;border-radius:4px;background:rgba(255,255,255,.22);overflow:hidden}',
+              '.vf{height:100%;width:0;background:#fff}',
+              '.vk{position:absolute;top:12px;left:-10px;width:20px;height:20px;border-radius:50%;background:#fff;box-shadow:0 2px 8px rgba(0,0,0,.4);transition:transform .12s}',
+              '.vbar.hand .vk{transform:scale(1.4)}',
+              '.vrow{display:flex;align-items:center;justify-content:space-between}',
+              '.vg{display:flex;gap:10px}',
+              '.vb{display:flex;align-items:center;justify-content:center;gap:6px;height:54px;min-width:54px;padding:0 14px;border-radius:27px;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.14);font-size:17px;transition:background .12s,color .12s}',
+              '.vb svg{width:26px;height:26px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}',
+              '.vb.on{background:rgba(255,255,255,.28)}',
+              '.vb.hand{background:#fff;color:#000}'
+            ].join('');
+            document.head.appendChild(vcss);
+            window.__TV = [];
+            function fmt(s) { if (!isFinite(s)) s = 0; s = Math.floor(s); var m = Math.floor(s / 60), r = s % 60; return m + ':' + (r < 10 ? '0' : '') + r; }
+            function setIcon(b, k) { if (b.getAttribute('data-i') !== k) { b.setAttribute('data-i', k); b.innerHTML = ICO[k]; } }
+            function refresh() {
+              if (!vp || !vid) return;
+              var du = vid.duration, ct = vid.currentTime || 0, f = (du && isFinite(du)) ? Math.min(1, ct / du) : 0;
+              timeEl.textContent = fmt(ct) + ' / ' + fmt(du);
+              fillEl.style.width = (f * 100) + '%';
+              knobEl.style.left = 'calc(' + (f * 100) + '% - 10px)';
+              setIcon(btnPlay, vid.paused ? 'play' : 'pause');
+              setIcon(btnMute, vid.muted ? 'mute' : 'vol');
+              btnSpd.firstChild.textContent = SPD[spi] + '×';
+              btnLoop.classList.toggle('on', !!vid.loop);
+            }
+            function mkv(cls, html, fn, rep, parent) {
+              var d = document.createElement('div'); d.className = cls; d.innerHTML = html; parent.appendChild(d);
+              T_v.push({ k: 'btn', el: d, fn: fn, rep: !!rep });
+              return d;
+            }
+            function seekBy(d) {
+              if (!vid) return;
+              var du = vid.duration || 0, t = (vid.currentTime || 0) + d;
+              t = (du && isFinite(du)) ? Math.max(0, Math.min(du - 0.1, t)) : Math.max(0, t);
+              vid.currentTime = t; refresh();
+            }
+            function togglePlay() {
+              if (!vid) return;
+              if (vid.paused) { var p = vid.play(); if (p && p.catch) p.catch(function () {}); } else vid.pause();
+              setTimeout(refresh, 60);
+            }
+            function makePanel() {
+              if (vp) return;
+              vp = document.createElement('div'); vp.className = 'vpn';
+              vp.innerHTML = '<div class="vtop"><span class="vn"></span><span class="vt">0:00 / 0:00</span></div><div class="vbar"><div class="vtr"><div class="vf"></div></div><div class="vk"></div></div><div class="vrow"><div class="vg ga"></div><div class="vg gb"></div></div>';
+              document.getElementById('wl').appendChild(vp);
+              nameEl = vp.querySelector('.vn'); timeEl = vp.querySelector('.vt'); barEl = vp.querySelector('.vbar');
+              fillEl = vp.querySelector('.vf'); knobEl = vp.querySelector('.vk');
+              T_v.push({ k: 'btn', el: barEl, rep: true, fn: function () {
+                var r = barEl.getBoundingClientRect(), h = window.handCursor || {};
+                if (!vid || !isFinite(vid.duration) || r.width < 1) return;
+                vid.currentTime = Math.max(0, Math.min(1, (h.x - r.left) / r.width)) * vid.duration; refresh();
+              } });
+              var ga = vp.querySelector('.ga'), gb = vp.querySelector('.gb');
+              mkv('vb', ICO.restart, function () { if (vid) { vid.currentTime = 0; refresh(); } }, false, ga);
+              mkv('vb', ICO.back + '<span>10</span>', function () { seekBy(-10); }, true, ga);
+              btnPlay = mkv('vb', ICO.play, togglePlay, false, ga); btnPlay.setAttribute('data-i', 'play');
+              mkv('vb', '<span>10</span>' + ICO.fwd, function () { seekBy(10); }, true, ga);
+              btnSpd = mkv('vb', '<span>1×</span>', function () { spi = (spi + 1) % SPD.length; if (vid) vid.playbackRate = SPD[spi]; refresh(); }, false, gb);
+              btnMute = mkv('vb', ICO.vol, function () { if (vid) { vid.muted = !vid.muted; refresh(); } }, false, gb); btnMute.setAttribute('data-i', 'vol');
+              btnLoop = mkv('vb', ICO.loop, function () { if (vid) { vid.loop = !vid.loop; refresh(); } }, false, gb);
+              mkv('vb', ICO.x, hidePanel, false, gb);
+            }
+            function pos() {
+              if (!vpShown) return;
+              requestAnimationFrame(pos);
+              var Rf = (mode === 'gyro') ? mul(rz(off), Rc) : Rc, M = mul(Dm, mul(tr(Rf), Cm)), R = 700;
+              var x = R * Math.cos(pan.ev * D) * Math.sin(pan.az * D), y = -R * Math.sin(pan.ev * D), z = -R * Math.cos(pan.ev * D) * Math.cos(pan.az * D);
+              var cx = M[0] * x + M[1] * y + M[2] * z, cy = M[3] * x + M[4] * y + M[5] * z, dep = -(M[6] * x + M[7] * y + M[8] * z);
+              if (dep < 60) { vp.style.visibility = 'hidden'; return; }
+              var px = innerWidth / 2 + cx * P / dep, py = innerHeight / 2 + cy * P / dep, roll = Math.atan2(-M[1], M[4]) / D;
+              vp.style.visibility = 'visible';
+              vp.style.transform = 'translate(' + px.toFixed(1) + 'px,' + py.toFixed(1) + 'px) rotate(' + roll.toFixed(2) + 'deg) scale(' + (P / R).toFixed(4) + ')';
+            }
+            function showPanel() {
+              if (!isVid || vpShown) return;
+              makePanel();
+              nameEl.textContent = vidName;
+              pan.az = gaze.az; pan.ev = Math.max(-35, Math.min(35, gaze.el));
+              vp.style.display = 'flex'; vp.style.opacity = '0'; void vp.offsetWidth; vp.style.opacity = '1';
+              vpShown = true; window.__TV = T_v; UI.rebuild(); refresh();
+              tmr = setInterval(refresh, 250);
+              requestAnimationFrame(pos);
+            }
+            function hidePanel() {
+              if (!vpShown) return;
+              vpShown = false; if (vp) vp.style.display = 'none';
+              window.__TV = []; UI.rebuild();
+              if (tmr) { clearInterval(tmr); tmr = null; }
+            }
+            function endVideo() {
+              hidePanel();
+              if (vid) {
+                try { vid.pause(); vid.removeAttribute('src'); vid.load(); } catch (e) {}
+                if (vid.parentNode) vid.parentNode.removeChild(vid);
+                vid = null;
+              }
+              isVid = false;
+            }
+            function initVidTex() {
+              if (!initGL()) { toast('WebGL indisponível'); exit(); return; }
+              if (tex) gl.deleteTexture(tex);
+              tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
+              gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+              gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, vid.videoWidth, vid.videoHeight, 0, gl.RGB, gl.UNSIGNED_BYTE, null);
+              gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+              gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+              gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+              gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+              forceUp = true; lastCt = -1;
+              cv.style.display = 'block'; void cv.offsetWidth; cv.style.opacity = '1';
+              if (window.__lag) window.__lag(0);
+              if (!running) { running = true; requestAnimationFrame(loop); }
+            }
+            function startVideo(url, name) {
+              endVideo(); isVid = true; vidName = name || ''; spi = 2;
+              var me = document.createElement('video');
+              vid = me;
+              me.setAttribute('playsinline', ''); me.setAttribute('webkit-playsinline', '');
+              me.preload = 'auto'; me.loop = true; me.muted = false;
+              me.style.cssText = 'position:fixed;left:0;top:0;width:2px;height:2px;opacity:0;pointer-events:none';
+              document.body.appendChild(me);
+              me.addEventListener('seeked', function () { forceUp = true; });
+              me.addEventListener('play', refresh); me.addEventListener('pause', refresh);
+              me.addEventListener('error', function () { if (vid !== me) return; toast('Não consegui reproduzir este vídeo (precisa ser MP4 H.264)'); exit(); });
+              me.src = url;
+              var pr = me.play(); if (pr && pr.catch) pr.catch(function () {});
+              var t0 = performance.now();
+              (function wait() {
+                if (vid !== me) return;
+                if (me.readyState >= 2 && me.videoWidth > 0) { initVidTex(); return; }
+                if (performance.now() - t0 > 20000) { toast('O vídeo demorou demais para carregar'); exit(); return; }
+                setTimeout(wait, 100);
+              })();
+            }
+            window.__vctl = function (x, y) {
+              if (!isVid || !active || vpShown || !vid) return false;
+              var T = UI.T || [];
+              for (var i = 0; i < T.length; i++) {
+                var r = T[i].el.getBoundingClientRect();
+                if (r.width > 1 && x >= r.left - 16 && x <= r.right + 16 && y >= r.top - 16 && y <= r.bottom + 16) return false;
+              }
+              return true;
+            };
+            window.__vopen = function () { showPanel(); };
+            window.__bg = function (b) {
+              if (!isVid || !vid) return;
+              if (b) { wasPlaying = !vid.paused; vid.pause(); }
+              else if (wasPlaying) { var p2 = vid.play(); if (p2 && p2.catch) p2.catch(function () {}); wasPlaying = false; }
+            };
+            function maxPage() {''')
+          patch(J, 'import java.io.FileOutputStream;', 'import java.io.FileOutputStream;\n          import java.io.RandomAccessFile;\n          import java.io.IOException;')
+          patch(J, 'i.setType("image/*");', 'i.setType("*/*");\n                i.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"image/*", "video/mp4"});')
+          patch(J, 'int ok = 0; String err = "";', 'jsCall("window.__spMsg&&window.__spMsg(\'Importando…\')");\n                int ok = 0; String err = "";')
+          patch(J, 'String msg = ok > 0 ? (ok == 1 ? "Imagem importada" : ok + " imagens importadas") : ("Não consegui importar: " + err);', 'String msg = ok > 0 ? (ok == 1 ? "Item importado" : ok + " itens importados") : ("Não consegui importar: " + err);\n                if (ok > 0 && spNote.length() > 0) msg += " · " + spNote;\n                spNote = "";')
+          patch(J, 'static final int REQ_SP = 77; int spCnt = 0;', 'static final int REQ_SP = 77; int spCnt = 0; String spNote = "";')
+          patch(J, r"""int dot = name.lastIndexOf('.'); if (dot > 0) name = name.substring(0, dot);""", r"""String low = name.toLowerCase();
+              String mt = getContentResolver().getType(u);
+              boolean vid = (mt != null && mt.startsWith("video/")) || low.endsWith(".mp4") || low.endsWith(".m4v");
+              int dot = name.lastIndexOf('.'); if (dot > 0) name = name.substring(0, dot);
+              if (vid) { spImportVideo(u, name); return; }""")
+          patch(J, 'if (!new File(dir, id + ".jpg").exists()) continue;', 'boolean isV = new File(dir, id + ".mp4").exists();\n                    if (!isV && !new File(dir, id + ".jpg").exists()) continue;')
+          patch(J, 'JSONObject jo = new JSONObject(); jo.put("id", id); jo.put("name", nm); arr.put(jo);', 'JSONObject jo = new JSONObject(); jo.put("id", id); jo.put("name", nm); jo.put("type", isV ? "video" : "image"); arr.put(jo);')
+          patch(J, 'String[] sf = { ".jpg", "_t.jpg", ".txt" };', 'String[] sf = { ".jpg", ".mp4", "_t.jpg", ".txt" };')
+          patch(J, 'if (p == null || p.equals("/")) p = "/index.html";', 'if (p == null || p.equals("/")) p = "/index.html";\n                  if (p.startsWith("/spatial/") && p.endsWith(".mp4")) return serveVideo(new File(getFilesDir(), "spatial/" + new File(p).getName()), r);')
+          patch(J, 'super.onResume();', 'super.onResume();\n              jsCall("window.__bg&&window.__bg(false)");')
+          patch(J, 'super.onPause(); sm.unregisterListener(this);', 'super.onPause(); sm.unregisterListener(this);\n              jsCall("window.__bg&&window.__bg(true)");')
+          patch(J, 'float[] loc(Win w, float x, float y) {', r'''WebResourceResponse serveVideo(File f, WebResourceRequest r) {
+              try {
+                if (!f.exists()) return null;
+                final long len = f.length();
+                long s = 0, e = len - 1;
+                String rg = null;
+                if (r.getRequestHeaders() != null) {
+                  rg = r.getRequestHeaders().get("Range");
+                  if (rg == null) rg = r.getRequestHeaders().get("range");
+                }
+                boolean part = false;
+                if (rg != null && rg.startsWith("bytes=")) {
+                  String[] ab = rg.substring(6).split(",")[0].trim().split("-", -1);
+                  if (ab[0].length() > 0) {
+                    s = Long.parseLong(ab[0]);
+                    if (ab.length > 1 && ab[1].length() > 0) e = Long.parseLong(ab[1]);
+                  } else if (ab.length > 1 && ab[1].length() > 0) {
+                    s = Math.max(0L, len - Long.parseLong(ab[1]));
+                  }
+                  if (e >= len) e = len - 1;
+                  if (s > e) s = e;
+                  part = true;
+                }
+                final RandomAccessFile raf = new RandomAccessFile(f, "r");
+                raf.seek(s);
+                final long total = e - s + 1;
+                InputStream in = new InputStream() {
+                  long left = total;
+                  @Override public int read() throws IOException { byte[] b = new byte[1]; int n = read(b, 0, 1); return n < 0 ? -1 : (b[0] & 0xff); }
+                  @Override public int read(byte[] b, int o, int l) throws IOException {
+                    if (left <= 0) return -1;
+                    int n = raf.read(b, o, (int) Math.min((long) l, left));
+                    if (n > 0) left -= n;
+                    return n;
+                  }
+                  @Override public void close() throws IOException { raf.close(); }
+                };
+                java.util.HashMap<String, String> h = new java.util.HashMap<>();
+                h.put("Accept-Ranges", "bytes");
+                h.put("Content-Length", String.valueOf(total));
+                if (part) {
+                  h.put("Content-Range", "bytes " + s + "-" + e + "/" + len);
+                  return new WebResourceResponse("video/mp4", null, 206, "Partial Content", h, in);
+                }
+                return new WebResourceResponse("video/mp4", null, 200, "OK", h, in);
+              } catch (Throwable t) { return null; }
+            }
+            void spImportVideo(Uri u, String name) throws Exception {
+              File dir = new File(getFilesDir(), "spatial"); dir.mkdirs();
+              String id = String.valueOf(System.currentTimeMillis() * 10 + (spCnt++ % 10));
+              File out = new File(dir, id + ".mp4");
+              boolean okv = false;
+              try {
+                InputStream in = getContentResolver().openInputStream(u);
+                if (in == null) throw new Exception("não consegui abrir o arquivo");
+                FileOutputStream fo = new FileOutputStream(out);
+                try { byte[] buf = new byte[65536]; int n; while ((n = in.read(buf)) > 0) fo.write(buf, 0, n); }
+                finally { fo.close(); in.close(); }
+                android.media.MediaMetadataRetriever mr = new android.media.MediaMetadataRetriever();
+                Bitmap fr = null; int vw = 0;
+                try {
+                  mr.setDataSource(out.getAbsolutePath());
+                  String ws = mr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH);
+                  if (ws != null) vw = Integer.parseInt(ws);
+                  fr = mr.getFrameAtTime(1000000L, android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
+                  if (fr == null) fr = mr.getFrameAtTime();
+                } finally { mr.release(); }
+                if (vw <= 0) throw new Exception("não parece um vídeo MP4 válido");
+                Bitmap t = fr != null ? Bitmap.createScaledBitmap(fr, 320, 160, true) : Bitmap.createBitmap(320, 160, Bitmap.Config.ARGB_8888);
+                FileOutputStream fo2 = new FileOutputStream(new File(dir, id + "_t.jpg"));
+                try { t.compress(Bitmap.CompressFormat.JPEG, 80, fo2); } finally { fo2.close(); }
+                FileOutputStream fo3 = new FileOutputStream(new File(dir, id + ".txt"));
+                try { fo3.write(name.getBytes("UTF-8")); } finally { fo3.close(); }
+                if (vw > 3840) spNote = "vídeo acima de 4K pode travar neste celular";
+                okv = true;
+              } finally {
+                if (!okv) { out.delete(); new File(dir, id + "_t.jpg").delete(); new File(dir, id + ".txt").delete(); }
+              }
+            }
+            float[] loc(Win w, float x, float y) {''')
+          PY
       - name: Compilar
         run: gradle assembleDebug --no-daemon
       - uses: actions/upload-artifact@v4
