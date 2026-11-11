@@ -3882,6 +3882,296 @@ jobs:
             }
             float[] loc(Win w, float x, float y) {""")
           PY
+      - name: Player nativo e otimizações
+        run: |
+          python3 - <<'PY'
+          def patch(path, old, new):
+              s = open(path, encoding='utf-8').read()
+              assert old in s, 'nao achei em ' + path + ': ' + old
+              open(path, 'w', encoding='utf-8').write(s.replace(old, new, 1))
+          A = 'app/src/main/assets/'
+          S = A + 'spatial.js'
+          J = 'app/src/main/java/com/vr/launcher/MainActivity.java'
+          s = open(S, encoding='utf-8').read()
+          i0 = s.index('function endVideo() {')
+          i1 = s.index('window.__vctl = function')
+          NEW = r'''var nvOn = false, nvPos = 0, nvDur = 0, nvPlaying = false, nvMuted = false, nvLoop = true, nvSpeed = 1, nvPolled = 0, nvSeekAt = 0, nvActAt = 0, nvW = 0, nvH = 0, nvP = 0, nvReady = false;
+            function camSmall(on) {
+              if (!cam) return;
+              cam.style.width = on ? "4px" : "";
+              cam.style.height = on ? "4px" : "";
+              cam.style.opacity = on ? "0.02" : "";
+            }
+            function nvPoll() {
+              var now = performance.now();
+              if (now - nvPolled < 180 || !A.vState) return;
+              nvPolled = now;
+              var a = (A.vState() || "").split(",");
+              if (a.length < 3) return;
+              if (now - nvSeekAt > 700) nvPos = (+a[0] || 0) / 1000;
+              nvDur = (+a[1] || 0) / 1000;
+              if (now - nvActAt > 700) nvPlaying = a[2] === "1";
+            }
+            function makeShim() {
+              return {
+                get paused() { nvPoll(); return !nvPlaying; },
+                get duration() { nvPoll(); return nvDur; },
+                get currentTime() { nvPoll(); return nvPos; },
+                set currentTime(t) { nvPos = t; nvSeekAt = performance.now(); A.vSeek(Math.round(t * 1000)); },
+                get muted() { return nvMuted; },
+                set muted(m) { nvMuted = !!m; A.vMute(nvMuted); },
+                get loop() { return nvLoop; },
+                set loop(l) { nvLoop = !!l; A.vLoop(nvLoop); },
+                get playbackRate() { return nvSpeed; },
+                set playbackRate(r) { nvSpeed = r; A.vSpeed(r); },
+                play: function () { nvPlaying = true; nvActAt = performance.now(); A.vPlay(true); return Promise.resolve(); },
+                pause: function () { nvPlaying = false; nvActAt = performance.now(); A.vPlay(false); },
+                readyState: 4, videoWidth: 4096
+              };
+            }
+            function nvLoopFn() {
+              if (!nvOn) return;
+              requestAnimationFrame(nvLoopFn);
+              if (innerWidth !== nvW || innerHeight !== nvH || P !== nvP) { nvW = innerWidth; nvH = innerHeight; nvP = P; A.spView(nvW, nvH, nvP); }
+              var Rf = (mode === "gyro") ? mul(rz(off), Rc) : Rc, M = mul(Dm, mul(tr(Rf), Cm));
+              A.spPose(M[0], M[1], M[2], M[3], M[4], M[5], M[6], M[7], M[8]);
+            }
+            function endVideo() {
+              hidePanel();
+              if (nvOn) { nvOn = false; try { A.vClose(); } catch (e) {} camSmall(false); }
+              window.__vReady = null; window.__vErr = null;
+              vid = null; isVid = false;
+            }
+            function startVideo(url, name) {
+              endVideo();
+              isVid = true; vidName = name || ""; spi = 2;
+              nvMuted = false; nvLoop = true; nvSpeed = 1; nvPos = 0; nvDur = 0; nvPlaying = true; nvActAt = performance.now(); nvReady = false; nvW = 0; nvPolled = 0;
+              var me = makeShim(); vid = me; nvOn = true;
+              window.__vReady = function (w, h, d) {
+                if (vid !== me) return;
+                nvReady = true; nvDur = d / 1000; nvW = 0; camSmall(true);
+                if (window.__lag) window.__lag(0);
+              };
+              window.__vErr = function (what, extra) {
+                if (vid !== me) return;
+                toast("Falha no vídeo (erro " + what + "/" + extra + ")");
+                exit();
+              };
+              setTimeout(function () { if (vid === me && !nvReady) { toast("O vídeo demorou demais para carregar"); exit(); } }, 20000);
+              A.vOpen(url.split("/").pop().replace(".mp4", ""));
+              requestAnimationFrame(nvLoopFn);
+            }
+            '''
+          s = s[:i0] + NEW + s[i1:]
+          open(S, 'w', encoding='utf-8').write(s)
+          patch(S, 'var vid = null, isVid = false, lastCt = -1, forceUp = false;', 'var vid = null, isVid = false, lastCt = -1, forceUp = false;\n            var lastMs = null, lastP = 0, lastW = 0, lastH = 0;')
+          patch(S, 'gl.uniformMatrix3fv(uM, false, M);', '''if (lastMs) {
+                var same = lastP === P && lastW === w && lastH === h;
+                for (var qi = 0; same && qi < 9; qi++) if (Math.abs(M[qi] - lastMs[qi]) > 1e-5) same = false;
+                if (same) return;
+              }
+              lastMs = M.slice(); lastP = P; lastW = w; lastH = h;
+              gl.uniformMatrix3fv(uM, false, M);''')
+          patch(S, "cv.style.display = 'block'; void cv.offsetWidth; cv.style.opacity = '1';", "cv.style.display = 'block'; void cv.offsetWidth; cv.style.opacity = '1'; lastMs = null;")
+          patch(A + 'hand.js', 'var gap = idle ? 700 : 33;', 'var gap = idle ? 700 : (window.__therm >= 2 ? 66 : 33);')
+          patch(J, 'import org.json.JSONObject;', '''import org.json.JSONObject;
+          import android.graphics.SurfaceTexture;
+          import android.media.MediaPlayer;
+          import android.media.PlaybackParams;
+          import android.opengl.GLES11Ext;
+          import android.opengl.GLES20;
+          import android.opengl.GLSurfaceView;
+          import android.view.Surface;
+          import java.nio.ByteBuffer;
+          import java.nio.ByteOrder;
+          import java.nio.FloatBuffer;
+          import javax.microedition.khronos.egl.EGLConfig;
+          import javax.microedition.khronos.opengles.GL10;''')
+          patch(J, '@JavascriptInterface public String spList() { return spListJson(); }', r'''@JavascriptInterface public String spList() { return spListJson(); }
+              @JavascriptInterface public void vOpen(final String id) { ui.post(() -> vOpenNative(id)); }
+              @JavascriptInterface public void vClose() { ui.post(() -> vCloseNative()); }
+              @JavascriptInterface public void vPlay(final boolean p) { ui.post(() -> { vWantPlay = p; if (mp != null && vReady) { try { if (p) mp.start(); else mp.pause(); } catch (Throwable t) { } } }); }
+              @JavascriptInterface public void vSeek(final int ms) { ui.post(() -> { if (mp != null && vReady) { try { if (android.os.Build.VERSION.SDK_INT >= 26) mp.seekTo((long) ms, MediaPlayer.SEEK_CLOSEST_SYNC); else mp.seekTo(ms); vPos = ms; } catch (Throwable t) { } } }); }
+              @JavascriptInterface public void vSpeed(final float sp) { ui.post(() -> { vSpeed = sp; applyParams(); }); }
+              @JavascriptInterface public void vMute(final boolean mu) { ui.post(() -> { vMuted = mu; applyParams(); }); }
+              @JavascriptInterface public void vLoop(final boolean lp) { ui.post(() -> { vLoop = lp; applyParams(); }); }
+              @JavascriptInterface public String vState() { return vPos + "," + vDur + "," + (vPlaying ? 1 : 0); }
+              @JavascriptInterface public void spPose(float a, float b, float c, float d, float e, float f, float g, float h, float i) {
+                SphereView sv = sphere; if (sv == null) return;
+                synchronized (sv.pose) { sv.pose[0] = a; sv.pose[1] = b; sv.pose[2] = c; sv.pose[3] = d; sv.pose[4] = e; sv.pose[5] = f; sv.pose[6] = g; sv.pose[7] = h; sv.pose[8] = i; }
+                sv.requestRender();
+              }
+              @JavascriptInterface public void spView(float w, float h, float f) { SphereView sv = sphere; if (sv == null) return; sv.sw = w; sv.sh = h; sv.fl = f; sv.requestRender(); }''')
+          patch(J, 'float[] loc(Win w, float x, float y) {', r'''long lastSendNs = 0;
+            volatile SphereView sphere = null;
+            MediaPlayer mp = null; String vpath = null;
+            boolean vReady = false, vWantPlay = true, vMuted = false, vLoop = true; float vSpeed = 1f;
+            volatile int vPos = 0, vDur = 0; volatile boolean vPlaying = false;
+            final Runnable vTick = new Runnable() {
+              @Override public void run() {
+                if (mp == null) return;
+                try { if (vReady) { vPos = mp.getCurrentPosition(); vPlaying = mp.isPlaying(); } } catch (Throwable t) { }
+                ui.postDelayed(this, 200);
+              }
+            };
+            void applyParams() {
+              if (mp == null) return;
+              try {
+                mp.setVolume(vMuted ? 0f : 1f, vMuted ? 0f : 1f);
+                mp.setLooping(vLoop);
+                if (android.os.Build.VERSION.SDK_INT >= 23) {
+                  boolean was = mp.isPlaying();
+                  mp.setPlaybackParams(new PlaybackParams().setSpeed(vSpeed));
+                  if (!was && vReady && !vWantPlay) mp.pause();
+                }
+              } catch (Throwable t) { }
+            }
+            void vOpenNative(String id) {
+              vCloseNative();
+              if (id == null || !id.matches("[0-9]+")) { jsCall("window.__vErr&&window.__vErr(-1,0)"); return; }
+              File f = new File(getFilesDir(), "spatial/" + id + ".mp4");
+              if (!f.exists()) { jsCall("window.__vErr&&window.__vErr(-1,1)"); return; }
+              vpath = f.getAbsolutePath(); vReady = false; vWantPlay = true; vMuted = false; vLoop = true; vSpeed = 1f;
+              SphereView sv = new SphereView(this);
+              sphere = sv;
+              root.addView(sv, 0, new FrameLayout.LayoutParams(-1, -1));
+            }
+            void onSphereSurface(Surface s) {
+              if (sphere == null || vpath == null) return;
+              try {
+                if (mp == null) {
+                  mp = new MediaPlayer();
+                  mp.setDataSource(vpath);
+                  mp.setSurface(s);
+                  mp.setLooping(vLoop);
+                  mp.setOnPreparedListener(new MediaPlayer.OnPreparedListener() {
+                    @Override public void onPrepared(MediaPlayer m) {
+                      if (mp != m) return;
+                      vReady = true; vDur = m.getDuration();
+                      applyParams();
+                      if (vWantPlay) m.start();
+                      ui.postDelayed(vTick, 200);
+                      jsCall("window.__vReady&&window.__vReady(" + m.getVideoWidth() + "," + m.getVideoHeight() + "," + vDur + ")");
+                    }
+                  });
+                  mp.setOnErrorListener(new MediaPlayer.OnErrorListener() {
+                    @Override public boolean onError(MediaPlayer m, int what, int extra) {
+                      jsCall("window.__vErr&&window.__vErr(" + what + "," + extra + ")");
+                      return true;
+                    }
+                  });
+                  mp.prepareAsync();
+                } else {
+                  mp.setSurface(s);
+                }
+              } catch (Throwable t) { jsCall("window.__vErr&&window.__vErr(-2,0)"); }
+            }
+            void vCloseNative() {
+              ui.removeCallbacks(vTick);
+              if (mp != null) { try { mp.setOnErrorListener(null); mp.reset(); mp.release(); } catch (Throwable t) { } mp = null; }
+              vReady = false; vPos = 0; vDur = 0; vPlaying = false; vpath = null;
+              SphereView sv = sphere; sphere = null;
+              if (sv != null) { try { root.removeView(sv); } catch (Throwable t) { } }
+            }
+            class SphereView extends GLSurfaceView implements GLSurfaceView.Renderer, SurfaceTexture.OnFrameAvailableListener {
+              int tex = 0, prog = 0, uM = 0, uS = 0, uF = 0, uQ = 0, uT = 0, aP = 0;
+              SurfaceTexture st = null; Surface surf = null;
+              final float[] stm = new float[16];
+              final float[] pose = new float[]{1, 0, 0, 0, 1, 0, 0, 0, 1};
+              volatile float sw = 1f, sh = 1f, fl = 500f;
+              final java.util.concurrent.atomic.AtomicBoolean avail = new java.util.concurrent.atomic.AtomicBoolean(false);
+              boolean got = false;
+              FloatBuffer quad;
+              SphereView(Context c) {
+                super(c);
+                setEGLContextClientVersion(2);
+                setEGLConfigChooser(8, 8, 8, 0, 0, 0);
+                quad = ByteBuffer.allocateDirect(32).order(ByteOrder.nativeOrder()).asFloatBuffer();
+                quad.put(new float[]{-1f, -1f, 1f, -1f, -1f, 1f, 1f, 1f});
+                quad.position(0);
+                setRenderer(this);
+                setRenderMode(GLSurfaceView.RENDERMODE_WHEN_DIRTY);
+              }
+              int compile(int type, String src) {
+                int h = GLES20.glCreateShader(type);
+                GLES20.glShaderSource(h, src);
+                GLES20.glCompileShader(h);
+                int[] ok = new int[1];
+                GLES20.glGetShaderiv(h, GLES20.GL_COMPILE_STATUS, ok, 0);
+                return ok[0] == 0 ? 0 : h;
+              }
+              @Override public void onSurfaceCreated(GL10 g, EGLConfig cfg) {
+                try { if (surf != null) surf.release(); if (st != null) st.release(); } catch (Throwable t) { }
+                got = false; avail.set(false); prog = 0;
+                String vs = "attribute vec2 a;varying vec2 p;void main(){p=a;gl_Position=vec4(a,0.,1.);}";
+                String fs = "#extension GL_OES_EGL_image_external : require\nprecision highp float;\nuniform samplerExternalOES t;uniform mat3 m;uniform vec2 s;uniform float f;uniform mat4 q;varying vec2 p;\nvoid main(){vec3 r=vec3(p.x*s.x*.5,-p.y*s.y*.5,-f);vec3 w=m*r;float az=atan(w.x,-w.z);float el=atan(-w.y,length(vec2(w.x,w.z)));vec2 uv=vec2(az*.15915494+.5,.5+el*.31830989);gl_FragColor=vec4(texture2D(t,(q*vec4(uv,0.,1.)).xy).rgb,1.);}";
+                int vh = compile(GLES20.GL_VERTEX_SHADER, vs);
+                int fh = compile(GLES20.GL_FRAGMENT_SHADER, fs);
+                if (fh == 0) fh = compile(GLES20.GL_FRAGMENT_SHADER, fs.replace("highp", "mediump"));
+                if (vh == 0 || fh == 0) { jsCall("window.__vErr&&window.__vErr(-3,0)"); return; }
+                int pr = GLES20.glCreateProgram();
+                GLES20.glAttachShader(pr, vh); GLES20.glAttachShader(pr, fh);
+                GLES20.glLinkProgram(pr);
+                int[] lk = new int[1];
+                GLES20.glGetProgramiv(pr, GLES20.GL_LINK_STATUS, lk, 0);
+                if (lk[0] == 0) { jsCall("window.__vErr&&window.__vErr(-4,0)"); return; }
+                prog = pr;
+                aP = GLES20.glGetAttribLocation(prog, "a");
+                uM = GLES20.glGetUniformLocation(prog, "m"); uS = GLES20.glGetUniformLocation(prog, "s");
+                uF = GLES20.glGetUniformLocation(prog, "f"); uQ = GLES20.glGetUniformLocation(prog, "q");
+                uT = GLES20.glGetUniformLocation(prog, "t");
+                int[] t1 = new int[1];
+                GLES20.glGenTextures(1, t1, 0); tex = t1[0];
+                GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, tex);
+                GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR);
+                GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
+                GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
+                GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
+                st = new SurfaceTexture(tex);
+                st.setOnFrameAvailableListener(this);
+                surf = new Surface(st);
+                GLES20.glClearColor(0f, 0f, 0f, 1f);
+                final Surface s2 = surf;
+                ui.post(new Runnable() { @Override public void run() { onSphereSurface(s2); } });
+              }
+              @Override public void onSurfaceChanged(GL10 g, int w, int h) { GLES20.glViewport(0, 0, w, h); }
+              @Override public void onDrawFrame(GL10 g) {
+                GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);
+                if (prog == 0 || st == null) return;
+                if (avail.getAndSet(false)) {
+                  try { st.updateTexImage(); st.getTransformMatrix(stm); got = true; } catch (Throwable t) { }
+                }
+                if (!got) return;
+                float[] pm = new float[9];
+                synchronized (pose) { System.arraycopy(pose, 0, pm, 0, 9); }
+                GLES20.glUseProgram(prog);
+                GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
+                GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, tex);
+                GLES20.glUniform1i(uT, 0);
+                GLES20.glUniformMatrix3fv(uM, 1, false, pm, 0);
+                GLES20.glUniform2f(uS, sw, sh);
+                GLES20.glUniform1f(uF, fl);
+                GLES20.glUniformMatrix4fv(uQ, 1, false, stm, 0);
+                GLES20.glEnableVertexAttribArray(aP);
+                GLES20.glVertexAttribPointer(aP, 2, GLES20.GL_FLOAT, false, 0, quad);
+                GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
+              }
+              @Override public void onFrameAvailable(SurfaceTexture t) { avail.set(true); requestRender(); }
+            }
+            float[] loc(Win w, float x, float y) {''')
+          patch(J, 'jsCall("window.__bg&&window.__bg(false)");', 'jsCall("window.__bg&&window.__bg(false)");\n              if (sphere != null) sphere.onResume();')
+          patch(J, 'jsCall("window.__bg&&window.__bg(true)");', 'jsCall("window.__bg&&window.__bg(true)");\n              if (sphere != null) sphere.onPause();')
+          patch(J, 'try { if (vsrv != null) vsrv.close(); } catch (Exception ex) { }', 'try { if (vsrv != null) vsrv.close(); } catch (Exception ex) { }\n              vCloseNative();')
+          patch(J, 'getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);', 'getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);\n              if (android.os.Build.VERSION.SDK_INT >= 24) { try { getWindow().setSustainedPerformanceMode(true); } catch (Throwable t) { } }')
+          patch(J, 'setContentView(root);', '''setContentView(root);
+              if (android.os.Build.VERSION.SDK_INT >= 29) {
+                try {
+                  android.os.PowerManager pwm = (android.os.PowerManager) getSystemService(Context.POWER_SERVICE);
+                  pwm.addThermalStatusListener(getMainExecutor(), ts -> jsCall("window.__therm=" + ts));
+                } catch (Throwable t) { }
+              }''')
+          patch(J, 'SensorManager.getRotationMatrixFromVector(m, e.values);', '{ long tn = e.timestamp; if (tn - lastSendNs < 7000000L) return; lastSendNs = tn; }\n              SensorManager.getRotationMatrixFromVector(m, e.values);')
+          PY
       - name: Compilar
         run: gradle assembleDebug --no-daemon
       - uses: actions/upload-artifact@v4
