@@ -2387,6 +2387,295 @@ jobs:
           patch(S, ".cf .b{width:56px;height:30px;border-radius:15px;", ".cf .b{width:84px;height:44px;border-radius:22px;")
           patch(S, "background:rgba(255,255,255,.16);font-size:14px;", "background:rgba(255,255,255,.16);font-size:20px;")
           PY
+      - name: Teclado virtual
+        run: |
+          sed -i 's#<script src="boot.js"></script>#<script src="kbd.js"></script><script src="boot.js"></script>#' app/src/main/assets/index.html
+          cat > app/src/main/assets/kbd.js <<'EOF'
+          (function () {
+            var A = window.Android, UI = window.UI;
+            if (!A || !UI || !A.keyText) return;
+            var KW = 1100, KH = 520, PX = 20, GP = 8, KY = 76, R0 = 74;
+            var NAMES = ['YouTube', 'Google', 'Wikipédia', 'Discord', 'WhatsApp', 'Reddit', 'Mapas', 'Notícias'];
+            var css = document.createElement('style');
+            css.textContent = [
+              '.kbd{width:1100px;height:520px;margin:-260px 0 0 -550px;border-radius:48px;background:rgba(14,16,22,.88);border:1px solid rgba(255,255,255,.18);display:none;z-index:150}',
+              '.kk{position:absolute;display:flex;align-items:center;justify-content:center;border-radius:18px;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.14);font-size:42px;color:#fff;transition:background .1s,color .1s}',
+              '.kk.fn{background:rgba(255,255,255,.2);font-size:30px}',
+              '.kk.on{background:#5eead4;color:#04201c}',
+              '.kk.hand{background:#fff;color:#000}',
+              '.kk svg{width:40px;height:40px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}',
+              '.kkt{position:absolute;left:50%;top:8px;transform:translateX(-50%);font-size:28px;font-weight:300;letter-spacing:1px;opacity:.7;white-space:nowrap;line-height:48px;color:#fff}'
+            ].join('');
+            document.head.appendChild(css);
+
+            var ICO = {
+              link: '<svg viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></svg>',
+              unlink: '<svg viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/><path d="M4 4l16 16"/></svg>',
+              x: '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+              back: '<svg viewBox="0 0 24 24"><path d="M9 5h11a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H9l-6-7z"/><path d="M13 9.5l5 5M18 9.5l-5 5"/></svg>',
+              enter: '<svg viewBox="0 0 24 24"><path d="M20 5v8a2 2 0 0 1-2 2H5"/><path d="M9 11l-4 4 4 4"/></svg>',
+              shift: '<svg viewBox="0 0 24 24"><path d="M12 4l8 9h-5v7H9v-7H4z"/></svg>',
+              caps: '<svg viewBox="0 0 24 24"><path d="M12 3l8 8h-5v6H9v-6H4z"/><path d="M9 21h6"/></svg>'
+            };
+
+            var wl = document.getElementById('wl');
+            var kel = document.createElement('div'); kel.className = 'kbd'; wl.appendChild(kel);
+            var title = document.createElement('div'); title.className = 'kkt'; kel.appendChild(title);
+            var barEl = document.createElement('div'); barEl.className = 'bar'; barEl.style.display = 'none'; kel.appendChild(barEl);
+            var rhEl = document.createElement('div'); rhEl.className = 'hrh'; kel.appendChild(rhEl);
+
+            var K = { open: false, tw: null, pinned: true, az: 0, ev: 0, R: 800, s: 0.9, scr: null };
+            var rects = [], letters = [], accEls = [], shift = 0, accent = null, shiftEl = null, pinEl = null;
+            var userS = null, rsz = null, wasDown = false, lastKt = null;
+            function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+            function clampR(r) { return clamp(r, 240, 2400); }
+
+            var barT = {
+              k: 'win', el: barEl,
+              w: {
+                get az() { return K.az; }, set az(v) { if (!K.pinned) K.az = v; },
+                get ev() { return K.ev; }, set ev(v) { if (!K.pinned) K.ev = v; },
+                get R() { return K.R; }, set R(v) { }
+              }
+            };
+
+            function addKey(x, y, w, h, html, cls, fn, rep, fast) {
+              var d = document.createElement('div');
+              d.className = 'kk' + (cls ? ' ' + cls : '');
+              d.style.left = x + 'px'; d.style.top = y + 'px'; d.style.width = w + 'px'; d.style.height = h + 'px';
+              d.innerHTML = html;
+              kel.appendChild(d);
+              var t = { k: 'btn', el: d, fn: fn, rep: !!rep, fast: !!fast };
+              rects.push({ x: x, y: y, w: w, h: h, t: t });
+              return d;
+            }
+
+            function sendTxt(s) { if (K.tw && s) A.keyText(K.tw.id, s); }
+            function sendCode(c) { if (K.tw) A.keyCode(K.tw.id, c); }
+            function refreshShift() {
+              shiftEl.classList.toggle('on', shift > 0);
+              shiftEl.innerHTML = shift === 2 ? ICO.caps : ICO.shift;
+              letters.forEach(function (q) { q.el.textContent = shift ? q.v.toUpperCase() : q.v; });
+            }
+            function refreshAcc() {
+              accEls.forEach(function (q) { q.el.classList.toggle('on', !!(accent && accent.c === q.c)); });
+            }
+            function typeChar(v, letter) {
+              var ch = v;
+              if (letter && shift) ch = v.toUpperCase();
+              if (accent) {
+                var a = accent; accent = null; refreshAcc();
+                var comp = letter ? (ch + a.c).normalize('NFC') : '';
+                ch = (comp.length === 1) ? comp : a.l + ch;
+              }
+              sendTxt(ch);
+              if (letter && shift === 1) { shift = 0; refreshShift(); }
+            }
+
+            var ROWS = [
+              ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0', { t: 'txt', l: '@', v: '@', w: 1.6 }],
+              ['q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', { t: 'back', w: 1.6 }],
+              ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 'ç', { t: 'enter', w: 1.6 }],
+              [{ t: 'shift', w: 1.6 }, 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '-'],
+              [{ t: 'acc', l: '´', c: '\u0301' }, { t: 'acc', l: '^', c: '\u0302' }, { t: 'acc', l: '~', c: '\u0303' }, { t: 'acc', l: '`', c: '\u0300' }, '_', { t: 'space', w: 4 }, { t: 'txt', l: '.com', v: '.com', w: 1.6 }, '/']
+            ];
+            ROWS.forEach(function (row, ri) {
+              var tot = 0;
+              row.forEach(function (it) { tot += (typeof it === 'string') ? 1 : (it.w || 1); });
+              var u = (KW - 2 * PX - GP * (row.length - 1)) / tot, x = PX, y = R0 + ri * (KY + GP);
+              row.forEach(function (it) {
+                var w = ((typeof it === 'string') ? 1 : (it.w || 1)) * u, d;
+                if (typeof it === 'string') {
+                  var isL = /^[a-zç]$/.test(it);
+                  d = addKey(x, y, w, KY, it, '', function () { typeChar(it, isL); }, false, true);
+                  if (isL) letters.push({ el: d, v: it });
+                } else if (it.t === 'txt') {
+                  addKey(x, y, w, KY, it.l, 'fn', function () { typeChar(it.v, false); }, false, true);
+                } else if (it.t === 'back') {
+                  addKey(x, y, w, KY, ICO.back, 'fn', function () { sendCode(67); }, true, true);
+                } else if (it.t === 'enter') {
+                  addKey(x, y, w, KY, ICO.enter, 'fn', function () { sendCode(66); }, false, true);
+                } else if (it.t === 'shift') {
+                  shiftEl = addKey(x, y, w, KY, ICO.shift, 'fn', function () { shift = (shift + 1) % 3; refreshShift(); }, false, true);
+                } else if (it.t === 'space') {
+                  addKey(x, y, w, KY, 'espaço', 'fn', function () {
+                    if (accent) { var a = accent; accent = null; refreshAcc(); sendTxt(a.l); } else sendTxt(' ');
+                  }, false, true);
+                } else if (it.t === 'acc') {
+                  d = addKey(x, y, w, KY, it.l, 'fn', function () {
+                    accent = (accent && accent.c === it.c) ? null : { c: it.c, l: it.l };
+                    refreshAcc();
+                  }, false, true);
+                  accEls.push({ el: d, c: it.c });
+                }
+                x += w + GP;
+              });
+            });
+
+            pinEl = addKey(20, 8, 76, 48, ICO.link, 'fn on', function () { K.pinned = !K.pinned; updPin(); }, false, false);
+            addKey(KW - 96, 8, 76, 48, ICO.x, 'fn', function () { closeKb(); }, false, false);
+            function updPin() {
+              pinEl.classList.toggle('on', K.pinned);
+              pinEl.innerHTML = K.pinned ? ICO.link : ICO.unlink;
+              barEl.style.display = K.pinned ? 'none' : '';
+            }
+
+            function anchor() {
+              var W = K.tw;
+              if (W.grp) { var G = W.grp; return { az: G.az, ev: G.ev, R: clampR(G.R), s: G.s, n: G.list.length }; }
+              return { az: W.az, ev: W.ev, R: clampR(W.R), s: W.s, n: 1 };
+            }
+            function openKb(W) {
+              var first = !K.open;
+              K.tw = W;
+              if (first) {
+                K.open = true; K.pinned = true;
+                var an = anchor();
+                K.s = userS || (0.9 * (an.n === 1 ? 1 : (an.n === 2 ? 1.25 : 1.5)));
+                shift = 0; accent = null; refreshShift(); refreshAcc();
+                kel.style.display = 'block';
+                updPin();
+              }
+              title.textContent = 'Teclado · ' + NAMES[W.idx];
+              A.kbFocus(W.id);
+            }
+            function closeKb() {
+              K.open = false; K.tw = null; K.scr = null; rsz = null;
+              kel.style.display = 'none';
+              if (lastKt && lastKt.dom) lastKt.dom.classList.remove('kt');
+              lastKt = null;
+              window.__kbBlock = false; window.__kbRH = false;
+            }
+            window.KB = {
+              toggle: function (W) { if (K.open && K.tw === W) closeKb(); else openKb(W); }
+            };
+
+            function toLocal(x, y) {
+              var k = K.scr.S * K.s, rr = -K.scr.roll * D, c = Math.cos(rr), s = Math.sin(rr), dx = x - K.scr.x, dy = y - K.scr.y;
+              return { x: (dx * c - dy * s) / k + KW / 2, y: (dx * s + dy * c) / k + KH / 2 };
+            }
+            window.__kbHit = function (x, y) {
+              if (!K.open || !K.scr) return null;
+              var l = toLocal(x, y);
+              if (!K.pinned && l.x >= KW / 2 - 148 && l.x <= KW / 2 + 148 && l.y >= KH && l.y <= KH + 56) return barT;
+              for (var i = 0; i < rects.length; i++) {
+                var r = rects[i];
+                if (l.x >= r.x - 4 && l.x <= r.x + r.w + 4 && l.y >= r.y - 4 && l.y <= r.y + r.h + 4) return r.t;
+              }
+              return null;
+            };
+
+            function frame() {
+              requestAnimationFrame(frame);
+              if (!K.open) return;
+              var W = K.tw;
+              if (!W || UI.WINS.indexOf(W) < 0 || W.min) { closeKb(); return; }
+              if (lastKt !== W) {
+                if (lastKt && lastKt.dom) lastKt.dom.classList.remove('kt');
+                if (W.dom) W.dom.classList.add('kt');
+                lastKt = W;
+              }
+              if (K.pinned) {
+                var an = anchor();
+                var wb = Math.atan(262 * an.s / an.R) / D, kh = Math.atan((KH / 2) * K.s / an.R) / D;
+                K.R = an.R; K.az = an.az; K.ev = Math.max(-75, an.ev - wb - kh);
+              }
+              var Rf = (mode === 'gyro') ? mul(rz(off), Rc) : Rc, M = mul(Dm, mul(tr(Rf), Cm));
+              var R = K.R, x = R * Math.cos(K.ev * D) * Math.sin(K.az * D), y = -R * Math.sin(K.ev * D), z = -R * Math.cos(K.ev * D) * Math.cos(K.az * D);
+              var cx = M[0] * x + M[1] * y + M[2] * z, cy = M[3] * x + M[4] * y + M[5] * z, dep = -(M[6] * x + M[7] * y + M[8] * z);
+              var S = P / R, px = innerWidth / 2 + cx * P / dep, py = innerHeight / 2 + cy * P / dep;
+              var rl = Math.atan2(-M[1], M[4]) / D, ext = Math.max(KW, KH) / 2 * S * K.s;
+              if (dep >= 60 && Math.abs(px - innerWidth / 2) < innerWidth / 2 + ext && Math.abs(py - innerHeight / 2) < innerHeight / 2 + ext) {
+                kel.style.transform = 'translate(' + px.toFixed(1) + 'px,' + py.toFixed(1) + 'px) rotate(' + rl.toFixed(2) + 'deg) scale(' + (S * K.s).toFixed(4) + ')';
+                K.scr = { x: px, y: py, S: S, roll: rl };
+              } else {
+                kel.style.transform = 'translate(-9999px,-9999px)';
+                K.scr = null;
+              }
+
+              var h = window.handCursor || {}, down = !!(h.has && h.pinch && !window.__fist), over = false, orh = false;
+              if (K.scr && h.has) {
+                var l = toLocal(h.x, h.y);
+                over = l.x > -40 && l.x < KW + 40 && l.y > -40 && l.y < KH + 70;
+                orh = l.x >= KW - 30 && l.x <= KW + 42 && l.y >= KH - 30 && l.y <= KH + 42;
+              }
+              if (rsz) {
+                if (!down || !K.scr) { rsz = null; userS = K.s; }
+                else K.s = clamp(rsz.s0 * Math.hypot(h.x - K.scr.x, h.y - K.scr.y) / rsz.d0, 0.5, 2);
+              } else if (down && !wasDown && orh && K.scr) {
+                rsz = { s0: K.s, d0: Math.max(30, Math.hypot(h.x - K.scr.x, h.y - K.scr.y)) };
+              }
+              wasDown = down;
+              rhEl.classList.toggle('hand', !!(rsz || orh));
+              window.__kbBlock = !!(rsz || over);
+              window.__kbRH = !!(rsz || orh);
+            }
+            requestAnimationFrame(frame);
+          })();
+          EOF
+          python3 - <<'PY'
+          def patch(path, old, new):
+              s = open(path, encoding='utf-8').read()
+              assert old in s, 'nao achei em ' + path + ': ' + old
+              open(path, 'w', encoding='utf-8').write(s.replace(old, new, 1))
+          A = 'app/src/main/assets/'
+          U = A + 'ui.js'
+          H = A + 'hand.js'
+          J = 'app/src/main/java/com/vr/launcher/MainActivity.java'
+
+          # ---------- hand.js: teclas tem prioridade e digitam mais rapido ----------
+          patch(H, "if (window.__hubRH) return null;", """if (window.__hubRH || window.__kbRH) return null;
+              if (window.__kbHit) { var kh = window.__kbHit(x, y); if (kh) return kh; }""")
+          patch(H, "(pt.rep ? 300 : 700)", "(pt.rep ? 300 : (pt.fast ? 220 : 700))")
+
+          # ---------- ui.js: botao de teclado em cada janela ----------
+          patch(U, """'.bub.hand{background:rgba(255,255,255,.4)}'""", """'.bub.hand{background:rgba(255,255,255,.4)}',
+              '.kbb{position:absolute;left:40px;top:100%;width:76px;height:38px;margin-top:4px;border-radius:19px;background:rgba(14,16,22,.78);border:1px solid rgba(255,255,255,.3);display:flex;align-items:center;justify-content:center;color:#fff;transition:background .12s,color .12s}',
+              '.kbb svg{width:34px;height:24px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}',
+              '.aw.kt .kbb{background:#5eead4;color:#04201c}',
+              '.aw .kbb.hand{background:#fff;color:#000}'""")
+          patch(U, """W.dom = mk2('aw', '<div class="rh"></div><div class="bar"></div>');""", """W.dom = mk2('aw', '<div class="rh"></div><div class="bar"></div><div class="kbb"><svg viewBox="0 0 30 22"><rect x="1.5" y="3" width="27" height="16" rx="3"/><path d="M7 8h2M12 8h2M17 8h2M22 8h2M9 13h12"/></svg></div>');""")
+          patch(U, "W.barT = { k: 'win', w: W.mv, el: W.bar };", "W.barT = { k: 'win', w: W.mv, el: W.bar };\n              W.kb = W.dom.querySelector('.kbb'); W.kbT = { k: 'btn', el: W.kb, fn: function () { if (window.KB) window.KB.toggle(W); } };")
+          patch(U, "WINS.forEach(function (W) { if (W.min) t.push(W.bubT); else if (!W.grp) t.push(W.barT); });", "WINS.forEach(function (W) { if (W.min) t.push(W.bubT); else { if (!W.grp) t.push(W.barT); t.push(W.kbT); } });")
+          patch(U, "var blk = !!rs || !!bp, parts = [];", "var blk = !!rs || !!bp || !!window.__kbBlock, parts = [];")
+
+          # ---------- Android: sem teclado do celular + injecao de texto ----------
+          patch(J, "static class Win {", """static class NoImeWebView extends WebView {
+              NoImeWebView(Context c) { super(c); }
+              @Override public boolean onCheckIsTextEditor() { return false; }
+              @Override public android.view.inputmethod.InputConnection onCreateInputConnection(android.view.inputmethod.EditorInfo o) { return null; }
+            }
+            static class Win {""")
+          patch(J, "getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);", "getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);\n              getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN | WindowManager.LayoutParams.SOFT_INPUT_ADJUST_NOTHING);")
+          patch(J, "WebView v = new WebView(this); w.v = v;", "WebView v = new NoImeWebView(this); w.v = v;")
+          patch(J, "@JavascriptInterface public String hand() {", """@JavascriptInterface public void keyText(final int id, final String t) { ui.post(() -> kbText(id, t)); }
+              @JavascriptInterface public void keyCode(final int id, final int code) { ui.post(() -> kbCode(id, code)); }
+              @JavascriptInterface public void kbFocus(final int id) { ui.post(() -> { Win w = find(id); if (w != null) w.v.requestFocus(); }); }
+              @JavascriptInterface public String hand() {""")
+          patch(J, "void setDrag(String s) {", """void hideIme() {
+              try {
+                android.view.inputmethod.InputMethodManager im = (android.view.inputmethod.InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+                im.hideSoftInputFromWindow(root.getWindowToken(), 0);
+              } catch (Throwable t) { }
+            }
+            void kbText(int id, String t) {
+              Win w = find(id);
+              if (w == null || t == null) return;
+              w.v.requestFocus();
+              String js = "(function(t){var e=document.activeElement;for(var i=0;i<4&&e&&e.tagName==='IFRAME';i++){try{var a=e.contentDocument.activeElement;if(!a)break;e=a}catch(x){break}}if(!e)return;var ok=false;try{ok=e.ownerDocument.execCommand('insertText',false,t)}catch(x){}if(!ok&&typeof e.value==='string'){var s=e.selectionStart,n=e.selectionEnd,v=e.value,nv=v.slice(0,s)+t+v.slice(n);var d=Object.getOwnPropertyDescriptor(Object.getPrototypeOf(e),'value');if(d&&d.set)d.set.call(e,nv);else e.value=nv;e.selectionStart=e.selectionEnd=s+t.length;e.dispatchEvent(new Event('input',{bubbles:true}))}})(" + JSONObject.quote(t) + ")";
+              w.v.evaluateJavascript(js, null);
+            }
+            void kbCode(int id, int code) {
+              Win w = find(id);
+              if (w == null) return;
+              w.v.requestFocus();
+              long now = SystemClock.uptimeMillis();
+              w.v.dispatchKeyEvent(new android.view.KeyEvent(now, now, android.view.KeyEvent.ACTION_DOWN, code, 0));
+              w.v.dispatchKeyEvent(new android.view.KeyEvent(now, now + 20, android.view.KeyEvent.ACTION_UP, code, 0));
+            }
+            void setDrag(String s) {""")
+          patch(J, "w.v.dispatchTouchEvent(e);", "w.v.dispatchTouchEvent(e);\n              if (action == MotionEvent.ACTION_UP) ui.postDelayed(() -> hideIme(), 120);")
+          PY
       - name: Assinatura fixa
         env:
           KS_PASS: ${{ secrets.KS_PASS }}
