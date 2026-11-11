@@ -3755,6 +3755,133 @@ jobs:
             }
             float[] loc(Win w, float x, float y) {''')
           PY
+      - name: Corrigir reprodução de vídeo
+        run: |
+          python3 - <<'PY'
+          def patch(path, old, new):
+              s = open(path, encoding='utf-8').read()
+              assert old in s, 'nao achei em ' + path + ': ' + old
+              open(path, 'w', encoding='utf-8').write(s.replace(old, new, 1))
+          A = 'app/src/main/assets/'
+          S = A + 'spatial.js'
+          J = 'app/src/main/java/com/vr/launcher/MainActivity.java'
+          patch('app/src/main/AndroidManifest.xml', 'android:largeHeap="true"', 'android:largeHeap="true" android:usesCleartextTraffic="true"')
+          patch(S, "me.addEventListener('error', function () { if (vid !== me) return; toast('Não consegui reproduzir este vídeo (precisa ser MP4 H.264)'); exit(); });", """var tries = 0, usingSrv = false, lastT = 0;
+              function resume() {
+                var go = function () {
+                  me.removeEventListener('loadeddata', go);
+                  try { if (lastT > 0.5) me.currentTime = lastT; } catch (e) {}
+                  forceUp = true;
+                  var p = me.play(); if (p && p.catch) p.catch(function () {});
+                };
+                me.addEventListener('loadeddata', go);
+              }
+              me.addEventListener('error', function () {
+                if (vid !== me) return;
+                var er = me.error, code = er ? er.code : 0;
+                lastT = me.currentTime || 0;
+                if (usingSrv && tries === 0) { usingSrv = false; tries++; me.src = url; me.load(); resume(); return; }
+                if (tries < 3) { tries++; toast('Retomando o vídeo… (erro ' + code + ')'); var cur = me.currentSrc || me.src; me.src = cur; me.load(); resume(); return; }
+                toast('Falha no vídeo (erro ' + code + (er && er.message ? ': ' + er.message : '') + ', ' + me.videoWidth + 'x' + me.videoHeight + ')');
+                exit();
+              });""")
+          patch(S, 'me.src = url;', """var vid0 = url.split('/').pop().replace('.mp4', '');
+              var su = (A.spVideoUrl && A.spVideoUrl(vid0)) || '';
+              if (su) { me.crossOrigin = 'anonymous'; me.src = su; usingSrv = true; } else me.src = url;""")
+          patch(J, 'web.addJavascriptInterface(new Bridge(), "Android");', 'web.addJavascriptInterface(new Bridge(), "Android");\n              s.setMixedContentMode(WebSettings.MIXED_CONTENT_ALWAYS_ALLOW);\n              startVideoServer();')
+          patch(J, '@JavascriptInterface public boolean spDelete(final String id) { return spDel(id); }', '''@JavascriptInterface public boolean spDelete(final String id) { return spDel(id); }
+              @JavascriptInterface public String spVideoUrl(final String id) {
+                if (vport == 0 || id == null || !id.matches("[0-9]+")) return "";
+                return "http://127.0.0.1:" + vport + "/v/" + vtok + "/" + id + ".mp4";
+              }''')
+          patch(J, 'for (Win w : new ArrayList<>(wins)) closeWin(w.id);', 'for (Win w : new ArrayList<>(wins)) closeWin(w.id);\n              try { if (vsrv != null) vsrv.close(); } catch (Exception ex) { }')
+          patch(J, 'float[] loc(Win w, float x, float y) {', r"""java.net.ServerSocket vsrv = null; int vport = 0;
+            final String vtok = Long.toHexString(new java.util.Random().nextLong() & Long.MAX_VALUE);
+            void startVideoServer() {
+              if (vsrv != null) return;
+              try {
+                vsrv = new java.net.ServerSocket(0, 16, java.net.InetAddress.getByName("127.0.0.1"));
+                vport = vsrv.getLocalPort();
+                final java.net.ServerSocket ss = vsrv;
+                new Thread(() -> {
+                  while (!ss.isClosed()) {
+                    try { final java.net.Socket c = ss.accept(); new Thread(() -> serveConn(c)).start(); }
+                    catch (Throwable t) { break; }
+                  }
+                }).start();
+              } catch (Throwable t) { vsrv = null; vport = 0; }
+            }
+            void serveConn(java.net.Socket c) {
+              try {
+                c.setSoTimeout(30000);
+                InputStream is = c.getInputStream();
+                java.io.OutputStream os = new java.io.BufferedOutputStream(c.getOutputStream(), 65536);
+                byte[] hb = new byte[8192]; int hl = 0, st = 0;
+                while (hl < hb.length) {
+                  int ch = is.read();
+                  if (ch < 0) break;
+                  hb[hl++] = (byte) ch;
+                  if (ch == '\r' && (st == 0 || st == 2)) st++;
+                  else if (ch == '\n' && (st == 1 || st == 3)) st++;
+                  else st = 0;
+                  if (st == 4) break;
+                }
+                if (st != 4) return;
+                String[] lines = new String(hb, 0, hl, "ISO-8859-1").split("\r\n");
+                String[] rl = lines[0].split(" ");
+                if (rl.length < 2) return;
+                String method = rl[0], path = rl[1];
+                int q = path.indexOf('?'); if (q >= 0) path = path.substring(0, q);
+                String pre = "/v/" + vtok + "/";
+                String cors = "Access-Control-Allow-Origin: *\r\nAccess-Control-Allow-Headers: Range\r\nAccess-Control-Expose-Headers: Content-Range, Content-Length, Accept-Ranges\r\n";
+                if (method.equals("OPTIONS")) {
+                  os.write(("HTTP/1.1 204 No Content\r\n" + cors + "Connection: close\r\n\r\n").getBytes("ISO-8859-1")); os.flush(); return;
+                }
+                File f = null;
+                if (path.startsWith(pre) && path.substring(pre.length()).matches("[0-9]+\\.mp4")) f = new File(getFilesDir(), "spatial/" + path.substring(pre.length()));
+                if (f == null || !f.exists()) {
+                  os.write(("HTTP/1.1 404 Not Found\r\n" + cors + "Content-Length: 0\r\nConnection: close\r\n\r\n").getBytes("ISO-8859-1")); os.flush(); return;
+                }
+                long len = f.length(), s = 0, e = len - 1; boolean part = false;
+                for (String ln : lines) {
+                  if (ln.toLowerCase().startsWith("range:")) {
+                    String v = ln.substring(6).trim();
+                    if (v.startsWith("bytes=")) {
+                      String[] ab = v.substring(6).split(",")[0].trim().split("-", -1);
+                      if (ab[0].length() > 0) { s = Long.parseLong(ab[0]); if (ab.length > 1 && ab[1].length() > 0) e = Long.parseLong(ab[1]); }
+                      else if (ab.length > 1 && ab[1].length() > 0) s = Math.max(0L, len - Long.parseLong(ab[1]));
+                      part = true;
+                    }
+                  }
+                }
+                if (e >= len) e = len - 1;
+                if (s > e || s >= len) {
+                  os.write(("HTTP/1.1 416 Range Not Satisfiable\r\n" + cors + "Content-Range: bytes */" + len + "\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").getBytes("ISO-8859-1")); os.flush(); return;
+                }
+                long total = e - s + 1;
+                String head = (part ? "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes " + s + "-" + e + "/" + len + "\r\n" : "HTTP/1.1 200 OK\r\n")
+                  + "Content-Type: video/mp4\r\nContent-Length: " + total + "\r\nAccept-Ranges: bytes\r\n" + cors + "Cache-Control: no-store\r\nConnection: close\r\n\r\n";
+                os.write(head.getBytes("ISO-8859-1"));
+                if (!method.equals("HEAD")) {
+                  RandomAccessFile raf = new RandomAccessFile(f, "r");
+                  try {
+                    raf.seek(s);
+                    byte[] buf = new byte[65536]; long left = total;
+                    while (left > 0) {
+                      int n = raf.read(buf, 0, (int) Math.min((long) buf.length, left));
+                      if (n < 0) break;
+                      os.write(buf, 0, n); left -= n;
+                    }
+                  } finally { raf.close(); }
+                }
+                os.flush();
+              } catch (Throwable t) {
+              } finally {
+                try { c.close(); } catch (Exception e2) { }
+              }
+            }
+            float[] loc(Win w, float x, float y) {""")
+          PY
       - name: Compilar
         run: gradle assembleDebug --no-daemon
       - uses: actions/upload-artifact@v4
