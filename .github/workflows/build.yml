@@ -2676,6 +2676,563 @@ jobs:
             void setDrag(String s) {""")
           patch(J, "w.v.dispatchTouchEvent(e);", "w.v.dispatchTouchEvent(e);\n              if (action == MotionEvent.ACTION_UP) ui.postDelayed(() -> hideIme(), 120);")
           PY
+      - name: Navegador, teclado em duas paginas e centralizar
+        run: |
+          cat > app/src/main/assets/kbd.js <<'EOF'
+          (function () {
+            var A = window.Android, UI = window.UI;
+            if (!A || !UI || !A.keyText) return;
+            var KW = 1100, KH = 480, PX = 20, GP = 8, KY = 88, R0 = 76;
+            var NAMES = ['YouTube', 'Google', 'Wikipédia', 'Discord', 'WhatsApp', 'Reddit', 'Mapas', 'Notícias'];
+            var css = document.createElement('style');
+            css.textContent = [
+              '.kbd{width:1100px;height:480px;margin:-240px 0 0 -550px;border-radius:48px;background:rgba(14,16,22,.88);border:1px solid rgba(255,255,255,.18);display:none;z-index:150}',
+              '.kpg{position:absolute;left:0;top:0;width:100%;height:100%;display:none}',
+              '.kpg.on{display:block}',
+              '.kk{position:absolute;display:flex;align-items:center;justify-content:center;border-radius:18px;background:rgba(255,255,255,.1);border:1px solid rgba(255,255,255,.14);font-size:48px;color:#fff;transition:background .1s,color .1s}',
+              '.kk.fn{background:rgba(255,255,255,.2);font-size:32px}',
+              '.kk.on{background:#5eead4;color:#04201c}',
+              '.kk.hand{background:#fff;color:#000}',
+              '.kk svg{width:40px;height:40px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}',
+              '.kkt{position:absolute;left:50%;top:8px;transform:translateX(-50%);font-size:28px;font-weight:300;letter-spacing:1px;opacity:.7;white-space:nowrap;line-height:48px;color:#fff}'
+            ].join('');
+            document.head.appendChild(css);
+
+            var ICO = {
+              link: '<svg viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></svg>',
+              unlink: '<svg viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/><path d="M4 4l16 16"/></svg>',
+              x: '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+              back: '<svg viewBox="0 0 24 24"><path d="M9 5h11a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H9l-6-7z"/><path d="M13 9.5l5 5M18 9.5l-5 5"/></svg>',
+              enter: '<svg viewBox="0 0 24 24"><path d="M20 5v8a2 2 0 0 1-2 2H5"/><path d="M9 11l-4 4 4 4"/></svg>',
+              shift: '<svg viewBox="0 0 24 24"><path d="M12 4l8 9h-5v7H9v-7H4z"/></svg>',
+              caps: '<svg viewBox="0 0 24 24"><path d="M12 3l8 8h-5v6H9v-6H4z"/><path d="M9 21h6"/></svg>'
+            };
+
+            var wl = document.getElementById('wl');
+            var kel = document.createElement('div'); kel.className = 'kbd'; wl.appendChild(kel);
+            var title = document.createElement('div'); title.className = 'kkt'; kel.appendChild(title);
+            var barEl = document.createElement('div'); barEl.className = 'bar'; barEl.style.display = 'none'; kel.appendChild(barEl);
+            var rhEl = document.createElement('div'); rhEl.className = 'hrh'; kel.appendChild(rhEl);
+
+            var hdr = { el: kel, rects: [] }, pgs = [], page = 0;
+            function mkPage() {
+              var d = document.createElement('div'); d.className = 'kpg'; kel.appendChild(d);
+              var p = { el: d, rects: [] }; pgs.push(p); return p;
+            }
+            var pg1 = mkPage(), pg2 = mkPage();
+            pg1.el.classList.add('on');
+
+            var K = { open: false, tw: null, pinned: true, az: 0, ev: 0, R: 800, s: 0.9, scr: null };
+            var letters = [], accEls = [], shift = 0, accent = null, shiftEl = null, pinEl = null;
+            var userS = null, rsz = null, wasDown = false, lastKt = null;
+            function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+            function clampR(r) { return clamp(r, 240, 2400); }
+
+            var barT = {
+              k: 'win', el: barEl,
+              w: {
+                get az() { return K.az; }, set az(v) { if (!K.pinned) K.az = v; },
+                get ev() { return K.ev; }, set ev(v) { if (!K.pinned) K.ev = v; },
+                get R() { return K.R; }, set R(v) { }
+              }
+            };
+
+            function addKey(pg, x, y, w, h, html, cls, fn, rep, fast) {
+              var d = document.createElement('div');
+              d.className = 'kk' + (cls ? ' ' + cls : '');
+              d.style.left = x + 'px'; d.style.top = y + 'px'; d.style.width = w + 'px'; d.style.height = h + 'px';
+              d.innerHTML = html;
+              pg.el.appendChild(d);
+              var t = { k: 'btn', el: d, fn: fn, rep: !!rep, fast: !!fast };
+              pg.rects.push({ x: x, y: y, w: w, h: h, t: t });
+              return d;
+            }
+
+            function sendTxt(s) { if (K.tw && s) A.keyText(K.tw.id, s); }
+            function sendCode(c) { if (K.tw) A.keyCode(K.tw.id, c); }
+            function refreshShift() {
+              if (!shiftEl) return;
+              shiftEl.classList.toggle('on', shift > 0);
+              shiftEl.innerHTML = shift === 2 ? ICO.caps : ICO.shift;
+              letters.forEach(function (q) { q.el.textContent = shift ? q.v.toUpperCase() : q.v; });
+            }
+            function refreshAcc() {
+              accEls.forEach(function (q) { q.el.classList.toggle('on', !!(accent && accent.c === q.c)); });
+            }
+            function setPage(n) {
+              page = n;
+              pg1.el.classList.toggle('on', n === 0);
+              pg2.el.classList.toggle('on', n === 1);
+              accent = null; refreshAcc();
+            }
+            function typeChar(v, letter) {
+              var ch = v;
+              if (letter && shift) ch = v.toUpperCase();
+              if (accent) {
+                var a = accent; accent = null; refreshAcc();
+                var comp = letter ? (ch + a.c).normalize('NFC') : '';
+                ch = (comp.length === 1) ? comp : a.l + ch;
+              }
+              sendTxt(ch);
+              if (letter && shift === 1) { shift = 0; refreshShift(); }
+            }
+
+            var ROWS1 = [
+              ['q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', { t: 'back', w: 1.6 }],
+              ['a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', 'ç', { t: 'enter', w: 1.6 }],
+              [{ t: 'shift', w: 2.6 }, 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.'],
+              [{ t: 'page', l: '123', p: 1, w: 1.8 }, { t: 'acc', l: '´', c: '\u0301' }, { t: 'acc', l: '^', c: '\u0302' }, { t: 'acc', l: '~', c: '\u0303' }, { t: 'acc', l: '`', c: '\u0300' }, { t: 'space', w: 6 }]
+            ];
+            var ROWS2 = [
+              ['1', '2', '3', '4', '5', '6', '7', '8', '9', '0', { t: 'back', w: 1.6 }],
+              ['@', '#', '$', '%', '&', '*', '(', ')', '-', '_', { t: 'enter', w: 1.6 }],
+              ['!', '?', '"', "'", ':', ';', '/', '\\', '+', '=', { t: 'txt', l: '.com', v: '.com', w: 1.6 }],
+              [{ t: 'page', l: 'ABC', p: 0, w: 1.8 }, ',', { t: 'space', w: 6.8 }, '.']
+            ];
+            function buildPage(pg, rows) {
+              rows.forEach(function (row, ri) {
+                var tot = 0;
+                row.forEach(function (it) { tot += (typeof it === 'string') ? 1 : (it.w || 1); });
+                var u = (KW - 2 * PX - GP * (row.length - 1)) / tot, x = PX, y = R0 + ri * (KY + GP);
+                row.forEach(function (it) {
+                  var w = ((typeof it === 'string') ? 1 : (it.w || 1)) * u, d;
+                  if (typeof it === 'string') {
+                    var isL = /^[a-zç]$/.test(it);
+                    d = addKey(pg, x, y, w, KY, it, '', function () { typeChar(it, isL); }, false, true);
+                    if (isL) letters.push({ el: d, v: it });
+                  } else if (it.t === 'txt') {
+                    addKey(pg, x, y, w, KY, it.l, 'fn', function () { typeChar(it.v, false); }, false, true);
+                  } else if (it.t === 'back') {
+                    addKey(pg, x, y, w, KY, ICO.back, 'fn', function () { sendCode(67); }, true, true);
+                  } else if (it.t === 'enter') {
+                    addKey(pg, x, y, w, KY, ICO.enter, 'fn', function () { sendCode(66); }, false, true);
+                  } else if (it.t === 'shift') {
+                    shiftEl = addKey(pg, x, y, w, KY, ICO.shift, 'fn', function () { shift = (shift + 1) % 3; refreshShift(); }, false, true);
+                  } else if (it.t === 'page') {
+                    addKey(pg, x, y, w, KY, it.l, 'fn', function () { setPage(it.p); }, false, true);
+                  } else if (it.t === 'space') {
+                    addKey(pg, x, y, w, KY, 'espaço', 'fn', function () {
+                      if (accent) { var a = accent; accent = null; refreshAcc(); sendTxt(a.l); } else sendTxt(' ');
+                    }, false, true);
+                  } else if (it.t === 'acc') {
+                    d = addKey(pg, x, y, w, KY, it.l, 'fn', function () {
+                      accent = (accent && accent.c === it.c) ? null : { c: it.c, l: it.l };
+                      refreshAcc();
+                    }, false, true);
+                    accEls.push({ el: d, c: it.c });
+                  }
+                  x += w + GP;
+                });
+              });
+            }
+            buildPage(pg1, ROWS1);
+            buildPage(pg2, ROWS2);
+
+            pinEl = addKey(hdr, 20, 8, 76, 48, ICO.link, 'fn on', function () { K.pinned = !K.pinned; updPin(); }, false, false);
+            addKey(hdr, KW - 96, 8, 76, 48, ICO.x, 'fn', function () { closeKb(); }, false, false);
+            function updPin() {
+              pinEl.classList.toggle('on', K.pinned);
+              pinEl.innerHTML = K.pinned ? ICO.link : ICO.unlink;
+              barEl.style.display = K.pinned ? 'none' : '';
+            }
+
+            function anchor() {
+              var W = K.tw;
+              if (W.grp) { var G = W.grp; return { az: G.az, ev: G.ev, R: clampR(G.R), s: G.s, n: G.list.length }; }
+              return { az: W.az, ev: W.ev, R: clampR(W.R), s: W.s, n: 1 };
+            }
+            function openKb(W) {
+              var first = !K.open;
+              K.tw = W;
+              if (first) {
+                K.open = true; K.pinned = true;
+                var an = anchor();
+                K.s = userS || (0.9 * (an.n === 1 ? 1 : (an.n === 2 ? 1.25 : 1.5)));
+                shift = 0; accent = null; setPage(0); refreshShift(); refreshAcc();
+                kel.style.display = 'block';
+                updPin();
+              }
+              title.textContent = 'Teclado · ' + NAMES[W.idx];
+              A.kbFocus(W.id);
+            }
+            function closeKb() {
+              K.open = false; K.tw = null; K.scr = null; rsz = null;
+              kel.style.display = 'none';
+              if (lastKt && lastKt.dom) lastKt.dom.classList.remove('kt');
+              lastKt = null;
+              window.__kbBlock = false; window.__kbRH = false;
+            }
+            window.KB = {
+              toggle: function (W) { if (K.open && K.tw === W) closeKb(); else openKb(W); }
+            };
+
+            function toLocal(x, y) {
+              var k = K.scr.S * K.s, rr = -K.scr.roll * D, c = Math.cos(rr), s = Math.sin(rr), dx = x - K.scr.x, dy = y - K.scr.y;
+              return { x: (dx * c - dy * s) / k + KW / 2, y: (dx * s + dy * c) / k + KH / 2 };
+            }
+            function hit(list, l) {
+              for (var i = 0; i < list.length; i++) {
+                var r = list[i];
+                if (l.x >= r.x - 4 && l.x <= r.x + r.w + 4 && l.y >= r.y - 4 && l.y <= r.y + r.h + 4) return r.t;
+              }
+              return null;
+            }
+            window.__kbHit = function (x, y) {
+              if (!K.open || !K.scr) return null;
+              var l = toLocal(x, y);
+              if (!K.pinned && l.x >= KW / 2 - 148 && l.x <= KW / 2 + 148 && l.y >= KH && l.y <= KH + 56) return barT;
+              return hit(hdr.rects, l) || hit(pgs[page].rects, l);
+            };
+
+            function frame() {
+              requestAnimationFrame(frame);
+              if (!K.open) return;
+              var W = K.tw;
+              if (!W || UI.WINS.indexOf(W) < 0 || W.min) { closeKb(); return; }
+              if (lastKt !== W) {
+                if (lastKt && lastKt.dom) lastKt.dom.classList.remove('kt');
+                if (W.dom) W.dom.classList.add('kt');
+                lastKt = W;
+              }
+              if (K.pinned) {
+                var an = anchor();
+                var wb = Math.atan(262 * an.s / an.R) / D, kh = Math.atan((KH / 2) * K.s / an.R) / D;
+                K.R = an.R; K.az = an.az; K.ev = Math.max(-75, an.ev - wb - kh);
+              }
+              var Rf = (mode === 'gyro') ? mul(rz(off), Rc) : Rc, M = mul(Dm, mul(tr(Rf), Cm));
+              var R = K.R, x = R * Math.cos(K.ev * D) * Math.sin(K.az * D), y = -R * Math.sin(K.ev * D), z = -R * Math.cos(K.ev * D) * Math.cos(K.az * D);
+              var cx = M[0] * x + M[1] * y + M[2] * z, cy = M[3] * x + M[4] * y + M[5] * z, dep = -(M[6] * x + M[7] * y + M[8] * z);
+              var S = P / R, px = innerWidth / 2 + cx * P / dep, py = innerHeight / 2 + cy * P / dep;
+              var rl = Math.atan2(-M[1], M[4]) / D, ext = Math.max(KW, KH) / 2 * S * K.s;
+              if (dep >= 60 && Math.abs(px - innerWidth / 2) < innerWidth / 2 + ext && Math.abs(py - innerHeight / 2) < innerHeight / 2 + ext) {
+                kel.style.transform = 'translate(' + px.toFixed(1) + 'px,' + py.toFixed(1) + 'px) rotate(' + rl.toFixed(2) + 'deg) scale(' + (S * K.s).toFixed(4) + ')';
+                K.scr = { x: px, y: py, S: S, roll: rl };
+              } else {
+                kel.style.transform = 'translate(-9999px,-9999px)';
+                K.scr = null;
+              }
+
+              var h = window.handCursor || {}, down = !!(h.has && h.pinch && !window.__fist), over = false, orh = false;
+              if (K.scr && h.has) {
+                var l = toLocal(h.x, h.y);
+                over = l.x > -40 && l.x < KW + 40 && l.y > -40 && l.y < KH + 70;
+                orh = l.x >= KW - 30 && l.x <= KW + 42 && l.y >= KH - 30 && l.y <= KH + 42;
+              }
+              if (rsz) {
+                if (!down || !K.scr) { rsz = null; userS = K.s; }
+                else K.s = clamp(rsz.s0 * Math.hypot(h.x - K.scr.x, h.y - K.scr.y) / rsz.d0, 0.5, 2);
+              } else if (down && !wasDown && orh && K.scr) {
+                rsz = { s0: K.s, d0: Math.max(30, Math.hypot(h.x - K.scr.x, h.y - K.scr.y)) };
+              }
+              wasDown = down;
+              rhEl.classList.toggle('hand', !!(rsz || orh));
+              window.__kbBlock = !!(rsz || over);
+              window.__kbRH = !!(rsz || orh);
+            }
+            requestAnimationFrame(frame);
+          })();
+          EOF
+          python3 - <<'PY'
+          def patch(path, old, new):
+              s = open(path, encoding='utf-8').read()
+              assert old in s, 'nao achei em ' + path + ': ' + old
+              open(path, 'w', encoding='utf-8').write(s.replace(old, new, 1))
+          def between(path, a, b, new):
+              s = open(path, encoding='utf-8').read()
+              i = s.index(a)
+              j = s.index(b, i)
+              open(path, 'w', encoding='utf-8').write(s[:i] + new + s[j:])
+          A = 'app/src/main/assets/'
+          U = A + 'ui.js'
+          H = A + 'hand.js'
+          J = 'app/src/main/java/com/vr/launcher/MainActivity.java'
+
+          # ---------- menu: Google sai, Centralizar entra ----------
+          patch(U, "['search', 'Google', function () { openWin(1); }],", "['center', 'Centralizar', function () { centerWins(); }],")
+          patch(U, """cfg: '<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>'""", """cfg: '<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>',
+                center: '<circle cx="12" cy="12" r="3"/><path d="M12 3v4M12 17v4M3 12h4M17 12h4"/>'""")
+          patch(U, "var rcb = document.getElementById('rc'), oc = rcb.onclick;", r"""var CA = null;
+            function centerWins() {
+              if (!WINS.length) { toast('Nenhuma janela aberta'); return; }
+              var hh = hwd(360, HUB.s, HUB.R), th = hwd(760, HUB.s, HUB.R);
+              var right = hh + (TAB ? (GAP + 2 * th) / 2 : 0), seen = [], list = [];
+              WINS.forEach(function (W) { var E = ent(W); if (seen.indexOf(E) < 0) seen.push(E); });
+              seen.forEach(function (E) {
+                var w;
+                if (E.list) w = E.list.length * gDelta(E);
+                else { w = 2 * hwd(E.min ? 96 : 720, E.s, E.R); E.t0 = 0; E.al = 1; E.k = 1; }
+                var a1 = HUB.az + right + 3 + w / 2;
+                right += 3 + w;
+                list.push({ E: E, a0: E.az, a1: E.az + angd(a1, E.az), e0: E.ev, e1: HUB.ev });
+              });
+              CA = { t: performance.now(), l: list };
+            }
+            var rcb = document.getElementById('rc'), oc = rcb.onclick;""")
+          patch(U, "HUB.sx = pa ? pa.x : 0; HUB.sy = pa ? pa.y : 0;", r"""HUB.sx = pa ? pa.x : 0; HUB.sy = pa ? pa.y : 0;
+              if (CA) {
+                if (bp || rs) CA = null;
+                else {
+                  var cp = Math.min(1, (now - CA.t) / 450), ce = 1 - Math.pow(1 - cp, 3);
+                  CA.l.forEach(function (q) { q.E.az = q.a0 + (q.a1 - q.a0) * ce; q.E.ev = q.e0 + (q.e1 - q.e0) * ce; });
+                  if (cp >= 1) CA = null;
+                }
+              }""")
+
+          # ---------- janela com cara de navegador (abas + URL + voltar/avancar) ----------
+          patch(U, "'.aw .kbb.hand{background:#fff;color:#000}'", """'.aw .kbb.hand{background:#fff;color:#000}',
+              '.cr{position:absolute;left:0;bottom:100%;width:720px;height:136px;border-radius:24px 24px 0 0;background:rgba(14,16,22,.9);display:flex;flex-direction:column;overflow:hidden}',
+              '.ct{display:flex;align-items:flex-end;gap:6px;height:68px;padding:10px 12px 0;flex:none}',
+              '.cb{display:flex;align-items:center;gap:10px;height:68px;padding:0 12px 6px;flex:none;background:rgba(255,255,255,.12)}',
+              '.tb{display:flex;align-items:center;gap:8px;flex:0 1 190px;min-width:0;height:58px;padding:0 16px;border-radius:18px 18px 0 0;background:transparent;opacity:.75;font-size:28px;transition:background .12s,color .12s}',
+              '.tb span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}',
+              '.tb.on{background:rgba(255,255,255,.12);opacity:1}',
+              '.tb i{flex:none;width:40px;height:40px;border-radius:50%;display:flex;align-items:center;justify-content:center}',
+              '.tb.hand,.tb i.hand,.cn.hand{background:#fff;color:#000;opacity:1}',
+              '.cn{flex:none;width:56px;height:56px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.1);transition:background .12s,color .12s}',
+              '.cn.off{opacity:.3}',
+              '.cn.cp{margin-bottom:6px;background:transparent}',
+              '.cn svg,.tb i svg{width:32px;height:32px;fill:none;stroke:currentColor;stroke-width:2.4;stroke-linecap:round;stroke-linejoin:round}',
+              '.tb i svg{width:24px;height:24px}',
+              '.cu{flex:1;min-width:0;height:56px;padding:0 24px;border-radius:28px;background:rgba(0,0,0,.3);display:flex;align-items:center;font-size:26px;opacity:.9;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}'""")
+          patch(U, "WINS.forEach(function (W) { if (W.min) t.push(W.bubT); else { if (!W.grp) t.push(W.barT); t.push(W.kbT); } });", "WINS.forEach(function (W) { if (W.min) t.push(W.bubT); else { if (!W.grp) t.push(W.barT); t.push(W.kbT); if (W.cT) t = t.concat(W.cT); } });")
+          patch(U, "function openWin(idx) {", r"""var MAXT = 4;
+            var CI = {
+              back: '<svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg>',
+              fwd: '<svg viewBox="0 0 24 24"><path d="M9 5l7 7-7 7"/></svg>',
+              plus: '<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>',
+              x: '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>'
+            };
+            function tabName(tb) {
+              var t = (tb.t || '').trim();
+              if (t) return t;
+              var u = tb.u || '';
+              if (!u || /^(about|data):/.test(u)) return 'Nova aba';
+              return u.replace(/^https?:\/\/(www\.|m\.)?/, '').split('/')[0];
+            }
+            function applyTabs(W, j) {
+              var ct = W.cTabs, T = [];
+              ct.textContent = '';
+              j.t.forEach(function (tb, i) {
+                var d = document.createElement('div');
+                d.className = i === j.a ? 'tb on' : 'tb';
+                var sp = document.createElement('span'); sp.textContent = tabName(tb); d.appendChild(sp);
+                ct.appendChild(d);
+                if (i === j.a) {
+                  if (j.t.length > 1) {
+                    var x = document.createElement('i'); x.innerHTML = CI.x; d.appendChild(x);
+                    T.push({ k: 'btn', el: x, g: W.chrome, ow: W, fn: function () { if (A) A.tabClose(W.id, i); } });
+                  }
+                } else T.push({ k: 'btn', el: d, g: W.chrome, ow: W, fn: function () { if (A) A.tabSel(W.id, i); } });
+              });
+              if (j.t.length < MAXT) {
+                var p = document.createElement('div'); p.className = 'cn cp'; p.innerHTML = CI.plus; ct.appendChild(p);
+                T.push({ k: 'btn', el: p, g: W.chrome, ow: W, fn: function () { if (A) A.tabNew(W.id); } });
+              }
+              W.cT = W.fixT.concat(T);
+              W.cBack.classList.toggle('off', !j.b); W.cFwd.classList.toggle('off', !j.f);
+              var u = (j.t[j.a] && j.t[j.a].u) || '';
+              W.cUrl.textContent = /^(about|data):/.test(u) ? '' : u.replace(/^https?:\/\//, '').replace(/\/$/, '');
+              rebuild();
+            }
+            window.__tabs = function (id, js) {
+              var W = null;
+              WINS.forEach(function (w) { if (w.id === id) W = w; });
+              if (!W || !W.chrome) return;
+              try { applyTabs(W, JSON.parse(js)); } catch (e) { }
+            };
+            function initChrome(W) {
+              var c = document.createElement('div'); c.className = 'cr';
+              c.innerHTML = '<div class="ct"></div><div class="cb"><div class="cn off">' + CI.back + '</div><div class="cn off">' + CI.fwd + '</div><div class="cu"></div></div>';
+              W.dom.appendChild(c);
+              W.chrome = c; W.cTabs = c.querySelector('.ct');
+              var bs = c.querySelectorAll('.cn');
+              W.cBack = bs[0]; W.cFwd = bs[1]; W.cUrl = c.querySelector('.cu');
+              W.fixT = [
+                { k: 'btn', el: W.cBack, g: c, ow: W, fn: function () { if (A) A.navStep(W.id, -1); } },
+                { k: 'btn', el: W.cFwd, g: c, ow: W, fn: function () { if (A) A.navStep(W.id, 1); } }
+              ];
+              applyTabs(W, { a: 0, t: [{ t: 'Carregando…', u: '' }], b: 0, f: 0 });
+            }
+            function openWin(idx) {""")
+          patch(U, "W.kb = W.dom.querySelector('.kbb'); W.kbT = { k: 'btn', el: W.kb, fn: function () { if (window.KB) window.KB.toggle(W); } };", "W.kb = W.dom.querySelector('.kbb'); W.kbT = { k: 'btn', el: W.kb, fn: function () { if (window.KB) window.KB.toggle(W); } };\n              initChrome(W);")
+          patch(U, "cf = (gi2 === 0 ? 1 : 0) | (gi2 === gn - 1 ? 2 : 0); }", "cf = (gi2 === 0 ? 1 : 0) | (gi2 === gn - 1 ? 2 : 0); }\n                if (Wn.cfv !== cf) { Wn.cfv = cf; Wn.chrome.style.borderRadius = ((cf & 1) ? '24px' : '0') + ' ' + ((cf & 2) ? '24px' : '0') + ' 0 0'; }")
+
+          # ---------- hand.js: so testa os botoes da barra quando a mao esta perto dela ----------
+          patch(H, "var best = null, bd = 1e9;", "var best = null, bd = 1e9, gc = {};")
+          patch(H, "var r = t.el.getBoundingClientRect();", r"""if (t.ow && t.ow.gh) return;
+                if (t.g) {
+                  var gi = t.g.__gi || (t.g.__gi = (window.__gidn = (window.__gidn || 0) + 1));
+                  var gr = gc[gi] || (gc[gi] = t.g.getBoundingClientRect());
+                  if (x < gr.left - 40 || x > gr.right + 40 || y < gr.top - 40 || y > gr.bottom + 40) return;
+                }
+                var r = t.el.getBoundingClientRect();""")
+
+          # ---------- Android: teclado do celular bloqueado + abas por janela ----------
+          patch(J, "getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);", "getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);\n              getWindow().addFlags(WindowManager.LayoutParams.FLAG_ALT_FOCUSABLE_IM);")
+          patch(J, "int pw = 960, ph = 540; int corner = 3; }", "int pw = 960, ph = 540; int corner = 3; float al = 1f; String last = \"\"; ArrayList<WebView> tabs = new ArrayList<>(); }")
+          patch(J, "@JavascriptInterface public void front(final int id) { ui.post(() -> frontWin(id)); }", """@JavascriptInterface public void front(final int id) { ui.post(() -> frontWin(id)); }
+              @JavascriptInterface public void tabNew(final int id) { ui.post(() -> tabAdd(id)); }
+              @JavascriptInterface public void tabSel(final int id, final int i) { ui.post(() -> { Win w = find(id); if (w != null) tabShow(w, i); }); }
+              @JavascriptInterface public void tabClose(final int id, final int i) { ui.post(() -> tabDel(id, i)); }
+              @JavascriptInterface public void navStep(final int id, final int d) { ui.post(() -> navGo(id, d)); }""")
+          between(J, "void openWin(int id, int idx) {", "void closeWin(int id) {", r'''static final int MAXT = 4;
+            static final String GOOGLE = "https://www.google.com/";
+            void openWin(int id, int idx) {
+              if (idx < 0 || idx >= URLS.length || find(id) != null) return;
+              Win w = new Win(); w.id = id;
+              w.v = makeTab(w, URLS[idx], DESK[idx]);
+              wins.add(w);
+            }
+            WebView makeTab(final Win w, String url, boolean desk) {
+              WebView v = new NoImeWebView(this);
+              v.setBackgroundColor(Color.BLACK);
+              WebSettings s = v.getSettings();
+              s.setJavaScriptEnabled(true);
+              s.setDomStorageEnabled(true);
+              s.setMediaPlaybackRequiresUserGesture(false);
+              if (desk) {
+                s.setUserAgentString(UA_DESK);
+                s.setUseWideViewPort(true);
+                s.setLoadWithOverviewMode(true);
+              }
+              CookieManager.getInstance().setAcceptThirdPartyCookies(v, true);
+              v.setWebViewClient(new WebViewClient() {
+                @Override public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest r) {
+                  String u = r.getUrl().toString();
+                  return !(u.startsWith("http:") || u.startsWith("https:") || u.startsWith("about:") || u.startsWith("blob:") || u.startsWith("data:"));
+                }
+                @Override public void onReceivedError(WebView view, WebResourceRequest r, WebResourceError e) {
+                  if (r.isForMainFrame()) {
+                    view.loadData("<body style='margin:0;background:#111;color:#fff;font:28px sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;text-align:center'><div>Sem conexão<br><small>" + e.getDescription() + "</small></div></body>", "text/html; charset=utf-8", "UTF-8");
+                  }
+                }
+                @Override public void onPageStarted(WebView view, String u, Bitmap f) { pushTabs(w); }
+                @Override public void onPageFinished(WebView view, String u) { pushTabs(w); }
+                @Override public void doUpdateVisitedHistory(WebView view, String u, boolean r) { pushTabs(w); }
+              });
+              v.setWebChromeClient(new android.webkit.WebChromeClient() {
+                @Override public void onReceivedTitle(WebView view, String t) { pushTabs(w); }
+              });
+              v.setOutlineProvider(new ViewOutlineProvider() {
+                @Override public void getOutline(View vw, Outline o) {
+                  int c = w.corner; int r = 24;
+                  int l = (c & 1) != 0 ? 0 : -r;
+                  int rt = (c & 2) != 0 ? vw.getWidth() : vw.getWidth() + r;
+                  o.setRoundRect(l, -r, rt, vw.getHeight(), (float) r);
+                }
+              });
+              v.setClipToOutline(true);
+              v.setTranslationX(-5000f);
+              v.setVisibility(View.INVISIBLE);
+              root.addView(v, root.indexOfChild(curv), new FrameLayout.LayoutParams(w.pw, w.ph));
+              w.tabs.add(v);
+              v.loadUrl(url);
+              return v;
+            }
+            void pushTabs(Win w) {
+              if (!wins.contains(w) && w.v != null && !w.tabs.contains(w.v)) return;
+              try {
+                JSONArray ts = new JSONArray();
+                for (WebView t : w.tabs) {
+                  JSONObject o = new JSONObject();
+                  String ti = t.getTitle(), u = t.getUrl();
+                  o.put("t", ti == null ? "" : ti);
+                  o.put("u", u == null ? "" : u);
+                  ts.put(o);
+                }
+                WebView a = w.v;
+                JSONObject j = new JSONObject();
+                j.put("a", w.tabs.indexOf(a));
+                j.put("t", ts);
+                j.put("b", a != null && a.canGoBack());
+                j.put("f", a != null && a.canGoForward());
+                String s = j.toString();
+                if (s.equals(w.last)) return;
+                w.last = s;
+                jsCall("window.__tabs&&window.__tabs(" + w.id + "," + JSONObject.quote(s) + ")");
+              } catch (Throwable t) { }
+            }
+            void applyWin(Win w) {
+              if (w.v == null) return;
+              if (w.w > 1f) {
+                w.v.setPivotX(w.pw / 2f); w.v.setPivotY(w.ph / 2f);
+                w.v.setTranslationX(w.cx - w.pw / 2f); w.v.setTranslationY(w.cy - w.ph / 2f);
+                w.v.setScaleX(w.w / w.pw); w.v.setScaleY(w.h / w.ph);
+                w.v.setRotation(w.rot);
+                w.v.setAlpha(w.al);
+                w.v.setVisibility(View.VISIBLE);
+              } else {
+                w.v.setVisibility(View.INVISIBLE);
+              }
+            }
+            void tabAdd(int id) {
+              Win w = find(id);
+              if (w == null || w.tabs.size() >= MAXT) return;
+              makeTab(w, GOOGLE, false);
+              tabShow(w, w.tabs.size() - 1);
+            }
+            void tabShow(Win w, int i) {
+              if (i < 0 || i >= w.tabs.size()) return;
+              WebView n = w.tabs.get(i);
+              if (n == w.v) return;
+              WebView o = w.v;
+              if (o != null) { o.setVisibility(View.INVISIBLE); o.onPause(); }
+              if (down == w) down = null;
+              w.v = n;
+              n.onResume();
+              if (n.getLayoutParams().width != w.pw || n.getLayoutParams().height != w.ph) n.setLayoutParams(new FrameLayout.LayoutParams(w.pw, w.ph));
+              applyWin(w);
+              for (Win q : wins) if (q.v != null) q.v.bringToFront();
+              curv.bringToFront();
+              pushTabs(w);
+            }
+            void tabDel(int id, int i) {
+              Win w = find(id);
+              if (w == null || w.tabs.size() < 2 || i < 0 || i >= w.tabs.size()) return;
+              WebView t = w.tabs.get(i);
+              if (t == w.v) tabShow(w, i > 0 ? i - 1 : 1);
+              w.tabs.remove(t);
+              root.removeView(t);
+              t.stopLoading();
+              t.destroy();
+              pushTabs(w);
+            }
+            void navGo(int id, int d) {
+              Win w = find(id);
+              if (w == null || w.v == null) return;
+              if (d < 0 && w.v.canGoBack()) w.v.goBack();
+              else if (d > 0 && w.v.canGoForward()) w.v.goForward();
+            }
+            ''')
+          between(J, "void closeWin(int id) {", "void frontWin(int id) {", r'''void closeWin(int id) {
+              Win w = find(id);
+              if (w == null) return;
+              if (down == w) down = null;
+              wins.remove(w);
+              for (WebView t : w.tabs) { root.removeView(t); t.stopLoading(); t.destroy(); }
+              w.tabs.clear();
+            }
+            ''')
+          between(J, "void applyRects(String s) {", "void hideIme() {", r'''void applyRects(String s) {
+              for (String part : s.split(";")) {
+                String[] a = part.split(",");
+                if (a.length < 9) continue;
+                try {
+                  Win w = find(Integer.parseInt(a[0]));
+                  if (w == null || w.v == null) continue;
+                  w.cx = Float.parseFloat(a[1]) * sx(); w.cy = Float.parseFloat(a[2]) * sy();
+                  w.w = Float.parseFloat(a[3]) * sx(); w.h = Float.parseFloat(a[4]) * sx();
+                  w.rot = Float.parseFloat(a[5]);
+                  int pw = Integer.parseInt(a[6]), ph = Integer.parseInt(a[7]);
+                  w.al = Float.parseFloat(a[8]);
+                  if (a.length > 9) { int cc = Integer.parseInt(a[9]); if (cc != w.corner) { w.corner = cc; w.v.invalidateOutline(); } }
+                  if (pw != w.pw || ph != w.ph) { w.pw = pw; w.ph = ph; w.v.setLayoutParams(new FrameLayout.LayoutParams(pw, ph)); }
+                  applyWin(w);
+                } catch (Exception e) { }
+              }
+            }
+            ''')
+          PY
       - name: Assinatura fixa
         env:
           KS_PASS: ${{ secrets.KS_PASS }}
