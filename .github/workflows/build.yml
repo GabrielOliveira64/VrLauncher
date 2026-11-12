@@ -3337,6 +3337,39 @@ jobs:
             }
             void navGo(int id, int d) {''')
           PY
+      - name: X na janela, sem icone de teclado e biblioteca espacial direta
+        run: |
+          python3 - <<'PY'
+          def patch(path, old, new):
+              s = open(path, encoding='utf-8').read()
+              assert old in s, 'nao achei em ' + path + ': ' + old
+              open(path, 'w', encoding='utf-8').write(s.replace(old, new, 1))
+          A = 'app/src/main/assets/'
+          U = A + 'ui.js'
+          S = A + 'spatial.js'
+
+          # ---------- X para fechar a janela, na linha das abas ----------
+          patch(U, "'.cn.off{opacity:.3}',", "'.cn.off{opacity:.3}',\n              '.cn.cx{margin-left:auto;margin-bottom:6px}',")
+          patch(U, "W.cT = W.fixT.concat(T);", """var cx = document.createElement('div'); cx.className = 'cn cx'; cx.innerHTML = CI.x; ct.appendChild(cx);
+              T.push({ k: 'btn', el: cx, g: W.chrome, ow: W, fn: function () { closeWin(W); } });
+              W.cT = W.fixT.concat(T);""")
+
+          # ---------- icone de teclado da janela some (o teclado abre sozinho) ----------
+          patch(U, ".kbb{position:absolute;", ".kbb{display:none!important;position:absolute;")
+
+          # ---------- biblioteca espacial ----------
+          # clique abre direto; clicar em outro troca; clicar no aberto fecha
+          patch(S, "function () { sel = (sel === it.id) ? null : it.id; build(); }, sg);", "function () { if (selMode) { sel = (sel === it.id) ? null : it.id; build(); } else if (it.id === active) exit(); else enter(it.id); }, sg);")
+          # menu e aba continuam abertos
+          patch(S, "UI.hideHub();", "")
+          # ao trocar de imagem para video, esconde o canvas da imagem
+          patch(S, "function stopView() {", "function hideCv() {\n              running = false; cv.style.opacity = '0'; cv.style.display = 'none';\n              if (gl && tex) { gl.deleteTexture(tex); tex = null; }\n            }\n            function stopView() {")
+          patch(S, "if (itm && itm.type === 'video') startVideo(id, itm.name); else startView('/spatial/' + id + '.jpg');", "if (itm && itm.type === 'video') { hideCv(); startVideo(id, itm.name); } else startView('/spatial/' + id + '.jpg');")
+          # apagar o item aberto fecha antes
+          patch(S, "try { ok = A.spDelete(id); } catch (e) {}", "if (active === id) exit();\n              try { ok = A.spDelete(id); } catch (e) {}")
+          # contorno branco no item em execucao
+          patch(S, ".st.on::after{", ".st.on{border:3px solid #fff;box-shadow:0 0 0 2px rgba(255,255,255,.6)}',\n              '.st.on::after{")
+          PY
       - name: Assinatura fixa
         env:
           KS_PASS: ${{ secrets.KS_PASS }}
