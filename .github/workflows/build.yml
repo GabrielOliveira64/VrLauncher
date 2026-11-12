@@ -3370,6 +3370,267 @@ jobs:
           # contorno branco no item em execucao
           patch(S, ".st.on::after{", ".st.on{border:3px solid #fff;box-shadow:0 0 0 2px rgba(255,255,255,.6)}',\n              '.st.on::after{")
           PY
+      - name: Loja espacial (GitHub)
+        run: |
+          python3 - <<'PY'
+          def patch(path, old, new):
+              s = open(path, encoding='utf-8').read()
+              assert old in s, 'nao achei em ' + path + ': ' + old
+              open(path, 'w', encoding='utf-8').write(s.replace(old, new, 1))
+          A = 'app/src/main/assets/'
+          S = A + 'spatial.js'
+          J = 'app/src/main/java/com/vr/launcher/MainActivity.java'
+
+          STORE_JS = r"""
+            /* ---------- loja (GitHub) ---------- */
+            var ICON_BACK = '<svg viewBox="0 0 24 24"><path d="M15 5l-7 7 7 7"/></svg>';
+            var ICON_PHONE = '<svg viewBox="0 0 24 24"><rect x="7" y="2.5" width="10" height="19" rx="2.5"/><path d="M11 18.5h2"/></svg>';
+            var ICON_CLOUD = '<svg viewBox="0 0 24 24"><path d="M7 18a4.5 4.5 0 0 1-.6-8.96A6 6 0 0 1 18 8.5a4 4 0 0 1-.5 9.5z"/><path d="M12 10v6M9.5 13.5L12 16l2.5-2.5"/></svg>';
+            var PERS = 6, dlEls = {};
+            function dling(id) { return Object.prototype.hasOwnProperty.call(dl, id); }
+            function fmtSz(b) {
+              if (!b) return '';
+              if (b >= 1e9) return (b / 1e9).toFixed(1) + ' GB';
+              if (b >= 1e6) return Math.round(b / 1e6) + ' MB';
+              return Math.max(1, Math.round(b / 1e3)) + ' KB';
+            }
+            function openStore() { vst = 'store'; cpage = 0; catLoading = true; catErr = ''; A.storeFetch(); build(); }
+            function startDl(it) {
+              if (Object.keys(dl).length) { toast('Aguarde o download atual'); return; }
+              dl[it.id] = 0;
+              A.storeGet(it.id, it.url, it.tipo, it.nome);
+              build();
+            }
+            window.__storeCat = function (js, err) {
+              catLoading = false;
+              if (err) { cat = []; catErr = err; }
+              else { try { cat = JSON.parse(js || '[]'); catErr = ''; } catch (e) { cat = []; catErr = 'Catálogo inválido'; } }
+              if (vst === 'store') build();
+            };
+            window.__storeProg = function (sid, p) {
+              dl[sid] = p;
+              var e = dlEls[sid];
+              if (!e) return;
+              e.bar.style.width = (p >= 0 ? p : 100) + '%';
+              e.txt.textContent = p >= 0 ? p + '%' : 'Baixando…';
+            };
+            window.__storeDone = function (sid, ok, msg) {
+              delete dl[sid]; delete dlEls[sid];
+              if (ok) toast('Baixado e adicionado à biblioteca'); else toast(msg || 'Falha no download');
+              if (vst === 'store') build(); else if (vst === 'lib') load();
+            };
+            function buildAlt() {
+              sg.style.gridTemplateColumns = vst === 'choose' ? '1fr 1fr' : '';
+              sg.style.gridTemplateRows = vst === 'choose' ? '1fr' : 'repeat(2,1fr)';
+              dlEls = {};
+              mkBtn('sb', ICON_BACK + '<span>Voltar</span>', function () {
+                if (vst === 'store') { vst = 'choose'; build(); } else { vst = 'lib'; load(); }
+              }, sl);
+              var tt = document.createElement('span'); tt.className = 'stt'; tt.style.marginLeft = '18px';
+              tt.textContent = vst === 'store' ? 'LOJA' : 'IMPORTAR'; sl.appendChild(tt);
+              if (vst === 'choose') {
+                mkBtn('st', ICON_PHONE + '<span>Do dispositivo</span>', function () { vst = 'lib'; build(); A.spImport(); }, sg);
+                mkBtn('st', ICON_CLOUD + '<span>Da loja</span>', openStore, sg);
+              } else buildStore();
+              UI.rebuild();
+            }
+            function buildStore() {
+              try { have = JSON.parse(A.storeHave() || '[]'); } catch (e) { have = []; }
+              var n = cat.length, np = Math.max(1, Math.ceil(n / PERS));
+              if (cpage >= np) cpage = np - 1;
+              if (np > 1) {
+                mkBtn('sb', '&#8249;', function () { cpage = (cpage + np - 1) % np; build(); }, sc);
+                var pl = document.createElement('span'); pl.className = 'pl'; pl.textContent = (cpage + 1) + '/' + np; sc.appendChild(pl);
+                mkBtn('sb', '&#8250;', function () { cpage = (cpage + 1) % np; build(); }, sc);
+              }
+              if (!n) {
+                var m = document.createElement('div'); m.className = 'sm'; sg.appendChild(m);
+                if (catLoading) m.textContent = 'Carregando catálogo…';
+                else if (catErr) {
+                  var s1 = document.createElement('span'); s1.textContent = catErr; m.appendChild(s1);
+                  mkBtn('sb', '<span>Tentar de novo</span>', openStore, m);
+                } else m.textContent = 'A loja está vazia';
+                return;
+              }
+              cat.slice(cpage * PERS, cpage * PERS + PERS).forEach(function (it) {
+                var d = document.createElement('div'); d.className = 'st th sx';
+                if (it.miniatura) d.style.backgroundImage = 'url(' + JSON.stringify(it.miniatura) + ')';
+                var nm = document.createElement('div'); nm.className = 'nm';
+                nm.textContent = (it.tipo === 'video' ? '▶ ' : '') + it.nome;
+                d.appendChild(nm);
+                var b = document.createElement('div'); b.className = 'dlb'; d.appendChild(b);
+                sg.appendChild(d);
+                if (dling(it.id)) {
+                  b.innerHTML = '<i></i><span></span>';
+                  var bar = b.firstChild, tx = b.lastChild, p = dl[it.id];
+                  bar.style.width = (p >= 0 ? p : 100) + '%';
+                  tx.textContent = p >= 0 ? p + '%' : 'Baixando…';
+                  dlEls[it.id] = { bar: bar, txt: tx };
+                } else if (have.indexOf(it.id) >= 0) {
+                  b.className = 'dlb ok'; b.textContent = '✓ Baixado';
+                } else {
+                  b.textContent = 'Baixar' + (it.tamanho ? ' · ' + fmtSz(it.tamanho) : '');
+                  T.push({ k: 'btn', el: b, fn: function () { startDl(it); } });
+                }
+              });
+            }
+          """
+
+          # ---------- JS: estados, botao Importar abre a escolha ----------
+          patch(S, "var items = [], page = 0,", "var vst = 'lib', cat = [], catErr = '', catLoading = false, dl = {}, have = [], cpage = 0, items = [], page = 0,")
+          patch(S, "sg.innerHTML = ''; sc.innerHTML = ''; sl.innerHTML = ''; T.length = 0;", "sg.innerHTML = ''; sc.innerHTML = ''; sl.innerHTML = ''; T.length = 0;\n              if (vst !== 'lib') { buildAlt(); return; }\n              sg.style.gridTemplateColumns = ''; sg.style.gridTemplateRows = '';")
+          patch(S, "function () { A.spImport(); }, sg);", "function () { vst = 'choose'; build(); }, sg);")
+          patch(S, "window.SP = { onTab: function (on) {", "window.SP = { onTab: function (on) { vst = 'lib';")
+          patch(S, ".cf .bs{display:flex;gap:12px}',", ".cf .bs{display:flex;gap:12px}',\n              '.sm{grid-column:1/-1;grid-row:1/-1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:22px;font-size:26px;opacity:.85;text-align:center;padding:0 40px}',\n              '.st.sx .nm{top:0;bottom:auto;padding:12px 14px 28px;font-size:21px;background:linear-gradient(rgba(0,0,0,.75),transparent)}',\n              '.dlb{position:absolute;left:10px;right:10px;bottom:10px;height:56px;border-radius:28px;background:rgba(14,16,22,.88);border:1px solid rgba(255,255,255,.3);display:flex;align-items:center;justify-content:center;font-size:22px;overflow:hidden;transition:background .12s,color .12s}',\n              '.dlb.hand{background:#fff;color:#000}',\n              '.dlb.ok{background:rgba(94,234,212,.92);color:#04201c;border-color:transparent}',\n              '.dlb i{position:absolute;left:0;top:0;bottom:0;width:0;background:rgba(94,234,212,.85)}',\n              '.dlb span{position:relative;color:#fff;text-shadow:0 1px 3px rgba(0,0,0,.8)}',")
+          patch(S, "function maxPage() {", STORE_JS + "\n            function maxPage() {")
+
+          # ---------- Android ----------
+          patch(J, "@JavascriptInterface public boolean spDelete(final String id) { return spDel(id); }", """@JavascriptInterface public boolean spDelete(final String id) { return spDel(id); }
+              @JavascriptInterface public void storeFetch() { storeLoad(); }
+              @JavascriptInterface public String storeHave() { return storeHaveJson(); }
+              @JavascriptInterface public void storeGet(final String sid, final String url, final String tipo, final String nome) { storeDown(sid, url, tipo, nome); }""")
+          patch(J, 'String[] sf = { ".jpg", ".mp4", "_t.jpg", ".txt" };', 'String[] sf = { ".jpg", ".mp4", "_t.jpg", ".txt", ".src" };')
+          patch(J, 'fo = new FileOutputStream(new File(dir, id + ".txt"));', 'spLastId = id;\n              fo = new FileOutputStream(new File(dir, id + ".txt"));')
+
+          JAVA = r"""
+            static final String STORE_URL = "https://raw.githubusercontent.com/GabrielOliveira64/VrLauncher/main/loja/catalogo.json";
+            String spLastId = null;
+            final java.util.concurrent.atomic.AtomicBoolean storeBusy = new java.util.concurrent.atomic.AtomicBoolean(false);
+            boolean storeUrlOk(String u) {
+              if (u == null) return false;
+              String l = u.toLowerCase();
+              return l.startsWith("https://github.com/gabrieloliveira64/") || l.startsWith("https://raw.githubusercontent.com/gabrieloliveira64/");
+            }
+            void storeLoad() {
+              new Thread(() -> {
+                String res = "", err = "";
+                try {
+                  java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL(STORE_URL + "?t=" + System.currentTimeMillis()).openConnection();
+                  c.setConnectTimeout(15000); c.setReadTimeout(15000);
+                  c.setRequestProperty("Cache-Control", "no-cache");
+                  int code = c.getResponseCode();
+                  if (code != 200) throw new Exception(code == 404 ? "Catálogo não encontrado (404)" : "Erro HTTP " + code);
+                  InputStream in = c.getInputStream();
+                  java.io.ByteArrayOutputStream bo = new java.io.ByteArrayOutputStream();
+                  byte[] b = new byte[8192]; int n;
+                  while ((n = in.read(b)) > 0) { bo.write(b, 0, n); if (bo.size() > 1000000) throw new Exception("Catálogo grande demais"); }
+                  in.close();
+                  JSONArray src = new JSONArray(bo.toString("UTF-8")), out = new JSONArray();
+                  for (int i = 0; i < src.length(); i++) {
+                    JSONObject o = src.optJSONObject(i);
+                    if (o == null) continue;
+                    String id = o.optString("id", ""), tp = o.optString("tipo", ""), url = o.optString("url", ""), th = o.optString("miniatura", "");
+                    if (!id.matches("[A-Za-z0-9_-]{1,60}") || !(tp.equals("imagem") || tp.equals("video")) || !storeUrlOk(url)) continue;
+                    JSONObject r = new JSONObject();
+                    r.put("id", id); r.put("nome", o.optString("nome", id)); r.put("tipo", tp); r.put("url", url);
+                    r.put("tamanho", o.optLong("tamanho", 0)); r.put("miniatura", storeUrlOk(th) ? th : "");
+                    out.put(r);
+                  }
+                  res = out.toString();
+                } catch (Throwable t) {
+                  err = String.valueOf(t.getMessage());
+                  if (t instanceof java.net.UnknownHostException) err = "Sem conexão com a internet";
+                }
+                jsCall("window.__storeCat&&window.__storeCat(" + JSONObject.quote(res) + "," + JSONObject.quote(err) + ")");
+              }).start();
+            }
+            String storeHaveJson() {
+              JSONArray a = new JSONArray();
+              try {
+                File[] fs = new File(getFilesDir(), "spatial").listFiles();
+                if (fs != null) for (File f : fs) {
+                  String n = f.getName();
+                  if (!n.endsWith(".src")) continue;
+                  String id = n.substring(0, n.length() - 4);
+                  if (!new File(f.getParentFile(), id + ".mp4").exists() && !new File(f.getParentFile(), id + ".jpg").exists()) continue;
+                  java.io.FileInputStream fi = new java.io.FileInputStream(f);
+                  byte[] bb = new byte[(int) Math.min(f.length(), 200L)];
+                  int rd = fi.read(bb); fi.close();
+                  a.put(new String(bb, 0, Math.max(rd, 0), "UTF-8"));
+                }
+              } catch (Exception e) { }
+              return a.toString();
+            }
+            void storeFail(String sid, String msg) {
+              jsCall("window.__storeDone&&window.__storeDone(" + JSONObject.quote(String.valueOf(sid)) + ",false," + JSONObject.quote(msg) + ")");
+            }
+            void storeSrc(File dir, String id, String sid) throws Exception {
+              FileOutputStream fo = new FileOutputStream(new File(dir, id + ".src"));
+              try { fo.write(sid.getBytes("UTF-8")); } finally { fo.close(); }
+            }
+            void storeDown(final String sid, final String url, final String tipo, final String nome) {
+              if (sid == null || !sid.matches("[A-Za-z0-9_-]{1,60}") || !storeUrlOk(url) || !("imagem".equals(tipo) || "video".equals(tipo))) { storeFail(sid, "Item inválido"); return; }
+              if (!storeBusy.compareAndSet(false, true)) { storeFail(sid, "Aguarde o download atual"); return; }
+              new Thread(() -> {
+                File dir = new File(getFilesDir(), "spatial"); dir.mkdirs();
+                boolean isV = "video".equals(tipo);
+                String id = String.valueOf(System.currentTimeMillis() * 10 + (spCnt++ % 10));
+                File tmp = new File(dir, id + ".part");
+                File mp4 = new File(dir, id + ".mp4");
+                boolean ok = false; String err = "";
+                try {
+                  java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
+                  c.setConnectTimeout(15000); c.setReadTimeout(30000);
+                  int code = c.getResponseCode();
+                  if (code != 200) throw new Exception("Erro HTTP " + code);
+                  long len = c.getContentLengthLong();
+                  InputStream in = c.getInputStream();
+                  FileOutputStream fo = new FileOutputStream(isV ? mp4 : tmp);
+                  long got = 0, lastMs = 0; int lastP = -2;
+                  try {
+                    byte[] buf = new byte[65536]; int n;
+                    while ((n = in.read(buf)) > 0) {
+                      fo.write(buf, 0, n); got += n;
+                      long now = SystemClock.elapsedRealtime();
+                      int p = len > 0 ? (int) (got * 100 / len) : -1;
+                      if (p != lastP && now - lastMs > 200) {
+                        lastP = p; lastMs = now;
+                        jsCall("window.__storeProg&&window.__storeProg(" + JSONObject.quote(sid) + "," + p + ")");
+                      }
+                    }
+                  } finally { fo.close(); in.close(); }
+                  if (len > 0 && got != len) throw new Exception("Download incompleto");
+                  if (isV) {
+                    android.media.MediaMetadataRetriever mr = new android.media.MediaMetadataRetriever();
+                    Bitmap fr = null; int vw = 0;
+                    try {
+                      mr.setDataSource(mp4.getAbsolutePath());
+                      String ws = mr.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH);
+                      if (ws != null) vw = Integer.parseInt(ws);
+                      fr = mr.getFrameAtTime(1000000L, android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
+                      if (fr == null) fr = mr.getFrameAtTime();
+                    } finally { mr.release(); }
+                    if (vw <= 0) throw new Exception("Não parece um vídeo MP4 válido");
+                    Bitmap th = fr != null ? Bitmap.createScaledBitmap(fr, 320, 160, true) : Bitmap.createBitmap(320, 160, Bitmap.Config.ARGB_8888);
+                    FileOutputStream f2 = new FileOutputStream(new File(dir, id + "_t.jpg"));
+                    try { th.compress(Bitmap.CompressFormat.JPEG, 80, f2); } finally { f2.close(); }
+                    FileOutputStream f3 = new FileOutputStream(new File(dir, id + ".txt"));
+                    try { f3.write(nome.getBytes("UTF-8")); } finally { f3.close(); }
+                    storeSrc(dir, id, sid);
+                  } else {
+                    spLastId = null;
+                    spImportOne(Uri.fromFile(tmp));
+                    if (spLastId == null) throw new Exception("Não consegui processar a imagem");
+                    FileOutputStream f4 = new FileOutputStream(new File(dir, spLastId + ".txt"));
+                    try { f4.write(nome.getBytes("UTF-8")); } finally { f4.close(); }
+                    storeSrc(dir, spLastId, sid);
+                  }
+                  ok = true;
+                } catch (Throwable t) {
+                  err = String.valueOf(t.getMessage());
+                  if (t instanceof java.net.UnknownHostException) err = "Sem conexão com a internet";
+                } finally {
+                  tmp.delete();
+                  if (!ok) { mp4.delete(); new File(dir, id + "_t.jpg").delete(); new File(dir, id + ".txt").delete(); }
+                  storeBusy.set(false);
+                }
+                if (ok) jsCall("window.__storeDone&&window.__storeDone(" + JSONObject.quote(sid) + ",true," + JSONObject.quote("") + ")");
+                else storeFail(sid, err.isEmpty() ? "Falha no download" : err);
+              }).start();
+            }
+            """
+          patch(J, "void spPick() {", JAVA + "\n            void spPick() {")
+          PY
       - name: Assinatura fixa
         env:
           KS_PASS: ${{ secrets.KS_PASS }}
