@@ -24,11 +24,11 @@
  "url": "https://github.com/GabrielOliveira64/VrLauncher/releases/download/loja/natureza_01.jpg"
  },
  {
- "id": "Praia01",
- "nome": "Praia_01",
+ "id": "Mar01",
+ "nome": "Mar_01_Video",
  "tipo": "Video",
  "tamanho": 154000000,
- "miniatura": "https://raw.githubusercontent.com/GabrielOliveira64/VrLauncher/main/loja/thumbs/praia_01_video.jpg",
+ "miniatura": "https://raw.githubusercontent.com/GabrielOliveira64/VrLauncher/main/loja/thumbs/mar_01_thumb.jpg",
  "url": "https://github.com/GabrielOliveira64/VrLauncher/releases/download/loja/Mar_01.mp4"
  },
 ]
