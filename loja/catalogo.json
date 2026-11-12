@@ -26,7 +26,7 @@
  {
  "id": "Mar01",
  "nome": "Mar_01_Video",
- "tipo": "Video",
+ "tipo": "video",
  "tamanho": 154000000,
  "miniatura": "https://raw.githubusercontent.com/GabrielOliveira64/VrLauncher/main/loja/thumbs/mar_01_thumb.jpg",
  "url": "https://github.com/GabrielOliveira64/VrLauncher/releases/download/loja/Mar_01.mp4"
@@ -34,7 +34,7 @@
  {
  "id": "moto01_video",
  "nome": "moto_01",
- "tipo": "Video",
+ "tipo": "video",
  "tamanho": 154000000,
  "miniatura": "https://raw.githubusercontent.com/GabrielOliveira64/VrLauncher/main/loja/thumbs/moto_01_thumb.jpg",
  "url": "https://github.com/GabrielOliveira64/VrLauncher/releases/download/loja/moto_01.mp4"
