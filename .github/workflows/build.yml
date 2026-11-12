@@ -1,5 +1,9 @@
 name: Build APK
-on: [push, workflow_dispatch]
+on:
+  push:
+    paths-ignore:
+      - 'loja/**'
+  workflow_dispatch:
 permissions:
   contents: write
 jobs:
