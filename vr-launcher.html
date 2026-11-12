@@ -30,17 +30,14 @@ html,body{height:100%;margin:0;background:var(--bg);color:var(--fg);font-family:
 #start h1{margin:0;font-size:24px}
 #start p{margin:0;max-width:420px;opacity:.75;font-size:15px;line-height:1.45}
 #go{font:inherit;font-size:18px;font-weight:600;color:#04201c;background:var(--acc);border:0;border-radius:999px;padding:14px 34px}
+#ret{display:none}
+body.vrh #ui{display:none}
 </style>
 </head>
-<body>
+<body class="vrh">
 <div id="view"><div id="scene"></div></div>
 <div id="ret"></div>
 <div id="ui"><button id="rc">⟲ Centralizar</button><button id="fs">⛶ Tela cheia</button><span id="st">—</span></div>
-<div id="start">
-  <h1>VR Launcher · Etapa 1</h1>
-  <p>Segure o celular na horizontal e olhe ao redor. Mire o ponto central num app por 1 segundo para abrir (ou toque na tela). Sem giroscópio, arraste o dedo para olhar.</p>
-  <button id="go">Iniciar</button>
-</div>
 <script>
 const D=Math.PI/180, $=id=>document.getElementById(id);
 const mul=(a,b)=>{const r=[];for(let i=0;i<3;i++)for(let j=0;j<3;j++)r[i*3+j]=a[i*3]*b[j]+a[i*3+1]*b[3+j]+a[i*3+2]*b[6+j];return r};
@@ -131,15 +128,6 @@ addEventListener('pointerup',()=>{if(drag&&!drag.m&&hover)fire(hover);drag=null}
 
 $('rc').onclick=recenter;
 $('fs').onclick=()=>{const d=document.documentElement;(d.requestFullscreen?d.requestFullscreen():Promise.reject()).then(()=>screen.orientation&&screen.orientation.lock&&screen.orientation.lock('landscape')).catch(()=>{})};
-$('go').onclick=async()=>{
-  try{if(window.DeviceOrientationEvent&&typeof DeviceOrientationEvent.requestPermission==='function'){await DeviceOrientationEvent.requestPermission()}}catch(e){}
-  addEventListener('deviceorientation',onOri);
-  if(window.RelativeOrientationSensor)startSensor();
-  $('start').style.display='none';
-  try{await document.documentElement.requestFullscreen();screen.orientation.lock('landscape')}catch(e){}
-  st.textContent='Procurando giroscópio…';
-  setTimeout(()=>{if(!haveGyro&&!/Erro|API:/.test(st.textContent)){let d='';try{const fp=document.featurePolicy||document.permissionsPolicy;d=' | iframe:'+(window.top!==window)+' gyro:'+(fp&&fp.allowsFeature('gyroscope'))+' accel:'+(fp&&fp.allowsFeature('accelerometer'))}catch(e){}st.textContent='Sem leitura'+d+' | arraste para olhar'}},2500);
-};
 
 // loop
 let hover=null, dwell=0, last=performance.now();
