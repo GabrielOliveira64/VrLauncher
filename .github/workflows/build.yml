@@ -3233,6 +3233,110 @@ jobs:
             }
             ''')
           PY
+      - name: URL editavel, teclado automatico e pinca precisa
+        run: |
+          python3 - <<'PY'
+          def patch(path, old, new):
+              s = open(path, encoding='utf-8').read()
+              assert old in s, 'nao achei em ' + path + ': ' + old
+              open(path, 'w', encoding='utf-8').write(s.replace(old, new, 1))
+          A = 'app/src/main/assets/'
+          U = A + 'ui.js'
+          H = A + 'hand.js'
+          KB = A + 'kbd.js'
+          J = 'app/src/main/java/com/vr/launcher/MainActivity.java'
+
+          # ---------- pinca: so vale com as pontas realmente coladas ----------
+          # liga com ratio < 0.16 (colados) e so solta com ratio > 0.26. Ajuste estes dois numeros se precisar.
+          patch(H, "pinch = pinch ? ratio < 0.40 : ratio < 0.25;", "pinch = pinch ? ratio < 0.26 : ratio < 0.16;")
+
+          # ---------- ui.js: URL clicavel e texto guardado ----------
+          patch(U, "{ k: 'btn', el: W.cFwd, g: c, ow: W, fn: function () { if (A) A.navStep(W.id, 1); } }", "{ k: 'btn', el: W.cFwd, g: c, ow: W, fn: function () { if (A) A.navStep(W.id, 1); } },\n                { k: 'btn', el: W.cUrl, g: c, ow: W, fn: function () { if (window.KB) window.KB.urlEdit(W); } }")
+          patch(U, "W.cUrl.textContent = /^(about|data):/.test(u) ? '' : u.replace(/^https?:\\/\\//, '').replace(/\\/$/, '');", "W.urlTxt = /^(about|data):/.test(u) ? '' : u.replace(/^https?:\\/\\//, '').replace(/\\/$/, '');\n              if (!W.urlEdit) W.cUrl.textContent = W.urlTxt;")
+
+          # ---------- kbd.js: teclado livre, sem vinculo ----------
+          patch(KB, "pinEl = addKey(hdr, 20, 8, 76, 48, ICO.link, 'fn on', function () { K.pinned = !K.pinned; updPin(); }, false, false);", "")
+          patch(KB, "pinEl.classList.toggle('on', K.pinned);", "")
+          patch(KB, "pinEl.innerHTML = K.pinned ? ICO.link : ICO.unlink;", "")
+          patch(KB, "barEl.style.display = K.pinned ? 'none' : '';", "barEl.style.display = '';")
+          patch(KB, "function openKb(W) {", "function openKb(W, auto) {")
+          patch(KB, "K.open = true; K.pinned = true;", "K.open = true; K.pinned = false; K.place = true; K.auto = !!auto; K.mode = 'field';")
+          # posiciona so na abertura; depois o teclado fica onde esta
+          patch(KB, "if (K.pinned) {", "if (K.place) { K.place = false;")
+          patch(KB, "K.open = false; K.tw = null; K.scr = null; rsz = null;", "endUrl(); K.open = false; K.tw = null; K.scr = null; rsz = null;")
+
+          # ---------- kbd.js: digitar na URL ou no campo da janela ----------
+          patch(KB, "function sendTxt(s) { if (K.tw && s) A.keyText(K.tw.id, s); }", r"""var urlBuf = '', autoT = null;
+            function showUrl() { if (K.tw && K.tw.cUrl) K.tw.cUrl.textContent = urlBuf + '\u258f'; }
+            function endUrl() {
+              if (K.mode === 'url' && K.tw) { K.tw.urlEdit = false; if (K.tw.cUrl) K.tw.cUrl.textContent = K.tw.urlTxt || ''; }
+              K.mode = 'field';
+            }
+            function retarget(W) {
+              endUrl(); K.tw = W; K.mode = 'field';
+              title.textContent = 'Teclado · ' + NAMES[W.idx];
+              A.kbFocus(W.id);
+            }
+            window.__kbAuto = function (id, on) {
+              var W = null;
+              UI.WINS.forEach(function (w) { if (w.id === id) W = w; });
+              if (!W || W.min) return;
+              if (on) {
+                clearTimeout(autoT);
+                if (K.open) { if (K.tw !== W || K.mode !== 'field') retarget(W); }
+                else openKb(W, true);
+              } else if (K.open && K.auto && K.mode === 'field' && K.tw === W) {
+                clearTimeout(autoT);
+                autoT = setTimeout(function () { if (K.open && K.auto && K.mode === 'field') closeKb(); }, 700);
+              }
+            };
+            function sendTxt(s) {
+              if (!K.tw || !s) return;
+              if (K.mode === 'url') { urlBuf += s; showUrl(); } else A.keyText(K.tw.id, s);
+            }""")
+          patch(KB, "function sendCode(c) { if (K.tw) A.keyCode(K.tw.id, c); }", r"""function sendCode(c) {
+              if (!K.tw) return;
+              if (K.mode === 'url') {
+                if (c === 67) { urlBuf = urlBuf.slice(0, -1); showUrl(); }
+                else if (c === 66) { var W = K.tw; A.navTo(W.id, urlBuf); endUrl(); if (K.auto) closeKb(); }
+              } else A.keyCode(K.tw.id, c);
+            }""")
+          patch(KB, "toggle: function (W) { if (K.open && K.tw === W) closeKb(); else openKb(W); }", r"""toggle: function (W) {
+                if (K.open && K.tw === W) closeKb();
+                else if (K.open) { K.auto = false; retarget(W); }
+                else openKb(W, false);
+              },
+              urlEdit: function (W) {
+                if (K.open) retarget(W); else openKb(W, true);
+                K.mode = 'url'; urlBuf = ''; W.urlEdit = true; showUrl();
+              }""")
+
+          # ---------- Android: detectar foco em caixa de texto e navegar pela URL ----------
+          patch(J, "static final int MAXT = 4;", r'''static final int MAXT = 4;
+            static final String KBJS = "(function(){if(window.__kbi||!window.AndroidKb)return;window.__kbi=1;var N=['button','submit','checkbox','radio','range','color','file','image','reset','hidden'];function ed(e){if(!e||!e.tagName)return false;var t=e.tagName;if(t==='TEXTAREA')return true;if(t==='INPUT')return N.indexOf((e.type||'text').toLowerCase())<0;return !!e.isContentEditable}function rep(){var e=document.activeElement;for(var i=0;i<4&&e&&e.tagName==='IFRAME';i++){try{var a=e.contentDocument.activeElement;if(!a)break;e=a}catch(x){break}}try{AndroidKb.f(ed(e))}catch(x){}}document.addEventListener('focusin',rep,true);document.addEventListener('focusout',function(){setTimeout(rep,60)},true)})();";
+            class KbJs {
+              final Win w; final WebView v;
+              KbJs(Win w, WebView v) { this.w = w; this.v = v; }
+              @JavascriptInterface public void f(final boolean on) {
+                ui.post(() -> { if (v == w.v) jsCall("window.__kbAuto&&window.__kbAuto(" + w.id + "," + on + ")"); });
+              }
+            }''')
+          patch(J, "CookieManager.getInstance().setAcceptThirdPartyCookies(v, true);\n              v.setWebViewClient(new WebViewClient() {\n                @Override public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest r) {\n                  String u = r.getUrl().toString();\n                  return !(u.startsWith(\"http:\")", "CookieManager.getInstance().setAcceptThirdPartyCookies(v, true);\n              v.addJavascriptInterface(new KbJs(w, v), \"AndroidKb\");\n              v.setWebViewClient(new WebViewClient() {\n                @Override public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest r) {\n                  String u = r.getUrl().toString();\n                  return !(u.startsWith(\"http:\")")
+          patch(J, "@Override public void onPageFinished(WebView view, String u) { pushTabs(w); }", "@Override public void onPageFinished(WebView view, String u) { view.evaluateJavascript(KBJS, null); pushTabs(w); }")
+          patch(J, "@JavascriptInterface public void navStep(final int id, final int d) { ui.post(() -> navGo(id, d)); }", "@JavascriptInterface public void navStep(final int id, final int d) { ui.post(() -> navGo(id, d)); }\n              @JavascriptInterface public void navTo(final int id, final String t) { ui.post(() -> navUrl(id, t)); }")
+          patch(J, "void navGo(int id, int d) {", r'''void navUrl(int id, String t) {
+              Win w = find(id);
+              if (w == null || w.v == null || t == null) return;
+              t = t.trim();
+              if (t.isEmpty()) return;
+              String u;
+              if (t.matches("(?i)^[a-z][a-z0-9+.-]*://.*")) u = t;
+              else if (!t.contains(" ") && t.contains(".")) u = "https://" + t;
+              else { try { u = "https://www.google.com/search?q=" + java.net.URLEncoder.encode(t, "UTF-8"); } catch (Exception e) { return; } }
+              w.v.loadUrl(u);
+            }
+            void navGo(int id, int d) {''')
+          PY
       - name: Assinatura fixa
         env:
           KS_PASS: ${{ secrets.KS_PASS }}
