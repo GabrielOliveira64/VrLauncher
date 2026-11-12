@@ -1,1 +1,12 @@
-
+[
+ {
+ "id": "castelo01",
+ "nome": "Castelo ",
+ "tipo": "imagem",
+ "tamanho": 3200,
+ "miniatura": "https://raw.githubusercontent.com/GabrielOliveira64/VrLauncher/main/loja/thumbs/monkstown_castle_2k-4096x2048 (1).jpg",
+ "url": "https://github.com/GabrielOliveira64/VrLauncher/releases/download/loja/monkstown_castle_2k-4096x2048.jpg"
+ },
+ {
+ }
+]
