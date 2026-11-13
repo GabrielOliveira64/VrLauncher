@@ -3635,33 +3635,18 @@ jobs:
             """
           patch(J, "void spPick() {", JAVA + "\n            void spPick() {")
           PY
-      - name: Assinatura fixa
-        env:
-          KS_PASS: ${{ secrets.KS_PASS }}
-        run: |
-          if [ -z "$KS_PASS" ]; then
-            echo "::warning::Segredo KS_PASS nao encontrado: usando assinatura temporaria, sera preciso desinstalar o app a cada versao."
-          elif [ -f release.jks.enc ]; then
-            openssl enc -d -aes-256-cbc -pbkdf2 -pass env:KS_PASS -in release.jks.enc -out release.jks || { echo "::error::Nao consegui abrir release.jks.enc. A senha KS_PASS mudou?"; exit 1; }
-          else
-            keytool -genkeypair -keystore release.jks -alias vr -keyalg RSA -keysize 2048 -validity 36500 -storepass "$KS_PASS" -keypass "$KS_PASS" -dname "CN=VR Launcher"
-            openssl enc -aes-256-cbc -pbkdf2 -salt -pass env:KS_PASS -in release.jks -out release.jks.enc
-            git config user.name "build"
-            git config user.email "build@users.noreply.github.com"
-            git add release.jks.enc
-            git commit -m "Adiciona chave de assinatura criptografada"
-            git push || echo "::warning::Nao consegui salvar a chave no repositorio. Confira as permissoes do passo 2."
-          fi
-          if [ -f release.jks ]; then printf 'pass=%s\n' "$KS_PASS" > keystore.properties; fi
-      - name: Modo AR (Fase 1)
+            - name: Modo AR (Fase 2)
         run: |
           mkdir -p app/src/main/java/com/vr/launcher
           python3 - <<'PY'
-          def patch(path, old, new):
+          def patch(path, old, new, skip=None):
               s = open(path, encoding='utf-8').read()
+              if skip and skip in s:
+                  print('ja aplicado em', path)
+                  return
               assert old in s, 'nao achei em ' + path + ': ' + old
               open(path, 'w', encoding='utf-8').write(s.replace(old, new, 1))
-          patch('app/build.gradle', "implementation 'com.google.guava:guava:32.1.3-android'", "implementation 'com.google.guava:guava:32.1.3-android'\n  implementation 'com.google.ar:core:1.44.0'")
+          patch('app/build.gradle', "implementation 'com.google.guava:guava:32.1.3-android'", "implementation 'com.google.guava:guava:32.1.3-android'\n  implementation 'com.google.ar:core:1.44.0'", 'com.google.ar:core')
           patch('app/src/main/AndroidManifest.xml', '</application>', """<meta-data android:name="com.google.ar.core" android:value="optional"/>
               <activity android:name=".ArActivity" android:exported="true" android:label="VR Launcher AR"
                 android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen"
@@ -3672,7 +3657,7 @@ jobs:
                   <category android:name="android.intent.category.LAUNCHER"/>
                 </intent-filter>
               </activity>
-            </application>""")
+            </application>""", '.ArActivity')
           PY
           cat > app/src/main/java/com/vr/launcher/ArHand.java <<'EOF'
           package com.vr.launcher;
@@ -3702,7 +3687,8 @@ jobs:
               final float[] pts;
               final float size;   // tamanho da mao (cresce quando chega perto da camera)
               final float ratio;  // distancia polegar-indicador / distancia pulso-base do dedo medio
-              Result(float[] pts, float size, float ratio) { this.pts = pts; this.size = size; this.ratio = ratio; }
+              final boolean fist; // mao fechada (dedos dobrados): nao conta como pinca
+              Result(float[] pts, float size, float ratio, boolean fist) { this.pts = pts; this.size = size; this.ratio = ratio; this.fist = fist; }
             }
 
             /** 1 = imagem inteira (640x480). 2 = metade (320x240), bem mais leve e suficiente para a IA. */
@@ -3875,7 +3861,9 @@ jobs:
                   pts[2 * i] = nx;
                   pts[2 * i + 1] = ny;
                 }
-                out = new Result(pts, palm / fh, ratio);
+                boolean fist = curled(l, 8, 5, fw, fh, 1.3f) && curled(l, 12, 9, fw, fh, 1.2f)
+                  && curled(l, 16, 13, fw, fh, 1.2f) && curled(l, 20, 17, fw, fh, 1.2f);
+                out = new Result(pts, palm / fh, ratio, fist);
                 lastHandMs = t1;
               }
               latest = out;
@@ -3888,6 +3876,11 @@ jobs:
                 fpsCount = 0;
                 fpsStart = t1;
               }
+            }
+
+            /** Dedo dobrado: a ponta fica perto do pulso, quase na altura da base do dedo. */
+            private static boolean curled(List<NormalizedLandmark> l, int tip, int mcp, float w, float h, float k) {
+              return dist(l, tip, 0, w, h) < dist(l, mcp, 0, w, h) * k;
             }
 
             private static float dist(List<NormalizedLandmark> l, int a, int c, float w, float h) {
@@ -3929,6 +3922,204 @@ jobs:
             }
           }
           EOF
+          cat > app/src/main/java/com/vr/launcher/ArChrome.java <<'EOF'
+          package com.vr.launcher;
+
+          import android.graphics.Bitmap;
+          import android.graphics.Canvas;
+          import android.graphics.Color;
+          import android.graphics.Paint;
+          import android.graphics.Path;
+          import android.graphics.RectF;
+
+          /**
+           * Barra do navegador acima de cada janela (abas, voltar, avancar, endereco, fechar).
+           * Desenhada num bitmap 960x182 que vira textura; o desenho usa unidades de 720x136.
+           */
+          final class ArChrome {
+
+            static final int DW = 720, DH = 136;
+            static final int BW = 960, BH = 182;
+            static final float K = BW / (float) DW;
+
+            static final int NONE = 0, TAB = 1, TABX = 2, NEW = 3, WINX = 4, BACK = 5, FWD = 6, URL = 7;
+
+            // linha das abas e linha de navegacao (unidades de projeto)
+            private static final float R1_T = 4f, R1_B = 56f, R2_T = 62f, R2_B = 132f;
+            private static final float NEW_X0 = 660f, NEW_X1 = 714f;
+            private static final float TABS_X0 = 6f, TABS_X1 = 654f, GAP = 4f, TAB_MAX = 200f;
+            private static final float BACK_X0 = 6f, BACK_X1 = 76f, FWD_X0 = 80f, FWD_X1 = 150f;
+            private static final float URL_X0 = 154f, URL_X1 = 640f, WINX_X0 = 644f, WINX_X1 = 714f;
+            private static final float PAD = 3f;
+
+            private static final Paint P = new Paint(Paint.ANTI_ALIAS_FLAG);
+            private static final RectF R = new RectF(0f, 0f, 0f, 0f);
+            private static final Path PATH = new Path();
+
+            private ArChrome() { }
+
+            static float tabW(int n) {
+              float w = (TABS_X1 - TABS_X0 - (n - 1) * GAP) / Math.max(1, n);
+              return Math.min(TAB_MAX, w);
+            }
+
+            static float tabX0(int i, int n) { return TABS_X0 + i * (tabW(n) + GAP); }
+
+            /** Retangulo (x0,y0,x1,y1) em unidades de projeto de um elemento. */
+            static void rect(int elem, int idx, int n, float[] out) {
+              float x0 = 0f, x1 = 0f, y0 = R1_T, y1 = R1_B;
+              switch (elem) {
+                case TAB: x0 = tabX0(idx, n); x1 = x0 + tabW(n); break;
+                case TABX: x1 = tabX0(idx, n) + tabW(n) - 3f; x0 = x1 - 44f; y0 = R1_T + 3f; y1 = R1_B - 3f; break;
+                case NEW: x0 = NEW_X0; x1 = NEW_X1; break;
+                case BACK: x0 = BACK_X0; x1 = BACK_X1; y0 = R2_T; y1 = R2_B; break;
+                case FWD: x0 = FWD_X0; x1 = FWD_X1; y0 = R2_T; y1 = R2_B; break;
+                case URL: x0 = URL_X0; x1 = URL_X1; y0 = R2_T; y1 = R2_B; break;
+                case WINX: x0 = WINX_X0; x1 = WINX_X1; y0 = R2_T; y1 = R2_B; break;
+                default: break;
+              }
+              out[0] = x0; out[1] = y0; out[2] = x1; out[3] = y1;
+            }
+
+            /** dx, dy em unidades de projeto (0,0 = canto superior esquerdo). Devolve elem | (indice << 8). */
+            static int hit(float dx, float dy, int n, int cur) {
+              if (dx < 0f || dx > DW || dy < 0f || dy > DH) return NONE;
+              float[] r = new float[4];
+              if (dy <= (R1_B + R2_T) / 2f) {
+                rect(NEW, 0, n, r);
+                if (in(dx, dy, r)) return NEW;
+                if (cur >= 0 && cur < n) {
+                  rect(TABX, cur, n, r);
+                  if (in(dx, dy, r)) return TABX | (cur << 8);
+                }
+                for (int i = 0; i < n; i++) {
+                  rect(TAB, i, n, r);
+                  if (in(dx, dy, r)) return TAB | (i << 8);
+                }
+                return NONE;
+              }
+              rect(BACK, 0, n, r);
+              if (in(dx, dy, r)) return BACK;
+              rect(FWD, 0, n, r);
+              if (in(dx, dy, r)) return FWD;
+              rect(WINX, 0, n, r);
+              if (in(dx, dy, r)) return WINX;
+              rect(URL, 0, n, r);
+              if (in(dx, dy, r)) return URL;
+              return NONE;
+            }
+
+            private static boolean in(float x, float y, float[] r) {
+              return x >= r[0] - PAD && x <= r[2] + PAD && y >= r[1] - PAD && y <= r[3] + PAD;
+            }
+
+            // =============================================================
+            // Desenho
+            // =============================================================
+
+            static void draw(Bitmap bmp, ArPanel.Snap s) {
+              Canvas c = new Canvas(bmp);
+              bmp.eraseColor(0);
+              c.scale(K, K);
+              float[] r = new float[4];
+
+              // fundo
+              fill(c, 0f, 0f, DW, DH, 18f, Color.argb(235, 24, 27, 38));
+
+              int n = s.n;
+              for (int i = 0; i < n; i++) {
+                rect(TAB, i, n, r);
+                boolean sel = i == s.cur;
+                fill(c, r[0], r[1], r[2], r[3], 12f, sel ? Color.rgb(62, 70, 96) : Color.rgb(40, 45, 62));
+                if (sel) fill(c, r[0] + 12f, r[3] - 5f, r[2] - 12f, r[3] - 1f, 2f, Color.rgb(94, 234, 212));
+                float textR = r[2] - (sel ? 52f : 10f);
+                text(c, s.titles[i], r[0] + 12f, 36f, textR - (r[0] + 12f), 22f, sel ? Color.WHITE : Color.rgb(170, 176, 196));
+                if (sel) {
+                  rect(TABX, i, n, r);
+                  cross(c, (r[0] + r[2]) / 2f, (r[1] + r[3]) / 2f, 8f, Color.rgb(220, 224, 236), 4f);
+                }
+              }
+              if (n < ArPanel.MAXT) {
+                rect(NEW, 0, n, r);
+                fill(c, r[0], r[1], r[2], r[3], 12f, Color.rgb(40, 45, 62));
+                float cx = (r[0] + r[2]) / 2f, cy = (r[1] + r[3]) / 2f;
+                line(c, cx - 10f, cy, cx + 10f, cy, Color.rgb(94, 234, 212), 4f);
+                line(c, cx, cy - 10f, cx, cy + 10f, Color.rgb(94, 234, 212), 4f);
+              }
+
+              rect(BACK, 0, n, r);
+              fill(c, r[0], r[1], r[2], r[3], 14f, Color.rgb(40, 45, 62));
+              arrow(c, (r[0] + r[2]) / 2f, (r[1] + r[3]) / 2f, -1f, s.back ? Color.WHITE : Color.argb(90, 255, 255, 255));
+              rect(FWD, 0, n, r);
+              fill(c, r[0], r[1], r[2], r[3], 14f, Color.rgb(40, 45, 62));
+              arrow(c, (r[0] + r[2]) / 2f, (r[1] + r[3]) / 2f, 1f, s.fwd ? Color.WHITE : Color.argb(90, 255, 255, 255));
+
+              rect(URL, 0, n, r);
+              fill(c, r[0], r[1], r[2], r[3], 14f, Color.rgb(32, 36, 50));
+              text(c, shortUrl(s.url), r[0] + 18f, (r[1] + r[3]) / 2f + 8f, r[2] - r[0] - 36f, 24f, Color.rgb(205, 210, 226));
+
+              rect(WINX, 0, n, r);
+              fill(c, r[0], r[1], r[2], r[3], 14f, Color.rgb(150, 52, 60));
+              cross(c, (r[0] + r[2]) / 2f, (r[1] + r[3]) / 2f, 11f, Color.WHITE, 5f);
+            }
+
+            static String shortUrl(String u) {
+              if (u == null) return "";
+              String t = u;
+              if (t.startsWith("https://")) t = t.substring(8);
+              else if (t.startsWith("http://")) t = t.substring(7);
+              if (t.startsWith("www.")) t = t.substring(4);
+              if (t.endsWith("/")) t = t.substring(0, t.length() - 1);
+              return t;
+            }
+
+            private static void fill(Canvas c, float x0, float y0, float x1, float y1, float rad, int col) {
+              P.setStyle(Paint.Style.FILL);
+              P.setColor(col);
+              R.set(x0, y0, x1, y1);
+              c.drawRoundRect(R, rad, rad, P);
+            }
+
+            private static void line(Canvas c, float x0, float y0, float x1, float y1, int col, float w) {
+              P.setStyle(Paint.Style.STROKE);
+              P.setStrokeWidth(w);
+              P.setStrokeCap(Paint.Cap.ROUND);
+              P.setColor(col);
+              c.drawLine(x0, y0, x1, y1, P);
+            }
+
+            private static void cross(Canvas c, float cx, float cy, float h, int col, float w) {
+              line(c, cx - h, cy - h, cx + h, cy + h, col, w);
+              line(c, cx - h, cy + h, cx + h, cy - h, col, w);
+            }
+
+            /** dir = -1 seta para a esquerda, +1 para a direita. */
+            private static void arrow(Canvas c, float cx, float cy, float dir, int col) {
+              P.setStyle(Paint.Style.STROKE);
+              P.setStrokeWidth(6f);
+              P.setStrokeCap(Paint.Cap.ROUND);
+              P.setColor(col);
+              PATH.reset();
+              PATH.moveTo(cx - dir * 4f, cy - 15f);
+              PATH.lineTo(cx + dir * 10f, cy);
+              PATH.lineTo(cx - dir * 4f, cy + 15f);
+              c.drawPath(PATH, P);
+              c.drawLine(cx + dir * 10f, cy, cx - dir * 14f, cy, P);
+            }
+
+            private static void text(Canvas c, String t, float x, float baseY, float maxW, float size, int col) {
+              if (t == null) t = "";
+              P.setStyle(Paint.Style.FILL);
+              P.setColor(col);
+              P.setTextSize(size);
+              if (maxW < 8f) return;
+              int cnt = P.breakText(t, true, maxW, null);
+              String out = t;
+              if (cnt < t.length()) out = t.substring(0, Math.max(0, cnt - 1)) + "…";
+              c.drawText(out, x, baseY, P);
+            }
+          }
+          EOF
           cat > app/src/main/java/com/vr/launcher/ArPanel.java <<'EOF'
           package com.vr.launcher;
 
@@ -3947,27 +4138,54 @@ jobs:
           import android.view.InputDevice;
           import android.view.MotionEvent;
           import android.view.Surface;
+          import android.view.View;
           import android.view.ViewGroup;
           import android.view.ViewParent;
           import android.view.inputmethod.EditorInfo;
           import android.view.inputmethod.InputConnection;
           import android.webkit.CookieManager;
+          import android.webkit.WebChromeClient;
           import android.webkit.WebResourceRequest;
           import android.webkit.WebSettings;
           import android.webkit.WebView;
           import android.webkit.WebViewClient;
+          import android.widget.FrameLayout;
+          import java.util.ArrayList;
           import java.util.concurrent.atomic.AtomicBoolean;
 
           /**
-           * Um WebView transformado em textura OpenGL.
-           * Modo VD: o WebView roda numa tela virtual (Presentation) que desenha direto na textura (acelerado por GPU).
-           * Modo SW: plano B. O WebView fica atras do GL e e copiado para a textura por software, uns 15 vezes por segundo.
+           * Uma janela do navegador transformada em textura OpenGL, com varias abas.
+           * Modo VD: os WebViews rodam numa tela virtual (Presentation) que desenha direto na textura (GPU).
+           * Modo SW: plano B. Os WebViews ficam atras do GL e sao copiados para a textura por software, uns 15 vezes por segundo.
            */
           final class ArPanel {
             static final int VD = 0, SW = 1;
+            static final int MAXT = 4;
+            static volatile int defaultMode = VD;
+            private static int seq = 0;
+
+            /** Retrato imutavel do estado do navegador, lido pela thread do GL para desenhar a barra. */
+            static final class Snap {
+              final int ver, n, cur;
+              final String[] titles;
+              final String url;
+              final boolean back, fwd;
+              Snap(int ver, int n, int cur, String[] titles, String url, boolean back, boolean fwd) {
+                this.ver = ver; this.n = n; this.cur = cur; this.titles = titles; this.url = url; this.back = back; this.fwd = fwd;
+              }
+            }
+
+            private static final class Tab {
+              String url;
+              String title = "";
+              WebView web;
+              boolean loaded = false;
+              Tab(String url) { this.url = url; }
+            }
 
             final ArActivity act;
             final int pw, ph, dpi;
+            final int id;
             final Handler ui = new Handler(Looper.getMainLooper());
 
             // ---- lado GL ----
@@ -3980,20 +4198,28 @@ jobs:
             volatile int frames = 0;
 
             // ---- lado UI ----
-            volatile int mode = VD;
+            volatile int mode = defaultMode;
             volatile String err = "";
             volatile String where = "";
-            private WebView web;
+            volatile Snap snap;
+            private final ArrayList<Tab> tabs = new ArrayList<Tab>();
+            private int cur = 0;
+            private int ver = 0;
+            private FrameLayout holder;
             private VirtualDisplay vd;
             private Presentation pres;
             private boolean running = false;
-            private String url;
+            private volatile boolean dead = false;
+            private final String home;
             private long downTime = 0;
             private Runnable tick, watchdog;
 
             ArPanel(ArActivity act, int pw, int ph, int dpi, String url) {
-              this.act = act; this.pw = pw; this.ph = ph; this.dpi = dpi; this.url = url;
+              this.act = act; this.pw = pw; this.ph = ph; this.dpi = dpi; this.home = url;
+              this.id = ++seq;
+              tabs.add(new Tab(url));
               android.opengl.Matrix.setIdentityM(stm, 0);
+              snap = makeSnap();
             }
 
             // =============================================================
@@ -4013,7 +4239,22 @@ jobs:
               newSurface();
             }
 
-            /** Cria uma SurfaceTexture nova na mesma textura e manda a UI ligar o WebView nela. */
+            /** Libera a textura e a superficie (thread do GL). A UI desmonta os WebViews. */
+            void glRelease() {
+              dead = true;
+              Surface s = surf;
+              SurfaceTexture t = st;
+              surf = null; st = null;
+              if (s != null) { try { s.release(); } catch (Throwable e) { } }
+              if (t != null) { try { t.release(); } catch (Throwable e) { } }
+              if (tex != 0) {
+                GLES20.glDeleteTextures(1, new int[]{tex}, 0);
+                tex = 0;
+              }
+              destroy();
+            }
+
+            /** Cria uma SurfaceTexture nova na mesma textura e manda a UI ligar os WebViews nela. */
             void newSurface() {
               final Surface oldS = surf;
               final SurfaceTexture oldT = st;
@@ -4033,7 +4274,7 @@ jobs:
               ui.post(new Runnable() { @Override public void run() { attach(s); } });
             }
 
-            /** Pega o quadro novo do WebView, se houver. Retorna true se ja existe imagem. */
+            /** Pega o quadro novo, se houver. Retorna true se ja existe imagem. */
             boolean update() {
               SurfaceTexture t = st;
               if (t != null && avail.getAndSet(false)) {
@@ -4049,11 +4290,11 @@ jobs:
             }
 
             // =============================================================
-            // UI thread
+            // UI thread: tela virtual / software
             // =============================================================
 
             private void attach(Surface s) {
-              if (s != surf) return;        // surface ja foi trocada de novo
+              if (dead || s != surf) return;        // janela fechada ou surface ja trocada
               detach();
               err = "";
               try {
@@ -4067,13 +4308,13 @@ jobs:
                 }
               }
               // plano B automatico: se o modo VD nao produzir nenhum quadro em 7 s
-              final Surface cur = s;
+              final Surface cs = s;
               watchdog = new Runnable() {
                 @Override public void run() {
-                  if (cur == surf && mode == VD && frames == 0) {
+                  if (!dead && cs == surf && mode == VD && frames == 0) {
                     err = "tela virtual sem imagem, trocando para software";
                     mode = SW;
-                    act.queueGl(new Runnable() { @Override public void run() { newSurface(); } });
+                    act.queueGl(new Runnable() { @Override public void run() { if (!dead) newSurface(); } });
                   }
                 }
               };
@@ -4082,28 +4323,29 @@ jobs:
 
             private void attachVd(Surface s) {
               DisplayManager dm = (DisplayManager) act.getSystemService(Context.DISPLAY_SERVICE);
-              vd = dm.createVirtualDisplay("ar-win", pw, ph, dpi, s, 0);
+              vd = dm.createVirtualDisplay("ar-win-" + id, pw, ph, dpi, s, 0);
               if (vd == null) throw new IllegalStateException("createVirtualDisplay devolveu null");
               pres = new Presentation(act, vd.getDisplay());
-              web = newWeb(pres.getContext());
-              pres.setContentView(web, new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+              holder = new FrameLayout(pres.getContext());
+              pres.setContentView(holder, new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
               pres.show();
-              web.loadUrl(url);
+              buildTabs();
               where = "tela virtual " + pw + "x" + ph + " @" + dpi;
             }
 
             private void attachSw(final Surface s) {
-              web = newWeb(act);
-              act.addPanelView(web, pw, ph);
-              web.loadUrl(url);
+              holder = new FrameLayout(act);
+              act.addPanelView(holder, pw, ph);
+              buildTabs();
               running = true;
               where = "software " + pw + "x" + ph;
               tick = new Runnable() {
                 @Override public void run() {
-                  if (!running || web == null || s != surf) return;
+                  FrameLayout h = holder;
+                  if (!running || h == null || s != surf) return;
                   try {
                     Canvas c = s.lockCanvas(null);
-                    try { web.draw(c); } finally { s.unlockCanvasAndPost(c); }
+                    try { h.draw(c); } finally { s.unlockCanvasAndPost(c); }
                   } catch (Throwable t) {
                     err = "desenho: " + t;
                   }
@@ -4113,38 +4355,173 @@ jobs:
               ui.post(tick);
             }
 
+            private void buildTabs() {
+              for (int i = 0; i < tabs.size(); i++) {
+                Tab t = tabs.get(i);
+                t.web = newWeb(holder.getContext(), t);
+                t.loaded = false;
+                holder.addView(t.web, new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+                t.web.setVisibility(i == cur ? View.VISIBLE : View.GONE);
+              }
+              load(tabs.get(cur));
+              publish();
+            }
+
+            private void load(Tab t) {
+              if (t.web != null && !t.loaded) {
+                t.loaded = true;
+                t.web.loadUrl(t.url);
+              }
+            }
+
             private void detach() {
               running = false;
               if (tick != null) ui.removeCallbacks(tick);
               if (watchdog != null) ui.removeCallbacks(watchdog);
-              if (web != null) {
-                String u = web.getUrl();
-                if (u != null && u.startsWith("http")) url = u;
+              for (Tab t : tabs) {
+                if (t.web != null) {
+                  String u = t.web.getUrl();
+                  if (u != null && u.startsWith("http")) t.url = u;
+                }
               }
               if (pres != null) { try { pres.dismiss(); } catch (Throwable t) { } pres = null; }
               if (vd != null) { try { vd.release(); } catch (Throwable t) { } vd = null; }
-              if (web != null) {
-                ViewParent p = web.getParent();
-                if (p instanceof ViewGroup) ((ViewGroup) p).removeView(web);
-                try { web.stopLoading(); web.destroy(); } catch (Throwable t) { }
-                web = null;
+              for (Tab t : tabs) {
+                if (t.web != null) {
+                  ViewParent p = t.web.getParent();
+                  if (p instanceof ViewGroup) ((ViewGroup) p).removeView(t.web);
+                  try { t.web.stopLoading(); t.web.destroy(); } catch (Throwable e) { }
+                  t.web = null;
+                  t.loaded = false;
+                }
+              }
+              if (holder != null) {
+                ViewParent p = holder.getParent();
+                if (p instanceof ViewGroup) ((ViewGroup) p).removeView(holder);
+                holder = null;
               }
             }
 
             void destroy() {
+              dead = true;
               ui.post(new Runnable() { @Override public void run() { detach(); } });
             }
 
-            /** Injeta um toque no WebView. px/py em pixels da pagina (0..pw, 0..ph). */
+            // =============================================================
+            // Abas e navegacao (chamadas de qualquer thread)
+            // =============================================================
+
+            private Snap makeSnap() {
+              int n = tabs.size();
+              String[] titles = new String[n];
+              for (int i = 0; i < n; i++) {
+                Tab t = tabs.get(i);
+                String s = t.title;
+                if (s == null || s.length() == 0) s = ArChrome.shortUrl(t.url);
+                if (s.length() == 0) s = "Nova aba";
+                titles[i] = s;
+              }
+              Tab c = tabs.get(cur);
+              String u = c.url;
+              boolean b = false, f = false;
+              if (c.web != null) {
+                String wu = c.web.getUrl();
+                if (wu != null) u = wu;
+                b = c.web.canGoBack();
+                f = c.web.canGoForward();
+              }
+              return new Snap(++ver, n, cur, titles, u, b, f);
+            }
+
+            private void publish() { snap = makeSnap(); }
+
+            void newTab(final String u) {
+              ui.post(new Runnable() {
+                @Override public void run() {
+                  if (dead || tabs.size() >= MAXT) return;
+                  Tab t = new Tab(u == null ? home : u);
+                  tabs.add(t);
+                  if (holder != null) {
+                    t.web = newWeb(holder.getContext(), t);
+                    holder.addView(t.web, new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+                  }
+                  select(tabs.size() - 1);
+                }
+              });
+            }
+
+            void selectTab(final int i) {
+              ui.post(new Runnable() { @Override public void run() { if (!dead) select(i); } });
+            }
+
+            private void select(int i) {
+              if (i < 0 || i >= tabs.size()) return;
+              cur = i;
+              for (int k = 0; k < tabs.size(); k++) {
+                Tab t = tabs.get(k);
+                if (t.web != null) t.web.setVisibility(k == cur ? View.VISIBLE : View.GONE);
+              }
+              load(tabs.get(cur));
+              publish();
+            }
+
+            /** Fecha a aba. Se for a ultima, volta para a pagina inicial. */
+            void closeTab(final int i) {
+              ui.post(new Runnable() {
+                @Override public void run() {
+                  if (dead || i < 0 || i >= tabs.size()) return;
+                  if (tabs.size() == 1) {
+                    Tab t = tabs.get(0);
+                    t.url = home;
+                    t.title = "";
+                    if (t.web != null) { t.loaded = true; t.web.loadUrl(home); }
+                    publish();
+                    return;
+                  }
+                  Tab t = tabs.remove(i);
+                  if (t.web != null) {
+                    ViewParent p = t.web.getParent();
+                    if (p instanceof ViewGroup) ((ViewGroup) p).removeView(t.web);
+                    try { t.web.stopLoading(); t.web.destroy(); } catch (Throwable e) { }
+                    t.web = null;
+                  }
+                  if (i < cur) cur--;
+                  if (cur >= tabs.size()) cur = tabs.size() - 1;
+                  select(cur);
+                }
+              });
+            }
+
+            void goBack() {
+              ui.post(new Runnable() {
+                @Override public void run() {
+                  Tab t = tabs.get(cur);
+                  if (t.web != null && t.web.canGoBack()) t.web.goBack();
+                }
+              });
+            }
+
+            void goForward() {
+              ui.post(new Runnable() {
+                @Override public void run() {
+                  Tab t = tabs.get(cur);
+                  if (t.web != null && t.web.canGoForward()) t.web.goForward();
+                }
+              });
+            }
+
+            /** Injeta um toque na aba atual. px/py em pixels da pagina (0..pw, 0..ph). */
             void touch(final int action, final float px, final float py) {
               ui.post(new Runnable() {
                 @Override public void run() {
-                  if (web == null) return;
+                  if (dead || cur >= tabs.size()) return;
+                  WebView w = tabs.get(cur).web;
+                  if (w == null) return;
                   long now = SystemClock.uptimeMillis();
                   if (action == MotionEvent.ACTION_DOWN) downTime = now;
                   MotionEvent e = MotionEvent.obtain(downTime, now, action, px, py, 0);
                   e.setSource(InputDevice.SOURCE_TOUCHSCREEN);
-                  try { web.dispatchTouchEvent(e); } finally { e.recycle(); }
+                  try { w.dispatchTouchEvent(e); } finally { e.recycle(); }
                 }
               });
             }
@@ -4156,8 +4533,8 @@ jobs:
               @Override public InputConnection onCreateInputConnection(EditorInfo o) { return null; }
             }
 
-            private WebView newWeb(Context c) {
-              WebView v = new QuietWebView(c);
+            private WebView newWeb(Context c, final Tab tab) {
+              final WebView v = new QuietWebView(c);
               v.setBackgroundColor(Color.WHITE);
               WebSettings s = v.getSettings();
               s.setJavaScriptEnabled(true);
@@ -4168,6 +4545,20 @@ jobs:
                 @Override public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest r) {
                   String u = r.getUrl().toString();
                   return !(u.startsWith("http:") || u.startsWith("https:") || u.startsWith("about:") || u.startsWith("blob:") || u.startsWith("data:"));
+                }
+                @Override public void onPageFinished(WebView view, String u) {
+                  if (u != null && u.startsWith("http")) tab.url = u;
+                  publish();
+                }
+                @Override public void doUpdateVisitedHistory(WebView view, String u, boolean reload) {
+                  if (u != null && u.startsWith("http")) tab.url = u;
+                  publish();
+                }
+              });
+              v.setWebChromeClient(new WebChromeClient() {
+                @Override public void onReceivedTitle(WebView view, String title) {
+                  tab.title = title == null ? "" : title;
+                  publish();
                 }
               });
               return v;
@@ -4181,6 +4572,7 @@ jobs:
           import android.graphics.Canvas;
           import android.graphics.Color;
           import android.graphics.Paint;
+          import android.graphics.RectF;
           import android.view.View;
 
           /** Camada 2D por cima do GL: esqueleto da mao, cursor e informacoes de depuracao. */
@@ -4191,7 +4583,8 @@ jobs:
               float cx, cy;
               boolean hasCursor, pinched;
               int region;            // 0 nada, 1 corpo, 2 barra, 3 canto
-              float progress;        // reservado (punho para fechar, fases seguintes)
+              float progress;        // punho segurado para fechar a janela: 0..1
+              boolean fist;
               String[] lines;
             }
 
@@ -4203,6 +4596,7 @@ jobs:
             private volatile Snap snap;
             private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
             private final float d;
+            private final RectF oval = new RectF(0f, 0f, 0f, 0f);
 
             ArOverlay(Context c) {
               super(c);
@@ -4244,6 +4638,19 @@ jobs:
                 canvas.drawCircle(s.cx, s.cy, 4f * d, paint);
               }
 
+              if (s.hasCursor && s.fist) {
+                float r = 26f * d;
+                oval.set(s.cx - r, s.cy - r, s.cx + r, s.cy + r);
+                paint.setStyle(Paint.Style.STROKE);
+                paint.setStrokeWidth(5f * d);
+                paint.setColor(Color.argb(90, 255, 82, 82));
+                canvas.drawCircle(s.cx, s.cy, r, paint);
+                if (s.progress > 0f) {
+                  paint.setColor(Color.rgb(255, 82, 82));
+                  canvas.drawArc(oval, -90f, 360f * Math.min(1f, s.progress), false, paint);
+                }
+              }
+
               String[] ln = s.lines;
               if (ln != null) {
                 paint.setStyle(Paint.Style.FILL);
@@ -4277,9 +4684,11 @@ jobs:
           import android.opengl.GLUtils;
           import android.opengl.Matrix;
           import android.os.SystemClock;
+          import android.util.Size;
           import android.view.MotionEvent;
           import com.google.ar.core.Anchor;
           import com.google.ar.core.Camera;
+          import com.google.ar.core.CameraConfig;
           import com.google.ar.core.Coordinates2d;
           import com.google.ar.core.Frame;
           import com.google.ar.core.Pose;
@@ -4289,12 +4698,14 @@ jobs:
           import java.nio.ByteOrder;
           import java.nio.FloatBuffer;
           import java.util.ArrayList;
+          import java.util.concurrent.CopyOnWriteArrayList;
           import javax.microedition.khronos.egl.EGLConfig;
           import javax.microedition.khronos.opengles.GL10;
 
           /**
            * Desenha o fundo da camera (ARCore) e as janelas ancoradas no mundo, e trata a mao:
-           * pinca no corpo da janela = toque, pinca na barra = mover, pinca no canto = redimensionar.
+           * pinca no corpo da janela = toque, na barra = mover, no canto = redimensionar, na barra de cima = navegador,
+           * no "+" = nova janela. Punho fechado por 1 s sobre uma janela = fechar.
            */
           final class ArRenderer implements GLSurfaceView.Renderer {
 
@@ -4303,15 +4714,23 @@ jobs:
             // barra de mover (pilula branca embaixo da janela) e alca de redimensionar (canto inferior direito)
             static final float BAR_CY = -(HH + 0.028f), BAR_W = 0.20f, BAR_H = 0.014f, BAR_HIT_X = 0.16f, BAR_HIT_Y = 0.032f;
             static final float CS = 0.05f, CSX = HW - 0.013f, CSY = -HH + 0.013f, CS_HIT = 0.045f;
+            // botao "+" (nova janela), ao lado da barra
+            static final float PLUS_X = 0.225f, PLUS_S = 0.045f, PLUS_HIT = 0.028f;
+            // barra do navegador, acima da janela
+            static final float CH_GAP = 0.012f, CH_W = 2f * HW, CH_H = CH_W * ArChrome.DH / ArChrome.DW;
             static final float CHROME_Z = 0.004f;
+            static final int MAX_WINS = 3;
 
-            static final int R_NONE = 0, R_BODY = 1, R_BAR = 2, R_CORNER = 3;
+            static final int R_NONE = 0, R_BODY = 1, R_BAR = 2, R_CORNER = 3, R_CHROME = 4, R_PLUS = 5;
             // pinca: liga com as pontas coladas, so solta quando abre de verdade
             static final float PINCH_ON = 0.16f, PINCH_OFF = 0.26f;
             static final float S_MIN = 0.4f, S_MAX = 3f;
+            static final long FIST_MS = 1000;
 
             private static final class Win {
               Pose pose; Anchor anchor; float s = 1f; final ArPanel panel;
+              int chromeTex = 0, chromeVer = -1;
+              Bitmap chromeBmp;
               Win(Pose pose, Anchor anchor, ArPanel panel) { this.pose = pose; this.anchor = anchor; this.panel = panel; }
               Pose current() {
                 Anchor a = anchor;
@@ -4320,13 +4739,14 @@ jobs:
             }
 
             private static final class Hit {
-              final Win win; final float t, lx, ly; final int region;
-              Hit(Win win, float t, float lx, float ly, int region) { this.win = win; this.t = t; this.lx = lx; this.ly = ly; this.region = region; }
+              final Win win; final float t, lx, ly; final int region, elem;
+              Hit(Win win, float t, float lx, float ly, int region, int elem) {
+                this.win = win; this.t = t; this.lx = lx; this.ly = ly; this.region = region; this.elem = elem;
+              }
             }
 
             private final ArActivity act;
             private final ArHand tracker;
-            private final ArPanel panel;
 
             volatile Session session;
             volatile ArOverlay overlay;
@@ -4346,23 +4766,39 @@ jobs:
             private final FloatBuffer bgUv = floatBuf(new float[8]);
 
             // janelas
-            private int winProg = 0, winPosLoc = 0, winUvLoc = 0, winMvpLoc = 0, winTexLoc = 0, winStmLoc = 0, winHalfLoc = 0, winRadLoc = 0, winFlatLoc = 0, winSLoc = 0;
+            private int winProg = 0, winPosLoc = 0, winUvLoc = 0, winMvpLoc = 0, winTexLoc = 0, winStmLoc = 0, winHalfLoc = 0, winRadLoc = 0, winFlatLoc = 0, winSLoc = 0, winDimLoc = 0;
             private final FloatBuffer winVerts = floatBuf(new float[]{-HW, -HH, 0f, HW, -HH, 0f, -HW, HH, 0f, HW, HH, 0f});
             private final FloatBuffer winUvs = floatBuf(new float[]{0f, 0f, 1f, 0f, 0f, 1f, 1f, 1f});
 
-            // barra e alca
+            // barra, alca, "+", destaque
             private int flatProg = 0, flatPosLoc = 0, flatUvLoc = 0, flatMvpLoc = 0, flatTexLoc = 0, flatColLoc = 0;
-            private int barTex = 0, cornerTex = 0;
+            private int barTex = 0, cornerTex = 0, plusTex = 0, roundTex = 0;
             private final FloatBuffer unitVerts = floatBuf(new float[]{-0.5f, -0.5f, 0f, 0.5f, -0.5f, 0f, -0.5f, 0.5f, 0f, 0.5f, 0.5f, 0f});
             private final FloatBuffer unitUvs = floatBuf(new float[]{0f, 1f, 1f, 1f, 0f, 0f, 1f, 0f});
 
             private final float[] view = new float[16], proj = new float[16], vp = new float[16], invVp = new float[16];
             private final float[] model = new float[16], tmp = new float[16], mvp = new float[16];
 
-            private final ArrayList<Win> wins = new ArrayList<>();
+            private final ArrayList<Win> wins = new ArrayList<Win>();
+            private final CopyOnWriteArrayList<ArPanel> panels = new CopyOnWriteArrayList<ArPanel>();
+            private boolean needSpawn = true;
+
+            // rastreio do ARCore
+            private boolean tracking = false, dim = false;
+            private long lostSince = 0, lastLostMs = 0;
+            private int lostCount = 0;
+            private String lastReason = "-";
+            private String trackText = "";
+            private String camInfo = "";
+
+            // fps
+            private long fpsT0 = 0, arTs = 0;
+            private int glN = 0, arN = 0;
+            private float glFps = 0f, arFps = 0f;
 
             // mao e cursor (coordenadas de tela)
             private long lastSeq = 0, tDet = 0, seenMs = 0, lastFrameMs = 0;
+            private float frameDt = 0.016f;
             private final float[] viewPts = new float[42];
             private boolean viewValid = false;
             private float[] skel = null;
@@ -4370,11 +4806,12 @@ jobs:
             private boolean firstSample = true;
             private float cx = 0f, cy = 0f;
             private float ratio = 1f, sizeS = 0.1f;
-            private boolean pinch = false;
-            private int pinchN = 0;
+            private int sizeOut = 0, handN = 0;
+            private boolean pinch = false, handFist = false;
+            private int pinchN = 0, fistN = 0;
             private boolean pinchWasOn = false;
 
-            private int hoverRegion = R_NONE;
+            private int hoverRegion = R_NONE, hoverElem = 0, regElem = 0;
             private Win hoverWin = null;
 
             // arrastos em andamento
@@ -4383,17 +4820,40 @@ jobs:
             private float sizeS0 = 1f, sizeD0 = 0.1f;
             private float lastPx = -1f, lastPy = -1f;
             private final float[] pl = new float[3];
+            private long lastClick = 0;
 
-            private String trackText = "";
+            // punho para fechar
+            private Win fistWin = null;
+            private long fistStart = 0, fistHitMs = 0;
+            private float fistProg = 0f;
+            private boolean fistLatched = false;
+
             private String message = "";
             private long messageUntil = 0, lastHud = 0;
             private String[] hudLines = new String[0];
 
-            ArRenderer(ArActivity act, ArHand tracker, ArPanel panel) {
-              this.act = act; this.tracker = tracker; this.panel = panel;
+            ArRenderer(ArActivity act, ArHand tracker) {
+              this.act = act; this.tracker = tracker;
             }
 
             void recenter() { recenterReq = true; }
+
+            /** Plano B de depuracao: troca o modo de todos os paineis (tela virtual / software). */
+            void toggleMode() {
+              act.queueGl(new Runnable() {
+                @Override public void run() {
+                  int m = ArPanel.defaultMode == ArPanel.VD ? ArPanel.SW : ArPanel.VD;
+                  ArPanel.defaultMode = m;
+                  for (ArPanel p : panels) { p.mode = m; p.newSurface(); }
+                  say(m == ArPanel.VD ? "Painel: tela virtual" : "Painel: software");
+                }
+              });
+            }
+
+            /** Chamado pela activity ao fechar. */
+            void shutdown() {
+              for (ArPanel p : panels) p.destroy();
+            }
 
             // =============================================================
             // Ciclo GL
@@ -4428,6 +4888,7 @@ jobs:
               winRadLoc = GLES20.glGetUniformLocation(winProg, "u_R");
               winFlatLoc = GLES20.glGetUniformLocation(winProg, "u_Flat");
               winSLoc = GLES20.glGetUniformLocation(winProg, "u_S");
+              winDimLoc = GLES20.glGetUniformLocation(winProg, "u_Dim");
 
               flatProg = program(FLAT_VS, FLAT_FS);
               flatPosLoc = GLES20.glGetAttribLocation(flatProg, "a_Pos");
@@ -4438,8 +4899,15 @@ jobs:
 
               barTex = bitmapTex(makeBar());
               cornerTex = bitmapTex(makeCorner());
+              plusTex = bitmapTex(makePlus());
+              roundTex = bitmapTex(makeRound());
 
-              panel.glInit();
+              // contexto GL novo (raro): refaz as texturas das janelas que ja existiam
+              for (Win w : wins) {
+                w.panel.glInit();
+                w.chromeTex = emptyTex2d();
+                w.chromeVer = -1;
+              }
             }
 
             @Override public void onSurfaceChanged(GL10 gl, int width, int height) {
@@ -4453,6 +4921,8 @@ jobs:
               GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT | GLES20.GL_DEPTH_BUFFER_BIT);
               Session s = session;
               if (s == null) return;
+              long nowMs = SystemClock.uptimeMillis();
+              countFps(nowMs);
 
               try {
                 if (!camTexSet) {
@@ -4464,10 +4934,12 @@ jobs:
                   viewportChanged = false;
                 }
 
-                panel.update();
+                for (Win w : wins) w.panel.update();
 
                 Frame frame = s.update();
                 Camera camera = frame.getCamera();
+                long fts = frame.getTimestamp();
+                if (fts != arTs) { arTs = fts; arN++; }
 
                 if (frame.hasDisplayGeometryChanged()) {
                   bgQuad.position(0);
@@ -4485,20 +4957,24 @@ jobs:
                 Matrix.multiplyMM(vp, 0, proj, 0, view, 0);
                 Matrix.invertM(invVp, 0, vp, 0);
 
-                boolean tracking = camera.getTrackingState() == TrackingState.TRACKING;
-                trackText = tracking ? "rastreando" : ("sem rastreio: " + camera.getTrackingFailureReason());
+                trackStats(camera, nowMs);
+                if (camInfo.length() == 0) readCamInfo(s);
 
                 if (recenterReq) {
                   recenterReq = false;
                   resetInteraction();
-                  for (Win w : wins) { if (w.anchor != null) w.anchor.detach(); }
-                  wins.clear();
+                  while (!wins.isEmpty()) removeWindow(wins.get(0));
+                  needSpawn = true;
                   say("Janela centralizada");
                 }
                 Pose camPose = camera.getDisplayOrientedPose();
-                if (tracking && wins.isEmpty() && panel != null) createFirstWindow(s, camPose);
+                if (tracking && needSpawn) {
+                  createFirstWindow(s, camPose);
+                  needSpawn = false;
+                }
+                maintainAnchors(s);
 
-                feedTracker(frame);
+                if (!dim) feedTracker(frame);
                 updateInteraction(s, frame, camPose.getTranslation());
 
                 drawWindows();
@@ -4507,6 +4983,43 @@ jobs:
                 errorText = e.toString();
               }
               publishOverlay();
+            }
+
+            private void countFps(long now) {
+              glN++;
+              if (fpsT0 == 0) fpsT0 = now;
+              if (now - fpsT0 >= 1000) {
+                float k = 1000f / (now - fpsT0);
+                glFps = glN * k;
+                arFps = arN * k;
+                glN = 0; arN = 0; fpsT0 = now;
+              }
+            }
+
+            /** Controla se o ARCore esta rastreando. Sem rastreio a imagem das janelas escurece e a mao nao pega nada. */
+            private void trackStats(Camera camera, long now) {
+              tracking = camera.getTrackingState() == TrackingState.TRACKING;
+              if (tracking) {
+                if (lostSince != 0) { lastLostMs = now - lostSince; lostSince = 0; }
+                dim = false;
+                trackText = "rastreando";
+              } else {
+                if (lostSince == 0) { lostSince = now; lostCount++; }
+                lastReason = String.valueOf(camera.getTrackingFailureReason());
+                dim = now - lostSince > 300;
+                trackText = "SEM RASTREIO (" + lastReason + ")";
+              }
+            }
+
+            private void readCamInfo(Session s) {
+              try {
+                CameraConfig cc = s.getCameraConfig();
+                Size t = cc.getTextureSize();
+                Size im = cc.getImageSize();
+                camInfo = "cam: textura " + t.getWidth() + "x" + t.getHeight() + "  imagem " + im.getWidth() + "x" + im.getHeight();
+              } catch (Throwable e) {
+                camInfo = "cam: ?";
+              }
             }
 
             /** Descobre como girar a imagem da camera para ficar "em pe" na tela atual (0, 90, 180 ou 270). */
@@ -4540,6 +5053,25 @@ jobs:
             // Janelas
             // =============================================================
 
+            private ArPanel newPanel() {
+              ArPanel p = new ArPanel(act, ArActivity.PW, ArActivity.PH, ArActivity.DPI, ArActivity.HOME);
+              p.glInit();
+              panels.add(p);
+              return p;
+            }
+
+            private Win addWindow(Session s, Pose pose) {
+              Win w = new Win(pose, anchorOf(s, pose), newPanel());
+              w.chromeBmp = Bitmap.createBitmap(ArChrome.BW, ArChrome.BH, Bitmap.Config.ARGB_8888);
+              w.chromeTex = emptyTex2d();
+              wins.add(w);
+              return w;
+            }
+
+            private static Anchor anchorOf(Session s, Pose p) {
+              try { return s.createAnchor(p); } catch (Throwable e) { return null; }
+            }
+
             private void createFirstWindow(Session s, Pose cp) {
               float[] t = cp.getTranslation();
               float[] f = cp.transformPoint(new float[]{0f, 0f, -1f});
@@ -4550,20 +5082,74 @@ jobs:
               float px = t[0] + fx / len * dist, pz = t[2] + fz / len * dist;
               float yaw = (float) Math.atan2(t[0] - px, t[2] - pz);
               Pose pose = new Pose(new float[]{px, t[1], pz}, new float[]{0f, (float) Math.sin(yaw / 2f), 0f, (float) Math.cos(yaw / 2f)});
-              Anchor a = null;
-              try { a = s.createAnchor(pose); } catch (Throwable e) { a = null; }
-              wins.add(new Win(pose, a, panel));
+              addWindow(s, pose);
+            }
+
+            /** Nova janela logo ao lado direito de outra, com a mesma orientacao. */
+            private void newWindowNear(Session s, Win src) {
+              if (wins.size() >= MAX_WINS) { say("Maximo de " + MAX_WINS + " janelas"); return; }
+              float dx = HW * src.s + 0.06f + HW;
+              Pose p = src.current().compose(Pose.makeTranslation(dx, 0f, 0f));
+              addWindow(s, p);
+              say("Nova janela");
+            }
+
+            private void removeWindow(Win w) {
+              if (dragWin == w) dragWin = null;
+              if (sizeWin == w) sizeWin = null;
+              if (touchWin == w) touchWin = null;
+              if (hoverWin == w) { hoverWin = null; hoverRegion = R_NONE; }
+              if (fistWin == w) { fistWin = null; fistProg = 0f; }
+              wins.remove(w);
+              if (w.anchor != null) { try { w.anchor.detach(); } catch (Throwable e) { } w.anchor = null; }
+              panels.remove(w.panel);
+              w.panel.glRelease();
+              if (w.chromeTex != 0) { GLES20.glDeleteTextures(1, new int[]{w.chromeTex}, 0); w.chromeTex = 0; }
+              if (w.chromeBmp != null) { w.chromeBmp.recycle(); w.chromeBmp = null; }
+            }
+
+            private void closeWindow(Win w) {
+              if (wins.size() <= 1) { say("Esta e a ultima janela"); return; }
+              removeWindow(w);
+              say("Janela fechada");
+            }
+
+            /** Mantem cada janela presa a uma ancora valida; se o ARCore derrubar a ancora, recria na ultima posicao boa. */
+            private void maintainAnchors(Session s) {
+              for (Win w : wins) {
+                if (w == dragWin) continue;
+                Anchor a = w.anchor;
+                if (a != null) {
+                  TrackingState st = a.getTrackingState();
+                  if (st == TrackingState.TRACKING) w.pose = a.getPose();
+                  else if (st == TrackingState.STOPPED) { w.anchor = null; }
+                }
+                if (w.anchor == null && tracking) w.anchor = anchorOf(s, w.pose);
+              }
             }
 
             private void drawWindows() {
               if (winProg == 0 || wins.isEmpty()) return;
 
+              // barra do navegador: so redesenha o bitmap quando algo mudou (aba, titulo, endereco)
+              for (Win w : wins) {
+                ArPanel.Snap sn = w.panel.snap;
+                if (sn != null && sn.ver != w.chromeVer && w.chromeBmp != null) {
+                  ArChrome.draw(w.chromeBmp, sn);
+                  GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, w.chromeTex);
+                  GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, w.chromeBmp, 0);
+                  w.chromeVer = sn.ver;
+                }
+              }
+
+              final float dimV = dim ? 0.45f : 1f;
               GLES20.glEnable(GLES20.GL_DEPTH_TEST);
               GLES20.glDisable(GLES20.GL_CULL_FACE);
               GLES20.glDisable(GLES20.GL_BLEND);
               GLES20.glUseProgram(winProg);
               GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
               GLES20.glUniform1i(winTexLoc, 0);
+              GLES20.glUniform1f(winDimLoc, dimV);
               winVerts.position(0);
               winUvs.position(0);
               GLES20.glVertexAttribPointer(winPosLoc, 3, GLES20.GL_FLOAT, false, 0, winVerts);
@@ -4585,7 +5171,7 @@ jobs:
               GLES20.glDisableVertexAttribArray(winPosLoc);
               GLES20.glDisableVertexAttribArray(winUvLoc);
 
-              // barra e alca: por cima, com transparencia
+              // barra, alca, "+" e navegador: por cima, com transparencia
               if (flatProg == 0) return;
               GLES20.glEnable(GLES20.GL_BLEND);
               GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE_MINUS_SRC_ALPHA);
@@ -4598,13 +5184,23 @@ jobs:
               GLES20.glVertexAttribPointer(flatUvLoc, 2, GLES20.GL_FLOAT, false, 0, unitUvs);
               GLES20.glEnableVertexAttribArray(flatPosLoc);
               GLES20.glEnableVertexAttribArray(flatUvLoc);
+              boolean idle = dragWin == null && sizeWin == null;
               for (Win w : wins) {
                 modelOf(w);
-                boolean barOn = (dragWin == w) || (dragWin == null && sizeWin == null && hoverWin == w && hoverRegion == R_BAR);
-                boolean cornOn = (sizeWin == w) || (dragWin == null && sizeWin == null && hoverWin == w && hoverRegion == R_CORNER);
+                boolean hov = idle && hoverWin == w;
+                boolean barOn = (dragWin == w) || (hov && hoverRegion == R_BAR);
+                boolean cornOn = (sizeWin == w) || (hov && hoverRegion == R_CORNER);
+                boolean plusOn = hov && hoverRegion == R_PLUS;
                 boolean barAct = dragWin == w, cornAct = sizeWin == w;
-                chrome(barTex, 0f, BAR_CY, BAR_W * (barOn ? 1.2f : 1f), BAR_H * (barOn ? 1.5f : 1f), barOn, barAct);
-                chrome(cornerTex, CSX, CSY, CS * (cornOn ? 1.25f : 1f), CS * (cornOn ? 1.25f : 1f), cornOn, cornAct);
+                float ba = barOn ? 1f : 0.85f, ca = cornOn ? 1f : 0.85f, pa = plusOn ? 1f : 0.85f;
+                quad(barTex, 0f, BAR_CY, BAR_W * (barOn ? 1.2f : 1f), BAR_H * (barOn ? 1.5f : 1f), barAct ? 0.37f : 1f, barAct ? 0.92f : 1f, barAct ? 0.83f : 1f, ba, dimV);
+                quad(cornerTex, CSX, CSY, CS * (cornOn ? 1.25f : 1f), CS * (cornOn ? 1.25f : 1f), cornAct ? 0.37f : 1f, cornAct ? 0.92f : 1f, cornAct ? 0.83f : 1f, ca, dimV);
+                if (wins.size() < MAX_WINS) {
+                  float ps = PLUS_S * (plusOn ? 1.25f : 1f);
+                  quad(plusTex, PLUS_X, BAR_CY, ps, ps, plusOn ? 0.37f : 1f, plusOn ? 0.92f : 1f, plusOn ? 0.83f : 1f, pa, dimV);
+                }
+                if (w.chromeVer >= 0) quad(w.chromeTex, 0f, HH + CH_GAP + CH_H / 2f, CH_W, CH_H, 1f, 1f, 1f, 1f, dimV);
+                if (hov && hoverRegion == R_CHROME) highlight(w, hoverElem, dimV);
               }
               GLES20.glDisableVertexAttribArray(flatPosLoc);
               GLES20.glDisableVertexAttribArray(flatUvLoc);
@@ -4618,44 +5214,80 @@ jobs:
               Matrix.scaleM(model, 0, w.s, w.s, 1f);
             }
 
-            private void chrome(int tex, float x, float y, float sx, float sy, boolean on, boolean active) {
+            /** Desenha um quadrado texturizado em coordenadas locais da janela (escala 1). Cor pre-multiplicada. */
+            private void quad(int tex, float x, float y, float sx, float sy, float r, float g, float b, float a, float dimV) {
               System.arraycopy(model, 0, tmp, 0, 16);
               Matrix.translateM(tmp, 0, x, y, CHROME_Z);
               Matrix.scaleM(tmp, 0, sx, sy, 1f);
               Matrix.multiplyMM(mvp, 0, vp, 0, tmp, 0);
               GLES20.glUniformMatrix4fv(flatMvpLoc, 1, false, mvp, 0);
               GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, tex);
-              float r = 1f, g = 1f, b = 1f, a = on ? 1f : 0.85f;
-              if (active) { r = 0.37f; g = 0.92f; b = 0.83f; }
-              GLES20.glUniform4f(flatColLoc, r * a, g * a, b * a, a);
+              GLES20.glUniform4f(flatColLoc, r * a * dimV, g * a * dimV, b * a * dimV, a);
               GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
             }
 
+            /** Destaque (verde-agua translucido) sobre o elemento da barra do navegador sob o cursor. */
+            private void highlight(Win w, int elem, float dimV) {
+              int code = elem & 0xFF, idx = elem >> 8;
+              if (code == ArChrome.NONE || code == ArChrome.URL) return;
+              ArPanel.Snap sn = w.panel.snap;
+              if (sn == null) return;
+              float[] r = new float[4];
+              ArChrome.rect(code, idx, sn.n, r);
+              float x = ((r[0] + r[2]) / 2f / ArChrome.DW - 0.5f) * CH_W;
+              float y = HH + CH_GAP + (1f - (r[1] + r[3]) / 2f / ArChrome.DH) * CH_H;
+              float sx = (r[2] - r[0]) / ArChrome.DW * CH_W, sy = (r[3] - r[1]) / ArChrome.DH * CH_H;
+              float a = 0.38f;
+              quad(roundTex, x, y, sx, sy, 0.37f, 0.92f, 0.83f, a, dimV);
+            }
+
             // =============================================================
-            // Mao: cursor, pinca, toque, mover e redimensionar
+            // Mao: cursor, pinca, toque, mover, redimensionar, navegador, punho
             // =============================================================
 
             private void resetInteraction() {
               if (touchWin != null) sendTouch(touchWin, MotionEvent.ACTION_CANCEL, lastPx, lastPy);
               dragWin = null; sizeWin = null; touchWin = null;
               pinchWasOn = false;
+              fistWin = null; fistProg = 0f; fistLatched = false;
+            }
+
+            /** Esqueceu a mao (sumiu por mais de 350 ms): volta tudo ao inicio. */
+            private void resetHand() {
+              viewValid = false; pinch = false; pinchN = 0; handN = 0; fistN = 0; handFist = false;
+              firstSample = true; sizeOut = 0;
+              fX.reset(); fY.reset();
             }
 
             private void onDetection(Frame frame, ArHand.Result r, long now) {
               tDet = now;
               if (r == null) {
-                viewValid = false; pinch = false; pinchN = 0; firstSample = true;
-                fX.reset(); fY.reset();
+                viewValid = false;   // o estado da pinca fica ate a mao sumir de vez
                 return;
               }
               seenMs = now;
+              handN++;
               frame.transformCoordinates2d(Coordinates2d.IMAGE_NORMALIZED, r.pts, Coordinates2d.VIEW, viewPts);
               viewValid = true;
               ratio = r.ratio;
-              sizeS = firstSample ? r.size : sizeS + (r.size - sizeS) * 0.3f;
 
-              pinch = pinch ? ratio < PINCH_OFF : ratio < PINCH_ON;
-              if (pinch) pinchN++; else pinchN = 0;
+              // tamanho da mao: ignora saltos bruscos isolados (erro da IA), aceita se se repetirem
+              if (firstSample) {
+                sizeS = r.size;
+              } else {
+                float rel = r.size / Math.max(sizeS, 0.0001f);
+                if (rel > 1.45f || rel < 0.69f) {
+                  if (++sizeOut >= 3) { sizeS = r.size; sizeOut = 0; }
+                } else {
+                  sizeOut = 0;
+                  sizeS += (r.size - sizeS) * 0.3f;
+                }
+              }
+
+              handFist = r.fist;
+              fistN = handFist ? fistN + 1 : 0;
+              pinch = handFist ? false : (pinch ? ratio < PINCH_OFF : ratio < PINCH_ON);
+              pinchN = pinch ? pinchN + 1 : 0;
 
               // ponto do cursor: ponta do indicador com a mao aberta, meio da pinca com a mao fechando
               float w = Math.max(0f, Math.min(1f, (0.6f - ratio) / 0.35f));
@@ -4671,13 +5303,15 @@ jobs:
               long now = SystemClock.uptimeMillis();
               float dt = lastFrameMs == 0 ? 0.016f : Math.min(0.1f, (now - lastFrameMs) / 1000f);
               lastFrameMs = now;
+              frameDt = dt;
 
               long sq = tracker.detSeq;
               if (sq != lastSeq) {
                 lastSeq = sq;
                 onDetection(frame, tracker.latest, now);
               }
-              boolean has = seenMs > 0 && now - seenMs < 300;
+              boolean has = seenMs > 0 && now - seenMs < 350;
+              if (!has && (handN != 0 || pinch || handFist || skel != null)) resetHand();
 
               if (has) {
                 float lead = Math.min(0.09f, (now - tDet) / 1000f + 0.02f);
@@ -4692,8 +5326,11 @@ jobs:
                 skel = null;
               }
 
-              boolean pinchOn = has && pinch && pinchN >= 2;
+              boolean fistOn = has && handFist && fistN >= 3;
+              // sem rastreio do ARCore ou com a mao fechada, nada e pego nem arrastado
+              boolean pinchOn = has && !fistOn && pinch && pinchN >= 2 && handN >= 3 && tracking && !dim;
               hoverRegion = R_NONE;
+              hoverElem = 0;
               hoverWin = null;
 
               float[] dir = null;
@@ -4701,11 +5338,11 @@ jobs:
               if (has && vw > 0) {
                 dir = rayDir(cx, cy, camPos);
                 hit = raycast(camPos, dir);
-                if (hit != null) { hoverWin = hit.win; hoverRegion = hit.region; }
+                if (hit != null) { hoverWin = hit.win; hoverRegion = hit.region; hoverElem = hit.elem; }
               }
 
               if (pinchOn && !pinchWasOn) {
-                if (hit != null) grab(s, hit);
+                if (hit != null) grab(s, hit, now);
               } else if (!pinchOn && pinchWasOn) {
                 release(s);
               }
@@ -4716,9 +5353,39 @@ jobs:
                 else if (dragWin != null) doDrag(camPos, dir);
                 else if (touchWin != null) doTouchMove(camPos, dir);
               }
+
+              updateFist(fistOn, hit, now);
             }
 
-            private void grab(Session s, Hit h) {
+            /** Punho fechado por 1 s sobre uma janela = fechar a janela. */
+            private void updateFist(boolean fistOn, Hit hit, long now) {
+              if (!fistOn) {
+                fistLatched = false;
+                fistWin = null;
+                fistProg = 0f;
+                return;
+              }
+              if (fistLatched) return;
+              Win w = hit != null ? hit.win : null;
+              if (w != null) {
+                if (fistWin != w) { fistWin = w; fistStart = now; }
+                fistHitMs = now;
+              } else if (fistWin == null || now - fistHitMs > 300) {
+                fistWin = null;
+                fistProg = 0f;
+                return;
+              }
+              fistProg = Math.min(1f, (now - fistStart) / (float) FIST_MS);
+              if (fistProg >= 1f && fistWin != null) {
+                Win c = fistWin;
+                fistLatched = true;
+                fistWin = null;
+                fistProg = 0f;
+                closeWindow(c);
+              }
+            }
+
+            private void grab(Session s, Hit h, long now) {
               Win w = h.win;
               if (h.region == R_CORNER) {
                 sizeWin = w;
@@ -4726,7 +5393,7 @@ jobs:
                 sizeD0 = Math.max(0.05f, (float) Math.hypot(h.lx, h.ly));
               } else if (h.region == R_BAR) {
                 w.pose = w.current();
-                if (w.anchor != null) { w.anchor.detach(); w.anchor = null; }
+                if (w.anchor != null) { try { w.anchor.detach(); } catch (Throwable e) { } w.anchor = null; }
                 dragWin = w;
                 grabDist = h.t;
                 grabSize = Math.max(sizeS, 0.001f);
@@ -4735,9 +5402,46 @@ jobs:
                 distS = h.t;
               } else if (h.region == R_BODY) {
                 touchWin = w;
-                lastPx = toPx(h.lx / w.s, true);
-                lastPy = toPx(h.ly / w.s, false);
+                lastPx = toPx(w, h.lx / w.s, true);
+                lastPy = toPx(w, h.ly / w.s, false);
                 sendTouch(w, MotionEvent.ACTION_DOWN, lastPx, lastPy);
+              } else if (h.region == R_PLUS) {
+                if (now - lastClick > 400) { lastClick = now; newWindowNear(s, w); }
+              } else if (h.region == R_CHROME) {
+                if (now - lastClick > 400) { lastClick = now; chromeAction(w, h.elem); }
+              }
+            }
+
+            private void chromeAction(Win w, int elem) {
+              int code = elem & 0xFF, idx = elem >> 8;
+              ArPanel.Snap sn = w.panel.snap;
+              int n = sn == null ? 1 : sn.n;
+              switch (code) {
+                case ArChrome.TAB:
+                  w.panel.selectTab(idx);
+                  break;
+                case ArChrome.TABX:
+                  if (n == 1 && wins.size() > 1) closeWindow(w);
+                  else w.panel.closeTab(idx);
+                  break;
+                case ArChrome.NEW:
+                  if (n >= ArPanel.MAXT) say("Maximo de " + ArPanel.MAXT + " abas");
+                  else w.panel.newTab(null);
+                  break;
+                case ArChrome.WINX:
+                  closeWindow(w);
+                  break;
+                case ArChrome.BACK:
+                  w.panel.goBack();
+                  break;
+                case ArChrome.FWD:
+                  w.panel.goForward();
+                  break;
+                case ArChrome.URL:
+                  say("Editar o endereco chega junto com o teclado");
+                  break;
+                default:
+                  break;
               }
             }
 
@@ -4750,7 +5454,7 @@ jobs:
               Win w = dragWin;
               if (w != null) {
                 dragWin = null;
-                try { w.anchor = s.createAnchor(w.pose); } catch (Throwable e) { w.anchor = null; }
+                if (tracking) w.anchor = anchorOf(s, w.pose);   // sem rastreio, maintainAnchors prende depois
               }
             }
 
@@ -4767,27 +5471,33 @@ jobs:
               Win w = dragWin;
               float d = grabDist * grabSize / Math.max(sizeS, 0.001f);
               d = Math.max(0.3f, Math.min(6f, d));
-              distS += (d - distS) * 0.3f;
+              distS += (d - distS) * (1f - (float) Math.exp(-frameDt * 12f));
               float pX = camPos[0] + dir[0] * distS, pY = camPos[1] + dir[1] * distS, pZ = camPos[2] + dir[2] * distS;
               float yaw = (float) Math.atan2(camPos[0] - pX, camPos[2] - pZ);
               float c = (float) Math.cos(yaw), sn = (float) Math.sin(yaw);
               float offX = grabLx * c, offY = grabLy, offZ = -grabLx * sn;
-              w.pose = new Pose(new float[]{pX - offX, pY - offY, pZ - offZ}, new float[]{0f, (float) Math.sin(yaw / 2f), 0f, (float) Math.cos(yaw / 2f)});
+              float tx = pX - offX, ty = pY - offY, tz = pZ - offZ;
+              // suaviza o alvo: um quadro ruim da mao nao teleporta a janela
+              float[] cp = w.pose.getTranslation();
+              float k = 1f - (float) Math.exp(-frameDt * 22f);
+              float nx = cp[0] + (tx - cp[0]) * k, ny = cp[1] + (ty - cp[1]) * k, nz = cp[2] + (tz - cp[2]) * k;
+              w.pose = new Pose(new float[]{nx, ny, nz}, new float[]{0f, (float) Math.sin(yaw / 2f), 0f, (float) Math.cos(yaw / 2f)});
             }
 
             private void doTouchMove(float[] camPos, float[] dir) {
               Win w = touchWin;
               if (!planeHit(w, camPos, dir, pl)) return;
-              float px = toPx(pl[0] / w.s, true), py = toPx(pl[1] / w.s, false);
+              float px = toPx(w, pl[0] / w.s, true), py = toPx(w, pl[1] / w.s, false);
               if (Math.abs(px - lastPx) < 0.5f && Math.abs(py - lastPy) < 0.5f) return;
               lastPx = px; lastPy = py;
               sendTouch(w, MotionEvent.ACTION_MOVE, px, py);
             }
 
             /** Coordenada local da janela (em metros, escala 1) para pixel da pagina. */
-            private float toPx(float local, boolean horizontal) {
-              float p = horizontal ? (local + HW) / (2f * HW) * panel.pw : (HH - local) / (2f * HH) * panel.ph;
-              float max = (horizontal ? panel.pw : panel.ph) - 1f;
+            private static float toPx(Win w, float local, boolean horizontal) {
+              int pw = w.panel.pw, ph = w.panel.ph;
+              float p = horizontal ? (local + HW) / (2f * HW) * pw : (HH - local) / (2f * HH) * ph;
+              float max = (horizontal ? pw : ph) - 1f;
               return Math.max(0f, Math.min(max, p));
             }
 
@@ -4810,9 +5520,9 @@ jobs:
               Hit best = null;
               for (Win w : wins) {
                 if (!planeHit(w, o, d, pl)) continue;
-                int reg = region(pl[0] / w.s, pl[1] / w.s);
+                int reg = region(w, pl[0] / w.s, pl[1] / w.s);
                 if (reg == R_NONE) continue;
-                if (best == null || pl[2] < best.t) best = new Hit(w, pl[2], pl[0], pl[1], reg);
+                if (best == null || pl[2] < best.t) best = new Hit(w, pl[2], pl[0], pl[1], reg, regElem);
               }
               return best;
             }
@@ -4831,11 +5541,23 @@ jobs:
               return true;
             }
 
-            /** x, y em metros com a janela na escala 1. */
-            private static int region(float x, float y) {
+            /** x, y em metros com a janela na escala 1. Define regElem quando cai na barra do navegador. */
+            private int region(Win w, float x, float y) {
+              regElem = 0;
               if (Math.abs(x - CSX) <= CS_HIT && Math.abs(y - CSY) <= CS_HIT) return R_CORNER;
+              if (wins.size() < MAX_WINS && Math.abs(x - PLUS_X) <= PLUS_HIT && Math.abs(y - BAR_CY) <= PLUS_HIT) return R_PLUS;
               if (Math.abs(x) <= BAR_HIT_X && Math.abs(y - BAR_CY) <= BAR_HIT_Y) return R_BAR;
               if (Math.abs(x) <= HW && Math.abs(y) <= HH) return R_BODY;
+              float y0 = HH + CH_GAP;
+              if (y >= y0 - 0.006f && y <= y0 + CH_H + 0.006f && Math.abs(x) <= HW + 0.006f) {
+                ArPanel.Snap sn = w.panel.snap;
+                if (sn != null) {
+                  float dx = Math.max(0f, Math.min(ArChrome.DW, (x / CH_W + 0.5f) * ArChrome.DW));
+                  float dy = Math.max(0f, Math.min(ArChrome.DH, (1f - (y - y0) / CH_H) * ArChrome.DH));
+                  int e = ArChrome.hit(dx, dy, sn.n, sn.cur);
+                  if (e != ArChrome.NONE) { regElem = e; return R_CHROME; }
+                }
+              }
               return R_NONE;
             }
 
@@ -4850,17 +5572,26 @@ jobs:
               long now = SystemClock.uptimeMillis();
               if (now - lastHud > 250) {
                 lastHud = now;
-                String l1 = "AR: " + trackText + "  janelas: " + wins.size();
-                String l2 = "mao: " + (skel != null ? "sim" : "nao") + "  pinca: " + String.format("%.2f", ratio)
+                String l1 = "AR: " + trackText + "  perdas: " + lostCount + (lostCount > 0 ? "  motivo: " + lastReason + "  ultima: " + lastLostMs + " ms" : "");
+                String l2 = "gl: " + Math.round(glFps) + " fps  ar: " + Math.round(arFps) + " fps  " + camInfo;
+                String l3 = "mao: " + (skel != null ? "sim" : "nao") + "  pinca: " + String.format("%.2f", ratio) + (handFist ? "  PUNHO" : "")
                   + "  det: " + Math.round(tracker.detFps) + " fps / " + Math.round(tracker.detMs) + " ms";
-                String l3 = "painel: " + panel.where + "  quadros: " + panel.frames + (panel.got ? "" : " (sem imagem)");
-                String l4 = !"ok".equals(tracker.status) ? tracker.status : "";
-                String l5 = panel.err;
-                String l6 = glError;
-                String l7 = errorText;
-                String l8 = now < messageUntil ? message : "";
-                String l9 = "toque no topo: esquerda = trocar modo do painel, direita = recentrar";
-                hudLines = new String[]{l1, l2, l3, l4, l5, l6, l7, l8, l9};
+                int noAnchor = 0;
+                for (Win w : wins) if (w.anchor == null) noAnchor++;
+                String st = dragWin != null ? "mover" : sizeWin != null ? "redimensionar" : touchWin != null ? "toque" : fistProg > 0f ? "punho" : "-";
+                String l4 = "janelas: " + wins.size() + "  sem ancora: " + noAnchor + "  acao: " + st;
+                String l5 = "";
+                String l6 = "";
+                if (!wins.isEmpty()) {
+                  ArPanel p = wins.get(0).panel;
+                  l5 = "painel 1: " + p.where + "  quadros: " + p.frames + (p.got ? "" : " (sem imagem)");
+                  l6 = p.err;
+                }
+                String l7 = !"ok".equals(tracker.status) ? tracker.status : "";
+                String l8 = glError.length() > 0 ? glError : errorText;
+                String l9 = now < messageUntil ? message : "";
+                String l10 = "2 toques no topo: esquerda = modo do painel, direita = recentrar";
+                hudLines = new String[]{l1, l2, l3, l4, l5, l6, l7, l8, l9, l10};
               }
               ArOverlay.Snap sn = new ArOverlay.Snap();
               sn.skel = skel == null ? null : skel.clone();
@@ -4868,6 +5599,8 @@ jobs:
               sn.hasCursor = skel != null;
               sn.pinched = pinchWasOn;
               sn.region = hoverRegion;
+              sn.fist = skel != null && handFist && fistN >= 3;
+              sn.progress = fistProg;
               sn.lines = hudLines;
               ov.update(sn);
             }
@@ -4921,7 +5654,33 @@ jobs:
               return b;
             }
 
-            private static int bitmapTex(Bitmap bmp) {
+            /** Botao "+": disco branco com o sinal escuro. */
+            private static Bitmap makePlus() {
+              Bitmap b = Bitmap.createBitmap(96, 96, Bitmap.Config.ARGB_8888);
+              Canvas c = new Canvas(b);
+              Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+              p.setColor(Color.WHITE);
+              c.drawCircle(48f, 48f, 44f, p);
+              p.setColor(Color.rgb(24, 27, 38));
+              p.setStyle(Paint.Style.STROKE);
+              p.setStrokeWidth(10f);
+              p.setStrokeCap(Paint.Cap.ROUND);
+              c.drawLine(26f, 48f, 70f, 48f, p);
+              c.drawLine(48f, 26f, 48f, 70f, p);
+              return b;
+            }
+
+            /** Retangulo arredondado branco que ocupa a imagem toda (usado para destacar botoes). */
+            private static Bitmap makeRound() {
+              Bitmap b = Bitmap.createBitmap(64, 64, Bitmap.Config.ARGB_8888);
+              Canvas c = new Canvas(b);
+              Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+              p.setColor(Color.WHITE);
+              c.drawRoundRect(new RectF(0f, 0f, 64f, 64f), 18f, 18f, p);
+              return b;
+            }
+
+            private static int emptyTex2d() {
               int[] t = new int[1];
               GLES20.glGenTextures(1, t, 0);
               GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, t[0]);
@@ -4929,9 +5688,14 @@ jobs:
               GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
               GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
               GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
+              return t[0];
+            }
+
+            private static int bitmapTex(Bitmap bmp) {
+              int t = emptyTex2d();
               GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bmp, 0);
               bmp.recycle();
-              return t[0];
+              return t;
             }
 
             private int program(String vs, String fs) {
@@ -5004,13 +5768,14 @@ jobs:
               "uniform vec2 u_Half;\n" +
               "uniform float u_R;\n" +
               "uniform float u_Flat;\n" +
+              "uniform float u_Dim;\n" +
               "void main() {\n" +
               "  vec2 q = abs(v_P) - (u_Half - vec2(u_R));\n" +
               "  float d = length(max(q, 0.0)) - u_R;\n" +
               "  if (d > 0.0) discard;\n" +
               "  vec2 uv = (u_Stm * vec4(v_Uv, 0.0, 1.0)).xy;\n" +
               "  vec3 c = texture2D(u_Tex, uv).rgb;\n" +
-              "  gl_FragColor = vec4(mix(c, vec3(0.08, 0.09, 0.12), u_Flat), 1.0);\n" +
+              "  gl_FragColor = vec4(mix(c, vec3(0.08, 0.09, 0.12), u_Flat) * u_Dim, 1.0);\n" +
               "}\n";
 
             private static final String FLAT_VS =
@@ -5039,7 +5804,6 @@ jobs:
           import android.os.Bundle;
           import android.os.Handler;
           import android.os.Looper;
-          import android.util.Size;
           import android.view.Display;
           import android.view.MotionEvent;
           import android.view.View;
@@ -5048,16 +5812,12 @@ jobs:
           import android.widget.FrameLayout;
           import android.widget.Toast;
           import com.google.ar.core.ArCoreApk;
-          import com.google.ar.core.CameraConfig;
-          import com.google.ar.core.CameraConfigFilter;
           import com.google.ar.core.Config;
           import com.google.ar.core.Session;
-          import java.util.EnumSet;
-          import java.util.List;
 
           /**
            * "VR Launcher AR": versao com ARCore. As janelas ficam ancoradas no ambiente.
-           * Fase 1: uma janela do Google (WebView em textura), mao, mover/redimensionar/tocar.
+           * Ate 3 janelas com navegador (abas, voltar/avancar, fechar), mao, mover/redimensionar/tocar, punho fecha.
            */
           public class ArActivity extends Activity {
 
@@ -5070,11 +5830,11 @@ jobs:
             private ArRenderer renderer;
             private ArOverlay overlay;
             private ArHand tracker;
-            private ArPanel panel;
             private Session session;
             private boolean installRequested = false;
             private final Handler ui = new Handler(Looper.getMainLooper());
             private float density = 1f;
+            private long tapL = 0, tapR = 0;
 
             private final DisplayManager.DisplayListener dl = new DisplayManager.DisplayListener() {
               @Override public void onDisplayAdded(int id) { }
@@ -5096,9 +5856,8 @@ jobs:
               density = getResources().getDisplayMetrics().density;
 
               tracker = new ArHand(getApplicationContext());
-              panel = new ArPanel(this, PW, PH, DPI, HOME);
               overlay = new ArOverlay(this);
-              renderer = new ArRenderer(this, tracker, panel);
+              renderer = new ArRenderer(this, tracker);
               renderer.overlay = overlay;
 
               gl = new GLSurfaceView(this);
@@ -5173,7 +5932,7 @@ jobs:
               DisplayManager dm = (DisplayManager) getSystemService(DISPLAY_SERVICE);
               dm.unregisterDisplayListener(dl);
               tracker.close();
-              panel.destroy();
+              renderer.shutdown();
               if (session != null) { session.close(); session = null; }
               super.onDestroy();
             }
@@ -5195,15 +5954,15 @@ jobs:
               }
             }
 
-            /** Depuracao pelo toque na tela: topo esquerdo = trocar modo do painel, topo direito = recentrar a janela. */
+            /** Depuracao: 2 toques rapidos no canto superior esquerdo = modo do painel, no direito = recentrar. */
             @Override public boolean onTouchEvent(MotionEvent e) {
-              if (e.getAction() == MotionEvent.ACTION_DOWN && e.getY() < 150f * density) {
-                if (e.getX() < root.getWidth() / 2f) {
-                  panel.mode = panel.mode == ArPanel.VD ? ArPanel.SW : ArPanel.VD;
-                  queueGl(new Runnable() { @Override public void run() { panel.newSurface(); } });
-                  Toast.makeText(this, panel.mode == ArPanel.VD ? "Painel: tela virtual" : "Painel: software", Toast.LENGTH_SHORT).show();
-                } else {
-                  renderer.recenter();
+              if (e.getAction() == MotionEvent.ACTION_DOWN && e.getY() < 100f * density) {
+                long now = System.currentTimeMillis();
+                float w = root.getWidth();
+                if (e.getX() < 100f * density) {
+                  if (now - tapL < 600) { tapL = 0; renderer.toggleMode(); } else tapL = now;
+                } else if (e.getX() > w - 100f * density) {
+                  if (now - tapR < 600) { tapR = 0; renderer.recenter(); } else tapR = now;
                 }
                 return true;
               }
@@ -5213,36 +5972,33 @@ jobs:
             // ---- configuracao do ARCore: so o que usamos ----
 
             private void configure(Session s) {
+              // igual ao projeto de teste: so foco automatico e imagem mais recente; o resto fica no padrao do ARCore
               Config c = new Config(s);
               c.setFocusMode(Config.FocusMode.AUTO);
               c.setUpdateMode(Config.UpdateMode.LATEST_CAMERA_IMAGE);
-              c.setPlaneFindingMode(Config.PlaneFindingMode.DISABLED);
-              c.setLightEstimationMode(Config.LightEstimationMode.DISABLED);
               s.configure(c);
-              try {
-                // 30 fps e a menor textura que ainda tenha pelo menos 1280 de largura: menos carga na GPU fraca
-                CameraConfigFilter f = new CameraConfigFilter(s);
-                f.setTargetFps(EnumSet.of(CameraConfig.TargetFps.TARGET_FPS_30));
-                List<CameraConfig> list = s.getSupportedCameraConfigs(f);
-                CameraConfig best = null;
-                long bestArea = 0;
-                for (CameraConfig cc : list) {
-                  Size t = cc.getTextureSize();
-                  long area = (long) t.getWidth() * t.getHeight();
-                  boolean ok = t.getWidth() >= 1280 || t.getHeight() >= 1280;
-                  if (best == null) { best = cc; bestArea = area; continue; }
-                  Size bt = best.getTextureSize();
-                  boolean bestOk = bt.getWidth() >= 1280 || bt.getHeight() >= 1280;
-                  if (ok && (!bestOk || area < bestArea)) { best = cc; bestArea = area; }
-                  else if (!ok && !bestOk && area > bestArea) { best = cc; bestArea = area; }
-                }
-                if (best != null) s.setCameraConfig(best);
-              } catch (Throwable t) {
-                // fica com a configuracao padrao do ARCore
-              }
             }
           }
           EOF
+      - name: Assinatura fixa
+        env:
+          KS_PASS: ${{ secrets.KS_PASS }}
+        run: |
+          if [ -z "$KS_PASS" ]; then
+            echo "::warning::Segredo KS_PASS nao encontrado: usando assinatura temporaria, sera preciso desinstalar o app a cada versao."
+          elif [ -f release.jks.enc ]; then
+            openssl enc -d -aes-256-cbc -pbkdf2 -pass env:KS_PASS -in release.jks.enc -out release.jks || { echo "::error::Nao consegui abrir release.jks.enc. A senha KS_PASS mudou?"; exit 1; }
+          else
+            keytool -genkeypair -keystore release.jks -alias vr -keyalg RSA -keysize 2048 -validity 36500 -storepass "$KS_PASS" -keypass "$KS_PASS" -dname "CN=VR Launcher"
+            openssl enc -aes-256-cbc -pbkdf2 -salt -pass env:KS_PASS -in release.jks -out release.jks.enc
+            git config user.name "build"
+            git config user.email "build@users.noreply.github.com"
+            git add release.jks.enc
+            git commit -m "Adiciona chave de assinatura criptografada"
+            git push || echo "::warning::Nao consegui salvar a chave no repositorio. Confira as permissoes do passo 2."
+          fi
+          if [ -f release.jks ]; then printf 'pass=%s\n' "$KS_PASS" > keystore.properties; fi
+      
       - name: Compilar
         run: gradle assembleDebug --no-daemon
       - uses: actions/upload-artifact@v4
