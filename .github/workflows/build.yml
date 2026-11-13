@@ -3653,6 +3653,1596 @@ jobs:
             git push || echo "::warning::Nao consegui salvar a chave no repositorio. Confira as permissoes do passo 2."
           fi
           if [ -f release.jks ]; then printf 'pass=%s\n' "$KS_PASS" > keystore.properties; fi
+      - name: Modo AR (Fase 1)
+        run: |
+          mkdir -p app/src/main/java/com/vr/launcher
+          python3 - <<'PY'
+          def patch(path, old, new):
+              s = open(path, encoding='utf-8').read()
+              assert old in s, 'nao achei em ' + path + ': ' + old
+              open(path, 'w', encoding='utf-8').write(s.replace(old, new, 1))
+          patch('app/build.gradle', "implementation 'com.google.guava:guava:32.1.3-android'", "implementation 'com.google.guava:guava:32.1.3-android'\n  implementation 'com.google.ar:core:1.44.0'")
+          patch('app/src/main/AndroidManifest.xml', '</application>', """<meta-data android:name="com.google.ar.core" android:value="optional"/>
+              <activity android:name=".ArActivity" android:exported="true" android:label="VR Launcher AR"
+                android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen"
+                android:screenOrientation="sensorLandscape"
+                android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize">
+                <intent-filter>
+                  <action android:name="android.intent.action.MAIN"/>
+                  <category android:name="android.intent.category.LAUNCHER"/>
+                </intent-filter>
+              </activity>
+            </application>""")
+          PY
+          cat > app/src/main/java/com/vr/launcher/ArHand.java <<'EOF'
+          package com.vr.launcher;
+
+          import android.content.Context;
+          import android.graphics.Bitmap;
+          import android.media.Image;
+          import android.os.Handler;
+          import android.os.HandlerThread;
+          import android.os.SystemClock;
+          import com.google.mediapipe.framework.image.BitmapImageBuilder;
+          import com.google.mediapipe.tasks.components.containers.NormalizedLandmark;
+          import com.google.mediapipe.tasks.core.BaseOptions;
+          import com.google.mediapipe.tasks.core.Delegate;
+          import com.google.mediapipe.tasks.vision.core.RunningMode;
+          import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarker;
+          import com.google.mediapipe.tasks.vision.handlandmarker.HandLandmarkerResult;
+          import java.nio.ByteBuffer;
+          import java.util.List;
+          import java.util.concurrent.atomic.AtomicBoolean;
+
+          /** IA da mao rodando em thread propria, alimentada pela imagem de CPU do ARCore. */
+          final class ArHand {
+
+            /** pts: 21 pontos (x,y) no sistema IMAGE_NORMALIZED do ARCore. */
+            static final class Result {
+              final float[] pts;
+              final float size;   // tamanho da mao (cresce quando chega perto da camera)
+              final float ratio;  // distancia polegar-indicador / distancia pulso-base do dedo medio
+              Result(float[] pts, float size, float ratio) { this.pts = pts; this.size = size; this.ratio = ratio; }
+            }
+
+            /** 1 = imagem inteira (640x480). 2 = metade (320x240), bem mais leve e suficiente para a IA. */
+            private static final int STEP = 2;
+            /** Sem mao por 1,5 s: so processa um quadro a cada IDLE_GAP ms para poupar bateria. */
+            private static final long IDLE_GAP = 250;
+
+            volatile Result latest = null;   // null = sem mao
+            volatile long detSeq = 0;        // aumenta a cada deteccao concluida (com ou sem mao)
+            volatile String status = "carregando modelo...";
+            volatile float detFps = 0f;
+            volatile float detMs = 0f;
+
+            private final Context context;
+            private final AtomicBoolean busy = new AtomicBoolean(true);
+            private final HandlerThread thread = new HandlerThread("ar-hand");
+            private final Handler handler;
+            private volatile HandLandmarker landmarker;
+            private volatile long lastHandMs = 0;
+            private long lastSubmitMs = 0;
+            private long lastTs = 0, fpsStart = 0;
+            private int fpsCount = 0;
+
+            private Bitmap bmp;
+            private int[] pixels = new int[0];
+            private byte[] yb = new byte[0], ub = new byte[0], vb = new byte[0];
+
+            ArHand(Context ctx) {
+              context = ctx.getApplicationContext();
+              thread.start();
+              handler = new Handler(thread.getLooper());
+              handler.post(new Runnable() { @Override public void run() { loadModel(); } });
+            }
+
+            private void loadModel() {
+              try {
+                BaseOptions base = BaseOptions.builder()
+                  .setModelAssetPath("mediapipe/hand_landmarker.task")
+                  .setDelegate(Delegate.CPU)
+                  .build();
+                HandLandmarker.HandLandmarkerOptions o = HandLandmarker.HandLandmarkerOptions.builder()
+                  .setBaseOptions(base)
+                  .setRunningMode(RunningMode.VIDEO)
+                  .setNumHands(1)
+                  .build();
+                landmarker = HandLandmarker.createFromOptions(context, o);
+                status = "ok";
+              } catch (Throwable t) {
+                status = "erro no modelo: " + t;
+              }
+              busy.set(landmarker == null);
+            }
+
+            /** O renderer pergunta antes de buscar a imagem, para nao gastar a toa. */
+            boolean wants() {
+              if (busy.get()) return false;
+              long now = SystemClock.uptimeMillis();
+              boolean idle = now - lastHandMs > 1500;
+              return !(idle && now - lastSubmitMs < IDLE_GAP);
+            }
+
+            /** Chamado na thread do GL. Copia os bytes e processa em outra thread. rot = 0, 90, 180 ou 270. */
+            boolean submit(Image img, int rot) {
+              if (!busy.compareAndSet(false, true)) return false;
+              lastSubmitMs = SystemClock.uptimeMillis();
+              try {
+                final int w = img.getWidth(), h = img.getHeight();
+                Image.Plane[] pl = img.getPlanes();
+                yb = copy(pl[0].getBuffer(), yb);
+                ub = copy(pl[1].getBuffer(), ub);
+                vb = copy(pl[2].getBuffer(), vb);
+                final int yRow = pl[0].getRowStride(), uvRow = pl[1].getRowStride(), uvPix = pl[1].getPixelStride();
+                final int r = rot;
+                handler.post(new Runnable() {
+                  @Override public void run() {
+                    try {
+                      process(w, h, r, yRow, uvRow, uvPix);
+                    } catch (Throwable t) {
+                      status = "erro: " + t;
+                    } finally {
+                      busy.set(false);
+                    }
+                  }
+                });
+                return true;
+              } catch (Throwable t) {
+                busy.set(false);
+                return false;
+              }
+            }
+
+            private static byte[] copy(ByteBuffer b, byte[] dst) {
+              int n = b.remaining();
+              if (dst.length < n) dst = new byte[n];
+              b.get(dst, 0, n);
+              return dst;
+            }
+
+            private void process(int w, int h, int rot, int yRow, int uvRow, int uvPix) {
+              HandLandmarker lm = landmarker;
+              if (lm == null) return;
+
+              // imagem "em pe" em relacao a tela: uW x uH (a do sensor, girada por rot)
+              final boolean swap = (rot == 90 || rot == 270);
+              final int uW = swap ? h : w, uH = swap ? w : h;
+              final int oW = uW / STEP, oH = uH / STEP;
+              Bitmap b = bmp;
+              if (b == null || b.getWidth() != oW || b.getHeight() != oH) {
+                b = Bitmap.createBitmap(oW, oH, Bitmap.Config.ARGB_8888);
+                bmp = b;
+                pixels = new int[oW * oH];
+              }
+              // posicao no sensor = origem + coef * (u, v) da imagem em pe
+              int sx0, sxu, sxv, sy0, syu, syv;
+              switch (rot) {
+                case 90:  sx0 = 0;     sxu = 0;  sxv = 1;  sy0 = h - 1; syu = -1; syv = 0;  break;
+                case 180: sx0 = w - 1; sxu = -1; sxv = 0;  sy0 = h - 1; syu = 0;  syv = -1; break;
+                case 270: sx0 = w - 1; sxu = 0;  sxv = -1; sy0 = 0;     syu = 1;  syv = 0;  break;
+                default:  sx0 = 0;     sxu = 1;  sxv = 0;  sy0 = 0;     syu = 0;  syv = 1;  break;
+              }
+              final byte[] y = yb, u = ub, v = vb;
+              final int[] px = pixels;
+              for (int oy = 0; oy < oH; oy++) {
+                final int vv0 = oy * STEP;
+                final int row = oy * oW;
+                for (int ox = 0; ox < oW; ox++) {
+                  final int uu0 = ox * STEP;
+                  final int sx = sx0 + sxu * uu0 + sxv * vv0;
+                  final int sy = sy0 + syu * uu0 + syv * vv0;
+                  final int yy = y[sy * yRow + sx] & 0xFF;
+                  final int ci = (sy >> 1) * uvRow + (sx >> 1) * uvPix;
+                  final int cu = (u[ci] & 0xFF) - 128;
+                  final int cv = (v[ci] & 0xFF) - 128;
+                  int r = yy + ((359 * cv) >> 8);
+                  int g = yy - ((88 * cu + 183 * cv) >> 8);
+                  int bl = yy + ((454 * cu) >> 8);
+                  if (r < 0) r = 0; else if (r > 255) r = 255;
+                  if (g < 0) g = 0; else if (g > 255) g = 255;
+                  if (bl < 0) bl = 0; else if (bl > 255) bl = 255;
+                  px[row + ox] = 0xFF000000 | (r << 16) | (g << 8) | bl;
+                }
+              }
+              b.setPixels(px, 0, oW, 0, 0, oW, oH);
+
+              long t0 = SystemClock.uptimeMillis();
+              long ts = Math.max(t0, lastTs + 1);
+              lastTs = ts;
+              HandLandmarkerResult res = lm.detectForVideo(new BitmapImageBuilder(b).build(), ts);
+              long t1 = SystemClock.uptimeMillis();
+              detMs = detMs == 0f ? (t1 - t0) : detMs * 0.85f + (t1 - t0) * 0.15f;
+
+              List<List<NormalizedLandmark>> hands = res.landmarks();
+              Result out = null;
+              if (hands != null && !hands.isEmpty()) {
+                List<NormalizedLandmark> l = hands.get(0);
+                final float fw = oW, fh = oH;
+                float palmH = dist(l, 0, 9, fw, fh);
+                float palm = palmH + dist(l, 5, 17, fw, fh);
+                float ratio = dist(l, 4, 8, fw, fh) / Math.max(palmH, 1f);
+                float[] pts = new float[42];
+                for (int i = 0; i < 21; i++) {
+                  float lx = l.get(i).x(), ly = l.get(i).y();
+                  float nx, ny;   // de volta ao sistema da imagem do sensor
+                  switch (rot) {
+                    case 90:  nx = ly;        ny = 1f - lx; break;
+                    case 180: nx = 1f - lx;   ny = 1f - ly; break;
+                    case 270: nx = 1f - ly;   ny = lx;      break;
+                    default:  nx = lx;        ny = ly;      break;
+                  }
+                  pts[2 * i] = nx;
+                  pts[2 * i + 1] = ny;
+                }
+                out = new Result(pts, palm / fh, ratio);
+                lastHandMs = t1;
+              }
+              latest = out;
+              detSeq++;
+
+              fpsCount++;
+              if (fpsStart == 0) fpsStart = t1;
+              if (t1 - fpsStart >= 1000) {
+                detFps = fpsCount * 1000f / (t1 - fpsStart);
+                fpsCount = 0;
+                fpsStart = t1;
+              }
+            }
+
+            private static float dist(List<NormalizedLandmark> l, int a, int c, float w, float h) {
+              float dx = (l.get(a).x() - l.get(c).x()) * w;
+              float dy = (l.get(a).y() - l.get(c).y()) * h;
+              return (float) Math.sqrt(dx * dx + dy * dy);
+            }
+
+            void close() {
+              handler.post(new Runnable() {
+                @Override public void run() {
+                  HandLandmarker l = landmarker;
+                  landmarker = null;
+                  if (l != null) { try { l.close(); } catch (Throwable t) { } }
+                  thread.quitSafely();
+                }
+              });
+            }
+
+            /** Filtro 1 euro: suave quando a mao esta parada, rapido quando se mexe. */
+            static final class OneEuro {
+              private final float minC, beta, dC;
+              private boolean init = false;
+              private float xp, dxp;
+              private long tp;
+              float x = 0f, v = 0f;
+              OneEuro(float minC, float beta, float dC) { this.minC = minC; this.beta = beta; this.dC = dC; }
+              private static float alpha(float c, float dt) { return 1f / (1f + (1f / (float) (2 * Math.PI * c)) / dt); }
+              float f(float val, long tMs) {
+                if (!init) { init = true; xp = val; dxp = 0f; tp = tMs; x = val; v = 0f; return val; }
+                float dt = Math.max(0.005f, (tMs - tp) / 1000f);
+                tp = tMs;
+                dxp += alpha(dC, dt) * ((val - xp) / dt - dxp);
+                xp += alpha(minC + beta * Math.abs(dxp), dt) * (val - xp);
+                x = xp; v = dxp;
+                return xp;
+              }
+              void reset() { init = false; v = 0f; }
+            }
+          }
+          EOF
+          cat > app/src/main/java/com/vr/launcher/ArPanel.java <<'EOF'
+          package com.vr.launcher;
+
+          import android.app.Presentation;
+          import android.content.Context;
+          import android.graphics.Canvas;
+          import android.graphics.Color;
+          import android.graphics.SurfaceTexture;
+          import android.hardware.display.DisplayManager;
+          import android.hardware.display.VirtualDisplay;
+          import android.opengl.GLES11Ext;
+          import android.opengl.GLES20;
+          import android.os.Handler;
+          import android.os.Looper;
+          import android.os.SystemClock;
+          import android.view.InputDevice;
+          import android.view.MotionEvent;
+          import android.view.Surface;
+          import android.view.ViewGroup;
+          import android.view.ViewParent;
+          import android.view.inputmethod.EditorInfo;
+          import android.view.inputmethod.InputConnection;
+          import android.webkit.CookieManager;
+          import android.webkit.WebResourceRequest;
+          import android.webkit.WebSettings;
+          import android.webkit.WebView;
+          import android.webkit.WebViewClient;
+          import java.util.concurrent.atomic.AtomicBoolean;
+
+          /**
+           * Um WebView transformado em textura OpenGL.
+           * Modo VD: o WebView roda numa tela virtual (Presentation) que desenha direto na textura (acelerado por GPU).
+           * Modo SW: plano B. O WebView fica atras do GL e e copiado para a textura por software, uns 15 vezes por segundo.
+           */
+          final class ArPanel {
+            static final int VD = 0, SW = 1;
+
+            final ArActivity act;
+            final int pw, ph, dpi;
+            final Handler ui = new Handler(Looper.getMainLooper());
+
+            // ---- lado GL ----
+            int tex = 0;
+            SurfaceTexture st;
+            Surface surf;
+            final float[] stm = new float[16];
+            final AtomicBoolean avail = new AtomicBoolean(false);
+            volatile boolean got = false;
+            volatile int frames = 0;
+
+            // ---- lado UI ----
+            volatile int mode = VD;
+            volatile String err = "";
+            volatile String where = "";
+            private WebView web;
+            private VirtualDisplay vd;
+            private Presentation pres;
+            private boolean running = false;
+            private String url;
+            private long downTime = 0;
+            private Runnable tick, watchdog;
+
+            ArPanel(ArActivity act, int pw, int ph, int dpi, String url) {
+              this.act = act; this.pw = pw; this.ph = ph; this.dpi = dpi; this.url = url;
+              android.opengl.Matrix.setIdentityM(stm, 0);
+            }
+
+            // =============================================================
+            // GL thread
+            // =============================================================
+
+            void glInit() {
+              int[] t = new int[1];
+              GLES20.glGenTextures(1, t, 0);
+              tex = t[0];
+              GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, tex);
+              GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
+              GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
+              GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR);
+              GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
+              st = null; surf = null;
+              newSurface();
+            }
+
+            /** Cria uma SurfaceTexture nova na mesma textura e manda a UI ligar o WebView nela. */
+            void newSurface() {
+              final Surface oldS = surf;
+              final SurfaceTexture oldT = st;
+              if (oldS != null) { try { oldS.release(); } catch (Throwable t) { } }
+              if (oldT != null) { try { oldT.release(); } catch (Throwable t) { } }
+              SurfaceTexture n = new SurfaceTexture(tex);
+              n.setDefaultBufferSize(pw, ph);
+              n.setOnFrameAvailableListener(new SurfaceTexture.OnFrameAvailableListener() {
+                @Override public void onFrameAvailable(SurfaceTexture t) { avail.set(true); frames++; }
+              });
+              st = n;
+              final Surface s = new Surface(n);
+              surf = s;
+              got = false;
+              avail.set(false);
+              frames = 0;
+              ui.post(new Runnable() { @Override public void run() { attach(s); } });
+            }
+
+            /** Pega o quadro novo do WebView, se houver. Retorna true se ja existe imagem. */
+            boolean update() {
+              SurfaceTexture t = st;
+              if (t != null && avail.getAndSet(false)) {
+                try {
+                  t.updateTexImage();
+                  t.getTransformMatrix(stm);
+                  got = true;
+                } catch (Throwable e) {
+                  err = "textura: " + e;
+                }
+              }
+              return got;
+            }
+
+            // =============================================================
+            // UI thread
+            // =============================================================
+
+            private void attach(Surface s) {
+              if (s != surf) return;        // surface ja foi trocada de novo
+              detach();
+              err = "";
+              try {
+                if (mode == VD) attachVd(s); else attachSw(s);
+              } catch (Throwable t) {
+                err = (mode == VD ? "tela virtual: " : "software: ") + t;
+                if (mode == VD) {
+                  mode = SW;
+                  detach();
+                  try { attachSw(s); } catch (Throwable t2) { err += " | software: " + t2; }
+                }
+              }
+              // plano B automatico: se o modo VD nao produzir nenhum quadro em 7 s
+              final Surface cur = s;
+              watchdog = new Runnable() {
+                @Override public void run() {
+                  if (cur == surf && mode == VD && frames == 0) {
+                    err = "tela virtual sem imagem, trocando para software";
+                    mode = SW;
+                    act.queueGl(new Runnable() { @Override public void run() { newSurface(); } });
+                  }
+                }
+              };
+              ui.postDelayed(watchdog, 7000);
+            }
+
+            private void attachVd(Surface s) {
+              DisplayManager dm = (DisplayManager) act.getSystemService(Context.DISPLAY_SERVICE);
+              vd = dm.createVirtualDisplay("ar-win", pw, ph, dpi, s, 0);
+              if (vd == null) throw new IllegalStateException("createVirtualDisplay devolveu null");
+              pres = new Presentation(act, vd.getDisplay());
+              web = newWeb(pres.getContext());
+              pres.setContentView(web, new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+              pres.show();
+              web.loadUrl(url);
+              where = "tela virtual " + pw + "x" + ph + " @" + dpi;
+            }
+
+            private void attachSw(final Surface s) {
+              web = newWeb(act);
+              act.addPanelView(web, pw, ph);
+              web.loadUrl(url);
+              running = true;
+              where = "software " + pw + "x" + ph;
+              tick = new Runnable() {
+                @Override public void run() {
+                  if (!running || web == null || s != surf) return;
+                  try {
+                    Canvas c = s.lockCanvas(null);
+                    try { web.draw(c); } finally { s.unlockCanvasAndPost(c); }
+                  } catch (Throwable t) {
+                    err = "desenho: " + t;
+                  }
+                  ui.postDelayed(this, 70);
+                }
+              };
+              ui.post(tick);
+            }
+
+            private void detach() {
+              running = false;
+              if (tick != null) ui.removeCallbacks(tick);
+              if (watchdog != null) ui.removeCallbacks(watchdog);
+              if (web != null) {
+                String u = web.getUrl();
+                if (u != null && u.startsWith("http")) url = u;
+              }
+              if (pres != null) { try { pres.dismiss(); } catch (Throwable t) { } pres = null; }
+              if (vd != null) { try { vd.release(); } catch (Throwable t) { } vd = null; }
+              if (web != null) {
+                ViewParent p = web.getParent();
+                if (p instanceof ViewGroup) ((ViewGroup) p).removeView(web);
+                try { web.stopLoading(); web.destroy(); } catch (Throwable t) { }
+                web = null;
+              }
+            }
+
+            void destroy() {
+              ui.post(new Runnable() { @Override public void run() { detach(); } });
+            }
+
+            /** Injeta um toque no WebView. px/py em pixels da pagina (0..pw, 0..ph). */
+            void touch(final int action, final float px, final float py) {
+              ui.post(new Runnable() {
+                @Override public void run() {
+                  if (web == null) return;
+                  long now = SystemClock.uptimeMillis();
+                  if (action == MotionEvent.ACTION_DOWN) downTime = now;
+                  MotionEvent e = MotionEvent.obtain(downTime, now, action, px, py, 0);
+                  e.setSource(InputDevice.SOURCE_TOUCHSCREEN);
+                  try { web.dispatchTouchEvent(e); } finally { e.recycle(); }
+                }
+              });
+            }
+
+            /** WebView que nunca abre o teclado do celular. */
+            static final class QuietWebView extends WebView {
+              QuietWebView(Context c) { super(c); }
+              @Override public boolean onCheckIsTextEditor() { return false; }
+              @Override public InputConnection onCreateInputConnection(EditorInfo o) { return null; }
+            }
+
+            private WebView newWeb(Context c) {
+              WebView v = new QuietWebView(c);
+              v.setBackgroundColor(Color.WHITE);
+              WebSettings s = v.getSettings();
+              s.setJavaScriptEnabled(true);
+              s.setDomStorageEnabled(true);
+              s.setMediaPlaybackRequiresUserGesture(false);
+              CookieManager.getInstance().setAcceptThirdPartyCookies(v, true);
+              v.setWebViewClient(new WebViewClient() {
+                @Override public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest r) {
+                  String u = r.getUrl().toString();
+                  return !(u.startsWith("http:") || u.startsWith("https:") || u.startsWith("about:") || u.startsWith("blob:") || u.startsWith("data:"));
+                }
+              });
+              return v;
+            }
+          }
+          EOF
+          cat > app/src/main/java/com/vr/launcher/ArOverlay.java <<'EOF'
+          package com.vr.launcher;
+
+          import android.content.Context;
+          import android.graphics.Canvas;
+          import android.graphics.Color;
+          import android.graphics.Paint;
+          import android.view.View;
+
+          /** Camada 2D por cima do GL: esqueleto da mao, cursor e informacoes de depuracao. */
+          final class ArOverlay extends View {
+
+            static final class Snap {
+              float[] skel;          // 42 floats em pixels da tela, ou null
+              float cx, cy;
+              boolean hasCursor, pinched;
+              int region;            // 0 nada, 1 corpo, 2 barra, 3 canto
+              float progress;        // reservado (punho para fechar, fases seguintes)
+              String[] lines;
+            }
+
+            private static final int[][] CONN = {
+              {0, 1}, {1, 2}, {2, 3}, {3, 4}, {0, 5}, {5, 6}, {6, 7}, {7, 8}, {5, 9}, {9, 10}, {10, 11}, {11, 12},
+              {9, 13}, {13, 14}, {14, 15}, {15, 16}, {13, 17}, {17, 18}, {18, 19}, {19, 20}, {0, 17}
+            };
+
+            private volatile Snap snap;
+            private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+            private final float d;
+
+            ArOverlay(Context c) {
+              super(c);
+              setWillNotDraw(false);
+              setClickable(false);
+              d = c.getResources().getDisplayMetrics().density;
+            }
+
+            void update(Snap s) {
+              snap = s;
+              postInvalidate();
+            }
+
+            @Override protected void onDraw(Canvas canvas) {
+              Snap s = snap;
+              if (s == null) return;
+
+              float[] k = s.skel;
+              if (k != null) {
+                paint.setStyle(Paint.Style.STROKE);
+                paint.setStrokeWidth(2f * d);
+                paint.setColor(Color.argb(100, 255, 255, 255));
+                for (int[] c : CONN) canvas.drawLine(k[2 * c[0]], k[2 * c[0] + 1], k[2 * c[1]], k[2 * c[1] + 1], paint);
+                paint.setStyle(Paint.Style.FILL);
+                paint.setColor(Color.argb(150, 255, 255, 255));
+                for (int i = 0; i < 21; i++) canvas.drawCircle(k[2 * i], k[2 * i + 1], 2.5f * d, paint);
+              }
+
+              if (s.hasCursor) {
+                int col = Color.WHITE;
+                if (s.pinched) col = Color.rgb(94, 234, 212);
+                else if (s.region == 2) col = Color.rgb(255, 214, 0);
+                else if (s.region == 3) col = Color.rgb(0, 230, 118);
+                paint.setStyle(Paint.Style.STROKE);
+                paint.setStrokeWidth(3f * d);
+                paint.setColor(col);
+                canvas.drawCircle(s.cx, s.cy, (s.pinched ? 10f : 16f) * d, paint);
+                paint.setStyle(Paint.Style.FILL);
+                canvas.drawCircle(s.cx, s.cy, 4f * d, paint);
+              }
+
+              String[] ln = s.lines;
+              if (ln != null) {
+                paint.setStyle(Paint.Style.FILL);
+                paint.setColor(Color.WHITE);
+                paint.setTextSize(12f * d);
+                paint.setShadowLayer(3f * d, 0f, 0f, Color.BLACK);
+                float y = 20f * d;
+                for (String t : ln) {
+                  if (t == null || t.length() == 0) continue;
+                  canvas.drawText(t, 10f * d, y, paint);
+                  y += 16f * d;
+                }
+                paint.clearShadowLayer();
+              }
+            }
+          }
+          EOF
+          cat > app/src/main/java/com/vr/launcher/ArRenderer.java <<'EOF'
+          package com.vr.launcher;
+
+          import android.graphics.Bitmap;
+          import android.graphics.Canvas;
+          import android.graphics.Color;
+          import android.graphics.Paint;
+          import android.graphics.Path;
+          import android.graphics.RectF;
+          import android.media.Image;
+          import android.opengl.GLES11Ext;
+          import android.opengl.GLES20;
+          import android.opengl.GLSurfaceView;
+          import android.opengl.GLUtils;
+          import android.opengl.Matrix;
+          import android.os.SystemClock;
+          import android.view.MotionEvent;
+          import com.google.ar.core.Anchor;
+          import com.google.ar.core.Camera;
+          import com.google.ar.core.Coordinates2d;
+          import com.google.ar.core.Frame;
+          import com.google.ar.core.Pose;
+          import com.google.ar.core.Session;
+          import com.google.ar.core.TrackingState;
+          import java.nio.ByteBuffer;
+          import java.nio.ByteOrder;
+          import java.nio.FloatBuffer;
+          import java.util.ArrayList;
+          import javax.microedition.khronos.egl.EGLConfig;
+          import javax.microedition.khronos.opengles.GL10;
+
+          /**
+           * Desenha o fundo da camera (ARCore) e as janelas ancoradas no mundo, e trata a mao:
+           * pinca no corpo da janela = toque, pinca na barra = mover, pinca no canto = redimensionar.
+           */
+          final class ArRenderer implements GLSurfaceView.Renderer {
+
+            // janela base (16:9) em metros; a escala s multiplica tudo
+            static final float HW = 0.32f, HH = 0.18f, CORNER_R = 0.016f;
+            // barra de mover (pilula branca embaixo da janela) e alca de redimensionar (canto inferior direito)
+            static final float BAR_CY = -(HH + 0.028f), BAR_W = 0.20f, BAR_H = 0.014f, BAR_HIT_X = 0.16f, BAR_HIT_Y = 0.032f;
+            static final float CS = 0.05f, CSX = HW - 0.013f, CSY = -HH + 0.013f, CS_HIT = 0.045f;
+            static final float CHROME_Z = 0.004f;
+
+            static final int R_NONE = 0, R_BODY = 1, R_BAR = 2, R_CORNER = 3;
+            // pinca: liga com as pontas coladas, so solta quando abre de verdade
+            static final float PINCH_ON = 0.16f, PINCH_OFF = 0.26f;
+            static final float S_MIN = 0.4f, S_MAX = 3f;
+
+            private static final class Win {
+              Pose pose; Anchor anchor; float s = 1f; final ArPanel panel;
+              Win(Pose pose, Anchor anchor, ArPanel panel) { this.pose = pose; this.anchor = anchor; this.panel = panel; }
+              Pose current() {
+                Anchor a = anchor;
+                return (a != null && a.getTrackingState() != TrackingState.STOPPED) ? a.getPose() : pose;
+              }
+            }
+
+            private static final class Hit {
+              final Win win; final float t, lx, ly; final int region;
+              Hit(Win win, float t, float lx, float ly, int region) { this.win = win; this.t = t; this.lx = lx; this.ly = ly; this.region = region; }
+            }
+
+            private final ArActivity act;
+            private final ArHand tracker;
+            private final ArPanel panel;
+
+            volatile Session session;
+            volatile ArOverlay overlay;
+            volatile boolean viewportChanged = true;
+            private volatile boolean recenterReq = false;
+            private volatile int handRot = 90;
+
+            private int vw = 0, vh = 0;
+            private boolean camTexSet = false;
+            private long lastFedTs = 0;
+            private String glError = "";
+            private String errorText = "";
+
+            // camera de fundo
+            private int camTex = 0, bgProg = 0, bgPosLoc = 0, bgUvLoc = 0, bgTexLoc = 0;
+            private final FloatBuffer bgQuad = floatBuf(new float[]{-1f, -1f, 1f, -1f, -1f, 1f, 1f, 1f});
+            private final FloatBuffer bgUv = floatBuf(new float[8]);
+
+            // janelas
+            private int winProg = 0, winPosLoc = 0, winUvLoc = 0, winMvpLoc = 0, winTexLoc = 0, winStmLoc = 0, winHalfLoc = 0, winRadLoc = 0, winFlatLoc = 0, winSLoc = 0;
+            private final FloatBuffer winVerts = floatBuf(new float[]{-HW, -HH, 0f, HW, -HH, 0f, -HW, HH, 0f, HW, HH, 0f});
+            private final FloatBuffer winUvs = floatBuf(new float[]{0f, 0f, 1f, 0f, 0f, 1f, 1f, 1f});
+
+            // barra e alca
+            private int flatProg = 0, flatPosLoc = 0, flatUvLoc = 0, flatMvpLoc = 0, flatTexLoc = 0, flatColLoc = 0;
+            private int barTex = 0, cornerTex = 0;
+            private final FloatBuffer unitVerts = floatBuf(new float[]{-0.5f, -0.5f, 0f, 0.5f, -0.5f, 0f, -0.5f, 0.5f, 0f, 0.5f, 0.5f, 0f});
+            private final FloatBuffer unitUvs = floatBuf(new float[]{0f, 1f, 1f, 1f, 0f, 0f, 1f, 0f});
+
+            private final float[] view = new float[16], proj = new float[16], vp = new float[16], invVp = new float[16];
+            private final float[] model = new float[16], tmp = new float[16], mvp = new float[16];
+
+            private final ArrayList<Win> wins = new ArrayList<>();
+
+            // mao e cursor (coordenadas de tela)
+            private long lastSeq = 0, tDet = 0, seenMs = 0, lastFrameMs = 0;
+            private final float[] viewPts = new float[42];
+            private boolean viewValid = false;
+            private float[] skel = null;
+            private final ArHand.OneEuro fX = new ArHand.OneEuro(1.5f, 0.02f, 1f), fY = new ArHand.OneEuro(1.5f, 0.02f, 1f);
+            private boolean firstSample = true;
+            private float cx = 0f, cy = 0f;
+            private float ratio = 1f, sizeS = 0.1f;
+            private boolean pinch = false;
+            private int pinchN = 0;
+            private boolean pinchWasOn = false;
+
+            private int hoverRegion = R_NONE;
+            private Win hoverWin = null;
+
+            // arrastos em andamento
+            private Win dragWin = null, sizeWin = null, touchWin = null;
+            private float grabDist = 1f, grabSize = 0.1f, grabLx = 0f, grabLy = 0f, distS = 1f;
+            private float sizeS0 = 1f, sizeD0 = 0.1f;
+            private float lastPx = -1f, lastPy = -1f;
+            private final float[] pl = new float[3];
+
+            private String trackText = "";
+            private String message = "";
+            private long messageUntil = 0, lastHud = 0;
+            private String[] hudLines = new String[0];
+
+            ArRenderer(ArActivity act, ArHand tracker, ArPanel panel) {
+              this.act = act; this.tracker = tracker; this.panel = panel;
+            }
+
+            void recenter() { recenterReq = true; }
+
+            // =============================================================
+            // Ciclo GL
+            // =============================================================
+
+            @Override public void onSurfaceCreated(GL10 gl, EGLConfig config) {
+              GLES20.glClearColor(0f, 0f, 0f, 1f);
+
+              int[] t = new int[1];
+              GLES20.glGenTextures(1, t, 0);
+              camTex = t[0];
+              GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, camTex);
+              GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
+              GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
+              GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR);
+              GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
+              camTexSet = false;
+
+              glError = "";
+              bgProg = program(BG_VS, BG_FS);
+              bgPosLoc = GLES20.glGetAttribLocation(bgProg, "a_Position");
+              bgUvLoc = GLES20.glGetAttribLocation(bgProg, "a_TexCoord");
+              bgTexLoc = GLES20.glGetUniformLocation(bgProg, "u_Texture");
+
+              winProg = program(WIN_VS, WIN_FS);
+              winPosLoc = GLES20.glGetAttribLocation(winProg, "a_Pos");
+              winUvLoc = GLES20.glGetAttribLocation(winProg, "a_Uv");
+              winMvpLoc = GLES20.glGetUniformLocation(winProg, "u_Mvp");
+              winTexLoc = GLES20.glGetUniformLocation(winProg, "u_Tex");
+              winStmLoc = GLES20.glGetUniformLocation(winProg, "u_Stm");
+              winHalfLoc = GLES20.glGetUniformLocation(winProg, "u_Half");
+              winRadLoc = GLES20.glGetUniformLocation(winProg, "u_R");
+              winFlatLoc = GLES20.glGetUniformLocation(winProg, "u_Flat");
+              winSLoc = GLES20.glGetUniformLocation(winProg, "u_S");
+
+              flatProg = program(FLAT_VS, FLAT_FS);
+              flatPosLoc = GLES20.glGetAttribLocation(flatProg, "a_Pos");
+              flatUvLoc = GLES20.glGetAttribLocation(flatProg, "a_Uv");
+              flatMvpLoc = GLES20.glGetUniformLocation(flatProg, "u_Mvp");
+              flatTexLoc = GLES20.glGetUniformLocation(flatProg, "u_Tex");
+              flatColLoc = GLES20.glGetUniformLocation(flatProg, "u_Col");
+
+              barTex = bitmapTex(makeBar());
+              cornerTex = bitmapTex(makeCorner());
+
+              panel.glInit();
+            }
+
+            @Override public void onSurfaceChanged(GL10 gl, int width, int height) {
+              GLES20.glViewport(0, 0, width, height);
+              vw = width;
+              vh = height;
+              viewportChanged = true;
+            }
+
+            @Override public void onDrawFrame(GL10 gl) {
+              GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT | GLES20.GL_DEPTH_BUFFER_BIT);
+              Session s = session;
+              if (s == null) return;
+
+              try {
+                if (!camTexSet) {
+                  s.setCameraTextureName(camTex);
+                  camTexSet = true;
+                }
+                if (viewportChanged && vw > 0 && vh > 0) {
+                  s.setDisplayGeometry(act.displayRotation(), vw, vh);
+                  viewportChanged = false;
+                }
+
+                panel.update();
+
+                Frame frame = s.update();
+                Camera camera = frame.getCamera();
+
+                if (frame.hasDisplayGeometryChanged()) {
+                  bgQuad.position(0);
+                  bgUv.position(0);
+                  frame.transformCoordinates2d(Coordinates2d.OPENGL_NORMALIZED_DEVICE_COORDINATES, bgQuad, Coordinates2d.TEXTURE_NORMALIZED, bgUv);
+                  bgQuad.position(0);
+                  bgUv.position(0);
+                  probeRotation(frame);
+                }
+
+                drawBackground();
+
+                camera.getViewMatrix(view, 0);
+                camera.getProjectionMatrix(proj, 0, 0.1f, 30f);
+                Matrix.multiplyMM(vp, 0, proj, 0, view, 0);
+                Matrix.invertM(invVp, 0, vp, 0);
+
+                boolean tracking = camera.getTrackingState() == TrackingState.TRACKING;
+                trackText = tracking ? "rastreando" : ("sem rastreio: " + camera.getTrackingFailureReason());
+
+                if (recenterReq) {
+                  recenterReq = false;
+                  resetInteraction();
+                  for (Win w : wins) { if (w.anchor != null) w.anchor.detach(); }
+                  wins.clear();
+                  say("Janela centralizada");
+                }
+                Pose camPose = camera.getDisplayOrientedPose();
+                if (tracking && wins.isEmpty() && panel != null) createFirstWindow(s, camPose);
+
+                feedTracker(frame);
+                updateInteraction(s, frame, camPose.getTranslation());
+
+                drawWindows();
+                errorText = "";
+              } catch (Throwable e) {
+                errorText = e.toString();
+              }
+              publishOverlay();
+            }
+
+            /** Descobre como girar a imagem da camera para ficar "em pe" na tela atual (0, 90, 180 ou 270). */
+            private void probeRotation(Frame frame) {
+              float[] in = {0f, 0f, 1f, 0f, 0f, 1f};
+              float[] out = new float[6];
+              frame.transformCoordinates2d(Coordinates2d.IMAGE_NORMALIZED, in, Coordinates2d.VIEW, out);
+              float ex = out[2] - out[0], ey = out[3] - out[1];   // para onde aponta o eixo x da imagem na tela
+              int r;
+              if (Math.abs(ex) >= Math.abs(ey)) r = ex >= 0f ? 0 : 180;
+              else r = ey >= 0f ? 90 : 270;
+              handRot = r;
+            }
+
+            private void feedTracker(Frame frame) {
+              long ts = frame.getTimestamp();
+              if (ts == lastFedTs || !tracker.wants()) return;
+              try {
+                Image img = frame.acquireCameraImage();
+                try {
+                  if (tracker.submit(img, handRot)) lastFedTs = ts;
+                } finally {
+                  img.close();
+                }
+              } catch (Exception e) {
+                // imagem ainda indisponivel
+              }
+            }
+
+            // =============================================================
+            // Janelas
+            // =============================================================
+
+            private void createFirstWindow(Session s, Pose cp) {
+              float[] t = cp.getTranslation();
+              float[] f = cp.transformPoint(new float[]{0f, 0f, -1f});
+              float fx = f[0] - t[0], fz = f[2] - t[2];
+              float len = (float) Math.sqrt(fx * fx + fz * fz);
+              if (len < 0.001f) { fx = 0f; fz = -1f; len = 1f; }
+              float dist = 1.2f;
+              float px = t[0] + fx / len * dist, pz = t[2] + fz / len * dist;
+              float yaw = (float) Math.atan2(t[0] - px, t[2] - pz);
+              Pose pose = new Pose(new float[]{px, t[1], pz}, new float[]{0f, (float) Math.sin(yaw / 2f), 0f, (float) Math.cos(yaw / 2f)});
+              Anchor a = null;
+              try { a = s.createAnchor(pose); } catch (Throwable e) { a = null; }
+              wins.add(new Win(pose, a, panel));
+            }
+
+            private void drawWindows() {
+              if (winProg == 0 || wins.isEmpty()) return;
+
+              GLES20.glEnable(GLES20.GL_DEPTH_TEST);
+              GLES20.glDisable(GLES20.GL_CULL_FACE);
+              GLES20.glDisable(GLES20.GL_BLEND);
+              GLES20.glUseProgram(winProg);
+              GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
+              GLES20.glUniform1i(winTexLoc, 0);
+              winVerts.position(0);
+              winUvs.position(0);
+              GLES20.glVertexAttribPointer(winPosLoc, 3, GLES20.GL_FLOAT, false, 0, winVerts);
+              GLES20.glVertexAttribPointer(winUvLoc, 2, GLES20.GL_FLOAT, false, 0, winUvs);
+              GLES20.glEnableVertexAttribArray(winPosLoc);
+              GLES20.glEnableVertexAttribArray(winUvLoc);
+              for (Win w : wins) {
+                GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, w.panel.tex);
+                GLES20.glUniformMatrix4fv(winStmLoc, 1, false, w.panel.stm, 0);
+                GLES20.glUniform1f(winFlatLoc, w.panel.got ? 0f : 1f);
+                GLES20.glUniform2f(winHalfLoc, HW * w.s, HH * w.s);
+                GLES20.glUniform1f(winRadLoc, CORNER_R * w.s);
+                GLES20.glUniform1f(winSLoc, w.s);
+                modelOf(w);
+                Matrix.multiplyMM(mvp, 0, vp, 0, model, 0);
+                GLES20.glUniformMatrix4fv(winMvpLoc, 1, false, mvp, 0);
+                GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
+              }
+              GLES20.glDisableVertexAttribArray(winPosLoc);
+              GLES20.glDisableVertexAttribArray(winUvLoc);
+
+              // barra e alca: por cima, com transparencia
+              if (flatProg == 0) return;
+              GLES20.glEnable(GLES20.GL_BLEND);
+              GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE_MINUS_SRC_ALPHA);
+              GLES20.glDepthMask(false);
+              GLES20.glUseProgram(flatProg);
+              GLES20.glUniform1i(flatTexLoc, 0);
+              unitVerts.position(0);
+              unitUvs.position(0);
+              GLES20.glVertexAttribPointer(flatPosLoc, 3, GLES20.GL_FLOAT, false, 0, unitVerts);
+              GLES20.glVertexAttribPointer(flatUvLoc, 2, GLES20.GL_FLOAT, false, 0, unitUvs);
+              GLES20.glEnableVertexAttribArray(flatPosLoc);
+              GLES20.glEnableVertexAttribArray(flatUvLoc);
+              for (Win w : wins) {
+                modelOf(w);
+                boolean barOn = (dragWin == w) || (dragWin == null && sizeWin == null && hoverWin == w && hoverRegion == R_BAR);
+                boolean cornOn = (sizeWin == w) || (dragWin == null && sizeWin == null && hoverWin == w && hoverRegion == R_CORNER);
+                boolean barAct = dragWin == w, cornAct = sizeWin == w;
+                chrome(barTex, 0f, BAR_CY, BAR_W * (barOn ? 1.2f : 1f), BAR_H * (barOn ? 1.5f : 1f), barOn, barAct);
+                chrome(cornerTex, CSX, CSY, CS * (cornOn ? 1.25f : 1f), CS * (cornOn ? 1.25f : 1f), cornOn, cornAct);
+              }
+              GLES20.glDisableVertexAttribArray(flatPosLoc);
+              GLES20.glDisableVertexAttribArray(flatUvLoc);
+              GLES20.glDepthMask(true);
+              GLES20.glDisable(GLES20.GL_BLEND);
+            }
+
+            /** model = pose da janela * escala (so em x e y). */
+            private void modelOf(Win w) {
+              w.current().toMatrix(model, 0);
+              Matrix.scaleM(model, 0, w.s, w.s, 1f);
+            }
+
+            private void chrome(int tex, float x, float y, float sx, float sy, boolean on, boolean active) {
+              System.arraycopy(model, 0, tmp, 0, 16);
+              Matrix.translateM(tmp, 0, x, y, CHROME_Z);
+              Matrix.scaleM(tmp, 0, sx, sy, 1f);
+              Matrix.multiplyMM(mvp, 0, vp, 0, tmp, 0);
+              GLES20.glUniformMatrix4fv(flatMvpLoc, 1, false, mvp, 0);
+              GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, tex);
+              float r = 1f, g = 1f, b = 1f, a = on ? 1f : 0.85f;
+              if (active) { r = 0.37f; g = 0.92f; b = 0.83f; }
+              GLES20.glUniform4f(flatColLoc, r * a, g * a, b * a, a);
+              GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
+            }
+
+            // =============================================================
+            // Mao: cursor, pinca, toque, mover e redimensionar
+            // =============================================================
+
+            private void resetInteraction() {
+              if (touchWin != null) sendTouch(touchWin, MotionEvent.ACTION_CANCEL, lastPx, lastPy);
+              dragWin = null; sizeWin = null; touchWin = null;
+              pinchWasOn = false;
+            }
+
+            private void onDetection(Frame frame, ArHand.Result r, long now) {
+              tDet = now;
+              if (r == null) {
+                viewValid = false; pinch = false; pinchN = 0; firstSample = true;
+                fX.reset(); fY.reset();
+                return;
+              }
+              seenMs = now;
+              frame.transformCoordinates2d(Coordinates2d.IMAGE_NORMALIZED, r.pts, Coordinates2d.VIEW, viewPts);
+              viewValid = true;
+              ratio = r.ratio;
+              sizeS = firstSample ? r.size : sizeS + (r.size - sizeS) * 0.3f;
+
+              pinch = pinch ? ratio < PINCH_OFF : ratio < PINCH_ON;
+              if (pinch) pinchN++; else pinchN = 0;
+
+              // ponto do cursor: ponta do indicador com a mao aberta, meio da pinca com a mao fechando
+              float w = Math.max(0f, Math.min(1f, (0.6f - ratio) / 0.35f));
+              float x8 = viewPts[16], y8 = viewPts[17], x4 = viewPts[8], y4 = viewPts[9];
+              float rx = x8 * (1f - w) + (x4 + x8) * 0.5f * w;
+              float ry = y8 * (1f - w) + (y4 + y8) * 0.5f * w;
+              fX.f(rx, now);
+              fY.f(ry, now);
+              if (firstSample) { cx = fX.x; cy = fY.x; firstSample = false; }
+            }
+
+            private void updateInteraction(Session s, Frame frame, float[] camPos) {
+              long now = SystemClock.uptimeMillis();
+              float dt = lastFrameMs == 0 ? 0.016f : Math.min(0.1f, (now - lastFrameMs) / 1000f);
+              lastFrameMs = now;
+
+              long sq = tracker.detSeq;
+              if (sq != lastSeq) {
+                lastSeq = sq;
+                onDetection(frame, tracker.latest, now);
+              }
+              boolean has = seenMs > 0 && now - seenMs < 300;
+
+              if (has) {
+                float lead = Math.min(0.09f, (now - tDet) / 1000f + 0.02f);
+                float kc = 1f - (float) Math.exp(-dt * 35f), ks = 1f - (float) Math.exp(-dt * 25f);
+                cx += (fX.x + fX.v * lead - cx) * kc;
+                cy += (fY.x + fY.v * lead - cy) * kc;
+                if (viewValid) {
+                  if (skel == null) skel = viewPts.clone();
+                  else for (int i = 0; i < 42; i++) skel[i] += (viewPts[i] - skel[i]) * ks;
+                }
+              } else {
+                skel = null;
+              }
+
+              boolean pinchOn = has && pinch && pinchN >= 2;
+              hoverRegion = R_NONE;
+              hoverWin = null;
+
+              float[] dir = null;
+              Hit hit = null;
+              if (has && vw > 0) {
+                dir = rayDir(cx, cy, camPos);
+                hit = raycast(camPos, dir);
+                if (hit != null) { hoverWin = hit.win; hoverRegion = hit.region; }
+              }
+
+              if (pinchOn && !pinchWasOn) {
+                if (hit != null) grab(s, hit);
+              } else if (!pinchOn && pinchWasOn) {
+                release(s);
+              }
+              pinchWasOn = pinchOn;
+
+              if (pinchOn && dir != null) {
+                if (sizeWin != null) doResize(camPos, dir);
+                else if (dragWin != null) doDrag(camPos, dir);
+                else if (touchWin != null) doTouchMove(camPos, dir);
+              }
+            }
+
+            private void grab(Session s, Hit h) {
+              Win w = h.win;
+              if (h.region == R_CORNER) {
+                sizeWin = w;
+                sizeS0 = w.s;
+                sizeD0 = Math.max(0.05f, (float) Math.hypot(h.lx, h.ly));
+              } else if (h.region == R_BAR) {
+                w.pose = w.current();
+                if (w.anchor != null) { w.anchor.detach(); w.anchor = null; }
+                dragWin = w;
+                grabDist = h.t;
+                grabSize = Math.max(sizeS, 0.001f);
+                grabLx = h.lx;
+                grabLy = h.ly;
+                distS = h.t;
+              } else if (h.region == R_BODY) {
+                touchWin = w;
+                lastPx = toPx(h.lx / w.s, true);
+                lastPy = toPx(h.ly / w.s, false);
+                sendTouch(w, MotionEvent.ACTION_DOWN, lastPx, lastPy);
+              }
+            }
+
+            private void release(Session s) {
+              if (touchWin != null) {
+                sendTouch(touchWin, MotionEvent.ACTION_UP, lastPx, lastPy);
+                touchWin = null;
+              }
+              sizeWin = null;
+              Win w = dragWin;
+              if (w != null) {
+                dragWin = null;
+                try { w.anchor = s.createAnchor(w.pose); } catch (Throwable e) { w.anchor = null; }
+              }
+            }
+
+            private void doResize(float[] camPos, float[] dir) {
+              Win w = sizeWin;
+              if (!planeHit(w, camPos, dir, pl)) return;
+              float d = (float) Math.hypot(pl[0], pl[1]);
+              float target = Math.max(S_MIN, Math.min(S_MAX, sizeS0 * d / sizeD0));
+              w.s += (target - w.s) * 0.5f;
+            }
+
+            /** Mover: a janela segue a mira do dedo; a distancia vem do tamanho da mao (mao mais perto = janela mais perto). */
+            private void doDrag(float[] camPos, float[] dir) {
+              Win w = dragWin;
+              float d = grabDist * grabSize / Math.max(sizeS, 0.001f);
+              d = Math.max(0.3f, Math.min(6f, d));
+              distS += (d - distS) * 0.3f;
+              float pX = camPos[0] + dir[0] * distS, pY = camPos[1] + dir[1] * distS, pZ = camPos[2] + dir[2] * distS;
+              float yaw = (float) Math.atan2(camPos[0] - pX, camPos[2] - pZ);
+              float c = (float) Math.cos(yaw), sn = (float) Math.sin(yaw);
+              float offX = grabLx * c, offY = grabLy, offZ = -grabLx * sn;
+              w.pose = new Pose(new float[]{pX - offX, pY - offY, pZ - offZ}, new float[]{0f, (float) Math.sin(yaw / 2f), 0f, (float) Math.cos(yaw / 2f)});
+            }
+
+            private void doTouchMove(float[] camPos, float[] dir) {
+              Win w = touchWin;
+              if (!planeHit(w, camPos, dir, pl)) return;
+              float px = toPx(pl[0] / w.s, true), py = toPx(pl[1] / w.s, false);
+              if (Math.abs(px - lastPx) < 0.5f && Math.abs(py - lastPy) < 0.5f) return;
+              lastPx = px; lastPy = py;
+              sendTouch(w, MotionEvent.ACTION_MOVE, px, py);
+            }
+
+            /** Coordenada local da janela (em metros, escala 1) para pixel da pagina. */
+            private float toPx(float local, boolean horizontal) {
+              float p = horizontal ? (local + HW) / (2f * HW) * panel.pw : (HH - local) / (2f * HH) * panel.ph;
+              float max = (horizontal ? panel.pw : panel.ph) - 1f;
+              return Math.max(0f, Math.min(max, p));
+            }
+
+            private void sendTouch(Win w, int action, float px, float py) {
+              w.panel.touch(action, px, py);
+            }
+
+            private float[] rayDir(float px, float py, float[] cam) {
+              float nx = 2f * px / vw - 1f, ny = 1f - 2f * py / vh;
+              float[] v = {nx, ny, 1f, 1f};
+              float[] o = new float[4];
+              Matrix.multiplyMV(o, 0, invVp, 0, v, 0);
+              float dx = o[0] / o[3] - cam[0], dy = o[1] / o[3] - cam[1], dz = o[2] / o[3] - cam[2];
+              float len = (float) Math.sqrt(dx * dx + dy * dy + dz * dz);
+              if (len > 0f) { dx /= len; dy /= len; dz /= len; }
+              return new float[]{dx, dy, dz};
+            }
+
+            private Hit raycast(float[] o, float[] d) {
+              Hit best = null;
+              for (Win w : wins) {
+                if (!planeHit(w, o, d, pl)) continue;
+                int reg = region(pl[0] / w.s, pl[1] / w.s);
+                if (reg == R_NONE) continue;
+                if (best == null || pl[2] < best.t) best = new Hit(w, pl[2], pl[0], pl[1], reg);
+              }
+              return best;
+            }
+
+            /** Cruza o raio com o plano da janela. out = {x local, y local, t} em metros reais. */
+            private boolean planeHit(Win w, float[] o, float[] d, float[] out) {
+              Pose inv = w.current().inverse();
+              float[] lo = inv.transformPoint(o);
+              float[] ld = inv.rotateVector(d);
+              if (Math.abs(ld[2]) < 1e-4f) return false;
+              float t = -lo[2] / ld[2];
+              if (t <= 0f) return false;
+              out[0] = lo[0] + t * ld[0];
+              out[1] = lo[1] + t * ld[1];
+              out[2] = t;
+              return true;
+            }
+
+            /** x, y em metros com a janela na escala 1. */
+            private static int region(float x, float y) {
+              if (Math.abs(x - CSX) <= CS_HIT && Math.abs(y - CSY) <= CS_HIT) return R_CORNER;
+              if (Math.abs(x) <= BAR_HIT_X && Math.abs(y - BAR_CY) <= BAR_HIT_Y) return R_BAR;
+              if (Math.abs(x) <= HW && Math.abs(y) <= HH) return R_BODY;
+              return R_NONE;
+            }
+
+            private void say(String m) {
+              message = m;
+              messageUntil = SystemClock.uptimeMillis() + 2500;
+            }
+
+            private void publishOverlay() {
+              ArOverlay ov = overlay;
+              if (ov == null) return;
+              long now = SystemClock.uptimeMillis();
+              if (now - lastHud > 250) {
+                lastHud = now;
+                String l1 = "AR: " + trackText + "  janelas: " + wins.size();
+                String l2 = "mao: " + (skel != null ? "sim" : "nao") + "  pinca: " + String.format("%.2f", ratio)
+                  + "  det: " + Math.round(tracker.detFps) + " fps / " + Math.round(tracker.detMs) + " ms";
+                String l3 = "painel: " + panel.where + "  quadros: " + panel.frames + (panel.got ? "" : " (sem imagem)");
+                String l4 = !"ok".equals(tracker.status) ? tracker.status : "";
+                String l5 = panel.err;
+                String l6 = glError;
+                String l7 = errorText;
+                String l8 = now < messageUntil ? message : "";
+                String l9 = "toque no topo: esquerda = trocar modo do painel, direita = recentrar";
+                hudLines = new String[]{l1, l2, l3, l4, l5, l6, l7, l8, l9};
+              }
+              ArOverlay.Snap sn = new ArOverlay.Snap();
+              sn.skel = skel == null ? null : skel.clone();
+              sn.cx = cx; sn.cy = cy;
+              sn.hasCursor = skel != null;
+              sn.pinched = pinchWasOn;
+              sn.region = hoverRegion;
+              sn.lines = hudLines;
+              ov.update(sn);
+            }
+
+            // =============================================================
+            // Fundo, programas e texturas
+            // =============================================================
+
+            private void drawBackground() {
+              GLES20.glDisable(GLES20.GL_DEPTH_TEST);
+              GLES20.glDepthMask(false);
+              GLES20.glUseProgram(bgProg);
+              GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
+              GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, camTex);
+              GLES20.glUniform1i(bgTexLoc, 0);
+              bgQuad.position(0);
+              bgUv.position(0);
+              GLES20.glVertexAttribPointer(bgPosLoc, 2, GLES20.GL_FLOAT, false, 0, bgQuad);
+              GLES20.glVertexAttribPointer(bgUvLoc, 2, GLES20.GL_FLOAT, false, 0, bgUv);
+              GLES20.glEnableVertexAttribArray(bgPosLoc);
+              GLES20.glEnableVertexAttribArray(bgUvLoc);
+              GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
+              GLES20.glDisableVertexAttribArray(bgPosLoc);
+              GLES20.glDisableVertexAttribArray(bgUvLoc);
+              GLES20.glDepthMask(true);
+            }
+
+            private static Bitmap makeBar() {
+              Bitmap b = Bitmap.createBitmap(256, 32, Bitmap.Config.ARGB_8888);
+              Canvas c = new Canvas(b);
+              Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+              p.setColor(Color.WHITE);
+              c.drawRoundRect(new RectF(0f, 4f, 256f, 28f), 12f, 12f, p);
+              return b;
+            }
+
+            private static Bitmap makeCorner() {
+              Bitmap b = Bitmap.createBitmap(128, 128, Bitmap.Config.ARGB_8888);
+              Canvas c = new Canvas(b);
+              Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+              p.setColor(Color.WHITE);
+              p.setStyle(Paint.Style.STROKE);
+              p.setStrokeWidth(14f);
+              p.setStrokeCap(Paint.Cap.ROUND);
+              Path path = new Path();
+              path.moveTo(114f, 12f);
+              path.lineTo(114f, 70f);
+              path.quadTo(114f, 114f, 70f, 114f);
+              path.lineTo(12f, 114f);
+              c.drawPath(path, p);
+              return b;
+            }
+
+            private static int bitmapTex(Bitmap bmp) {
+              int[] t = new int[1];
+              GLES20.glGenTextures(1, t, 0);
+              GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, t[0]);
+              GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR);
+              GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
+              GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
+              GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
+              GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bmp, 0);
+              bmp.recycle();
+              return t[0];
+            }
+
+            private int program(String vs, String fs) {
+              int v = shader(GLES20.GL_VERTEX_SHADER, vs);
+              int f = shader(GLES20.GL_FRAGMENT_SHADER, fs);
+              if (v == 0 || f == 0) return 0;
+              int p = GLES20.glCreateProgram();
+              GLES20.glAttachShader(p, v);
+              GLES20.glAttachShader(p, f);
+              GLES20.glLinkProgram(p);
+              int[] ok = new int[1];
+              GLES20.glGetProgramiv(p, GLES20.GL_LINK_STATUS, ok, 0);
+              if (ok[0] == 0) {
+                glError = "link: " + GLES20.glGetProgramInfoLog(p);
+                return 0;
+              }
+              return p;
+            }
+
+            private int shader(int type, String src) {
+              int sh = GLES20.glCreateShader(type);
+              GLES20.glShaderSource(sh, src);
+              GLES20.glCompileShader(sh);
+              int[] ok = new int[1];
+              GLES20.glGetShaderiv(sh, GLES20.GL_COMPILE_STATUS, ok, 0);
+              if (ok[0] == 0) {
+                glError = "shader: " + GLES20.glGetShaderInfoLog(sh);
+                return 0;
+              }
+              return sh;
+            }
+
+            private static FloatBuffer floatBuf(float[] a) {
+              FloatBuffer fb = ByteBuffer.allocateDirect(a.length * 4).order(ByteOrder.nativeOrder()).asFloatBuffer();
+              fb.put(a);
+              fb.position(0);
+              return fb;
+            }
+
+            private static final String BG_VS =
+              "attribute vec4 a_Position;\n" +
+              "attribute vec2 a_TexCoord;\n" +
+              "varying vec2 v_TexCoord;\n" +
+              "void main() { gl_Position = a_Position; v_TexCoord = a_TexCoord; }\n";
+
+            private static final String BG_FS =
+              "#extension GL_OES_EGL_image_external : require\n" +
+              "precision mediump float;\n" +
+              "varying vec2 v_TexCoord;\n" +
+              "uniform samplerExternalOES u_Texture;\n" +
+              "void main() { gl_FragColor = texture2D(u_Texture, v_TexCoord); }\n";
+
+            // janela: textura externa (WebView) com cantos arredondados
+            private static final String WIN_VS =
+              "uniform mat4 u_Mvp;\n" +
+              "uniform float u_S;\n" +
+              "attribute vec4 a_Pos;\n" +
+              "attribute vec2 a_Uv;\n" +
+              "varying vec2 v_Uv;\n" +
+              "varying vec2 v_P;\n" +
+              "void main() { gl_Position = u_Mvp * a_Pos; v_Uv = a_Uv; v_P = a_Pos.xy * u_S; }\n";
+
+            private static final String WIN_FS =
+              "#extension GL_OES_EGL_image_external : require\n" +
+              "precision mediump float;\n" +
+              "varying vec2 v_Uv;\n" +
+              "varying vec2 v_P;\n" +
+              "uniform samplerExternalOES u_Tex;\n" +
+              "uniform mat4 u_Stm;\n" +
+              "uniform vec2 u_Half;\n" +
+              "uniform float u_R;\n" +
+              "uniform float u_Flat;\n" +
+              "void main() {\n" +
+              "  vec2 q = abs(v_P) - (u_Half - vec2(u_R));\n" +
+              "  float d = length(max(q, 0.0)) - u_R;\n" +
+              "  if (d > 0.0) discard;\n" +
+              "  vec2 uv = (u_Stm * vec4(v_Uv, 0.0, 1.0)).xy;\n" +
+              "  vec3 c = texture2D(u_Tex, uv).rgb;\n" +
+              "  gl_FragColor = vec4(mix(c, vec3(0.08, 0.09, 0.12), u_Flat), 1.0);\n" +
+              "}\n";
+
+            private static final String FLAT_VS =
+              "uniform mat4 u_Mvp;\n" +
+              "attribute vec4 a_Pos;\n" +
+              "attribute vec2 a_Uv;\n" +
+              "varying vec2 v_Uv;\n" +
+              "void main() { gl_Position = u_Mvp * a_Pos; v_Uv = a_Uv; }\n";
+
+            private static final String FLAT_FS =
+              "precision mediump float;\n" +
+              "varying vec2 v_Uv;\n" +
+              "uniform sampler2D u_Tex;\n" +
+              "uniform vec4 u_Col;\n" +
+              "void main() { gl_FragColor = texture2D(u_Tex, v_Uv) * u_Col; }\n";
+          }
+          EOF
+          cat > app/src/main/java/com/vr/launcher/ArActivity.java <<'EOF'
+          package com.vr.launcher;
+
+          import android.Manifest;
+          import android.app.Activity;
+          import android.content.pm.PackageManager;
+          import android.hardware.display.DisplayManager;
+          import android.opengl.GLSurfaceView;
+          import android.os.Bundle;
+          import android.os.Handler;
+          import android.os.Looper;
+          import android.util.Size;
+          import android.view.Display;
+          import android.view.MotionEvent;
+          import android.view.View;
+          import android.view.ViewGroup;
+          import android.view.WindowManager;
+          import android.widget.FrameLayout;
+          import android.widget.Toast;
+          import com.google.ar.core.ArCoreApk;
+          import com.google.ar.core.CameraConfig;
+          import com.google.ar.core.CameraConfigFilter;
+          import com.google.ar.core.Config;
+          import com.google.ar.core.Session;
+          import java.util.EnumSet;
+          import java.util.List;
+
+          /**
+           * "VR Launcher AR": versao com ARCore. As janelas ficam ancoradas no ambiente.
+           * Fase 1: uma janela do Google (WebView em textura), mao, mover/redimensionar/tocar.
+           */
+          public class ArActivity extends Activity {
+
+            static final String HOME = "https://www.google.com/";
+            // janela base: 960x540 px a 280 dpi (mesma densidade que o app atual usa no Moto G8)
+            static final int PW = 960, PH = 540, DPI = 280;
+
+            private FrameLayout root;
+            private GLSurfaceView gl;
+            private ArRenderer renderer;
+            private ArOverlay overlay;
+            private ArHand tracker;
+            private ArPanel panel;
+            private Session session;
+            private boolean installRequested = false;
+            private final Handler ui = new Handler(Looper.getMainLooper());
+            private float density = 1f;
+
+            private final DisplayManager.DisplayListener dl = new DisplayManager.DisplayListener() {
+              @Override public void onDisplayAdded(int id) { }
+              @Override public void onDisplayRemoved(int id) { }
+              @Override public void onDisplayChanged(int id) {
+                // celular girou entre paisagem esquerda e direita: o ARCore precisa saber
+                if (id == Display.DEFAULT_DISPLAY && renderer != null) renderer.viewportChanged = true;
+              }
+            };
+
+            @Override protected void onCreate(Bundle b) {
+              super.onCreate(b);
+              getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+              if (android.os.Build.VERSION.SDK_INT >= 28) {
+                WindowManager.LayoutParams lp = getWindow().getAttributes();
+                lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+                getWindow().setAttributes(lp);
+              }
+              density = getResources().getDisplayMetrics().density;
+
+              tracker = new ArHand(getApplicationContext());
+              panel = new ArPanel(this, PW, PH, DPI, HOME);
+              overlay = new ArOverlay(this);
+              renderer = new ArRenderer(this, tracker, panel);
+              renderer.overlay = overlay;
+
+              gl = new GLSurfaceView(this);
+              gl.setPreserveEGLContextOnPause(true);
+              gl.setEGLContextClientVersion(2);
+              gl.setEGLConfigChooser(8, 8, 8, 8, 16, 0);
+              gl.setRenderer(renderer);
+              gl.setRenderMode(GLSurfaceView.RENDERMODE_CONTINUOUSLY);
+
+              root = new FrameLayout(this);
+              root.addView(gl, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+              root.addView(overlay, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+              setContentView(root);
+
+              DisplayManager dm = (DisplayManager) getSystemService(DISPLAY_SERVICE);
+              dm.registerDisplayListener(dl, ui);
+            }
+
+            // ---- usados pelo renderer e pelo painel ----
+
+            @SuppressWarnings("deprecation")
+            int displayRotation() {
+              return getWindowManager().getDefaultDisplay().getRotation();
+            }
+
+            void queueGl(Runnable r) {
+              if (gl != null) gl.queueEvent(r);
+            }
+
+            /** Modo plano B do painel: o WebView fica por tras do GL, mas ainda "visivel" para o Android. */
+            void addPanelView(View v, int w, int h) {
+              root.addView(v, 0, new FrameLayout.LayoutParams(w, h));
+            }
+
+            // ---- ciclo de vida ----
+
+            @Override protected void onResume() {
+              super.onResume();
+              if (checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(new String[]{Manifest.permission.CAMERA}, 1);
+                return;
+              }
+              try {
+                if (session == null) {
+                  ArCoreApk.InstallStatus st = ArCoreApk.getInstance().requestInstall(this, !installRequested);
+                  if (st == ArCoreApk.InstallStatus.INSTALL_REQUESTED) {
+                    installRequested = true;
+                    return;
+                  }
+                  Session s = new Session(this);
+                  configure(s);
+                  session = s;
+                  renderer.session = s;
+                }
+                session.resume();
+              } catch (Exception e) {
+                Toast.makeText(this, "Erro ARCore: " + e, Toast.LENGTH_LONG).show();
+                return;
+              }
+              gl.onResume();
+            }
+
+            @Override protected void onPause() {
+              super.onPause();
+              if (session != null) {
+                gl.onPause();
+                session.pause();
+              }
+            }
+
+            @Override protected void onDestroy() {
+              DisplayManager dm = (DisplayManager) getSystemService(DISPLAY_SERVICE);
+              dm.unregisterDisplayListener(dl);
+              tracker.close();
+              panel.destroy();
+              if (session != null) { session.close(); session = null; }
+              super.onDestroy();
+            }
+
+            @Override public void onRequestPermissionsResult(int code, String[] perms, int[] res) {
+              super.onRequestPermissionsResult(code, perms, res);
+              if (res.length == 0 || res[0] != PackageManager.PERMISSION_GRANTED) {
+                Toast.makeText(this, "Preciso da permissao da camera", Toast.LENGTH_LONG).show();
+                finish();
+              }
+            }
+
+            @Override public void onWindowFocusChanged(boolean focus) {
+              super.onWindowFocusChanged(focus);
+              if (focus) {
+                getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                  | View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY | View.SYSTEM_UI_FLAG_LAYOUT_STABLE | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                  | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
+              }
+            }
+
+            /** Depuracao pelo toque na tela: topo esquerdo = trocar modo do painel, topo direito = recentrar a janela. */
+            @Override public boolean onTouchEvent(MotionEvent e) {
+              if (e.getAction() == MotionEvent.ACTION_DOWN && e.getY() < 150f * density) {
+                if (e.getX() < root.getWidth() / 2f) {
+                  panel.mode = panel.mode == ArPanel.VD ? ArPanel.SW : ArPanel.VD;
+                  queueGl(new Runnable() { @Override public void run() { panel.newSurface(); } });
+                  Toast.makeText(this, panel.mode == ArPanel.VD ? "Painel: tela virtual" : "Painel: software", Toast.LENGTH_SHORT).show();
+                } else {
+                  renderer.recenter();
+                }
+                return true;
+              }
+              return super.onTouchEvent(e);
+            }
+
+            // ---- configuracao do ARCore: so o que usamos ----
+
+            private void configure(Session s) {
+              Config c = new Config(s);
+              c.setFocusMode(Config.FocusMode.AUTO);
+              c.setUpdateMode(Config.UpdateMode.LATEST_CAMERA_IMAGE);
+              c.setPlaneFindingMode(Config.PlaneFindingMode.DISABLED);
+              c.setLightEstimationMode(Config.LightEstimationMode.DISABLED);
+              s.configure(c);
+              try {
+                // 30 fps e a menor textura que ainda tenha pelo menos 1280 de largura: menos carga na GPU fraca
+                CameraConfigFilter f = new CameraConfigFilter(s);
+                f.setTargetFps(EnumSet.of(CameraConfig.TargetFps.TARGET_FPS_30));
+                List<CameraConfig> list = s.getSupportedCameraConfigs(f);
+                CameraConfig best = null;
+                long bestArea = 0;
+                for (CameraConfig cc : list) {
+                  Size t = cc.getTextureSize();
+                  long area = (long) t.getWidth() * t.getHeight();
+                  boolean ok = t.getWidth() >= 1280 || t.getHeight() >= 1280;
+                  if (best == null) { best = cc; bestArea = area; continue; }
+                  Size bt = best.getTextureSize();
+                  boolean bestOk = bt.getWidth() >= 1280 || bt.getHeight() >= 1280;
+                  if (ok && (!bestOk || area < bestArea)) { best = cc; bestArea = area; }
+                  else if (!ok && !bestOk && area > bestArea) { best = cc; bestArea = area; }
+                }
+                if (best != null) s.setCameraConfig(best);
+              } catch (Throwable t) {
+                // fica com a configuracao padrao do ARCore
+              }
+            }
+          }
+          EOF
       - name: Compilar
         run: gradle assembleDebug --no-daemon
       - uses: actions/upload-artifact@v4
