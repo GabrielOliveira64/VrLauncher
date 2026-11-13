@@ -3635,6 +3635,9 @@ jobs:
             """
           patch(J, "void spPick() {", JAVA + "\n            void spPick() {")
           PY
+
+
+
       - name: Modo AR (Fase 2)
         run: |
           mkdir -p app/src/main/java/com/vr/launcher
@@ -3698,6 +3701,10 @@ jobs:
 
             volatile Result latest = null;   // null = sem mao
             volatile long detSeq = 0;        // aumenta a cada deteccao concluida (com ou sem mao)
+            volatile long latestSubmit = 0;  // hora (uptime) em que a imagem que gerou "latest" foi entregue a IA
+            volatile String delegateName = "cpu";
+            volatile String note = "";
+            private volatile boolean gpu = false;
             volatile String status = "carregando modelo...";
             volatile float detFps = 0f;
             volatile float detMs = 0f;
@@ -3723,23 +3730,61 @@ jobs:
               handler.post(new Runnable() { @Override public void run() { loadModel(); } });
             }
 
+            private HandLandmarker build(boolean useGpu) {
+              BaseOptions base = BaseOptions.builder()
+                .setModelAssetPath("mediapipe/hand_landmarker.task")
+                .setDelegate(useGpu ? Delegate.GPU : Delegate.CPU)
+                .build();
+              HandLandmarker.HandLandmarkerOptions o = HandLandmarker.HandLandmarkerOptions.builder()
+                .setBaseOptions(base)
+                .setRunningMode(RunningMode.VIDEO)
+                .setNumHands(1)
+                .build();
+              return HandLandmarker.createFromOptions(context, o);
+            }
+
             private void loadModel() {
-              try {
-                BaseOptions base = BaseOptions.builder()
-                  .setModelAssetPath("mediapipe/hand_landmarker.task")
-                  .setDelegate(Delegate.CPU)
-                  .build();
-                HandLandmarker.HandLandmarkerOptions o = HandLandmarker.HandLandmarkerOptions.builder()
-                  .setBaseOptions(base)
-                  .setRunningMode(RunningMode.VIDEO)
-                  .setNumHands(1)
-                  .build();
-                landmarker = HandLandmarker.createFromOptions(context, o);
-                status = "ok";
-              } catch (Throwable t) {
-                status = "erro no modelo: " + t;
+              HandLandmarker lm = null;
+              note = "";
+              if (gpu) {
+                try {
+                  lm = build(true);
+                  delegateName = "gpu";
+                } catch (Throwable t) {
+                  note = " (gpu falhou: " + t.getClass().getSimpleName() + ")";
+                  gpu = false;
+                }
               }
-              busy.set(landmarker == null);
+              if (lm == null) {
+                try {
+                  lm = build(false);
+                  delegateName = "cpu";
+                } catch (Throwable t) {
+                  status = "erro no modelo: " + t;
+                }
+              }
+              landmarker = lm;
+              if (lm != null) status = "ok";
+              busy.set(lm == null);
+            }
+
+            /** Alterna a IA da mao entre CPU e GPU (teste de desempenho). Recarrega o modelo na thread da IA. */
+            void toggleDelegate() {
+              handler.post(new Runnable() {
+                @Override public void run() {
+                  busy.set(true);
+                  HandLandmarker old = landmarker;
+                  landmarker = null;
+                  if (old != null) { try { old.close(); } catch (Throwable t) { } }
+                  gpu = !gpu;
+                  latest = null;
+                  detMs = 0f;
+                  detFps = 0f;
+                  fpsStart = 0;
+                  fpsCount = 0;
+                  loadModel();
+                }
+              });
             }
 
             /** O renderer pergunta antes de buscar a imagem, para nao gastar a toa. */
@@ -3754,6 +3799,7 @@ jobs:
             boolean submit(Image img, int rot) {
               if (!busy.compareAndSet(false, true)) return false;
               lastSubmitMs = SystemClock.uptimeMillis();
+              final long sub = lastSubmitMs;
               try {
                 final int w = img.getWidth(), h = img.getHeight();
                 Image.Plane[] pl = img.getPlanes();
@@ -3765,7 +3811,7 @@ jobs:
                 handler.post(new Runnable() {
                   @Override public void run() {
                     try {
-                      process(w, h, r, yRow, uvRow, uvPix);
+                      process(w, h, r, yRow, uvRow, uvPix, sub);
                     } catch (Throwable t) {
                       status = "erro: " + t;
                     } finally {
@@ -3787,7 +3833,7 @@ jobs:
               return dst;
             }
 
-            private void process(int w, int h, int rot, int yRow, int uvRow, int uvPix) {
+            private void process(int w, int h, int rot, int yRow, int uvRow, int uvPix, long sub) {
               HandLandmarker lm = landmarker;
               if (lm == null) return;
 
@@ -3866,6 +3912,7 @@ jobs:
                 out = new Result(pts, palm / fh, ratio, fist);
                 lastHandMs = t1;
               }
+              latestSubmit = sub;
               latest = out;
               detSeq++;
 
@@ -4572,31 +4619,17 @@ jobs:
           import android.graphics.Canvas;
           import android.graphics.Color;
           import android.graphics.Paint;
-          import android.graphics.RectF;
           import android.view.View;
 
-          /** Camada 2D por cima do GL: esqueleto da mao, cursor e informacoes de depuracao. */
+          /**
+           * Painel de texto de depuracao (canto superior esquerdo). A mao e o cursor sao desenhados dentro do GL,
+           * sem camada extra, para nao somar atraso nem disputar a thread principal com o WebView.
+           */
           final class ArOverlay extends View {
 
-            static final class Snap {
-              float[] skel;          // 42 floats em pixels da tela, ou null
-              float cx, cy;
-              boolean hasCursor, pinched;
-              int region;            // 0 nada, 1 corpo, 2 barra, 3 canto
-              float progress;        // punho segurado para fechar a janela: 0..1
-              boolean fist;
-              String[] lines;
-            }
-
-            private static final int[][] CONN = {
-              {0, 1}, {1, 2}, {2, 3}, {3, 4}, {0, 5}, {5, 6}, {6, 7}, {7, 8}, {5, 9}, {9, 10}, {10, 11}, {11, 12},
-              {9, 13}, {13, 14}, {14, 15}, {15, 16}, {13, 17}, {17, 18}, {18, 19}, {19, 20}, {0, 17}
-            };
-
-            private volatile Snap snap;
+            private volatile String[] lines = new String[0];
             private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
             private final float d;
-            private final RectF oval = new RectF(0f, 0f, 0f, 0f);
 
             ArOverlay(Context c) {
               super(c);
@@ -4605,66 +4638,25 @@ jobs:
               d = c.getResources().getDisplayMetrics().density;
             }
 
-            void update(Snap s) {
-              snap = s;
+            void update(String[] l) {
+              lines = l;
               postInvalidate();
             }
 
             @Override protected void onDraw(Canvas canvas) {
-              Snap s = snap;
-              if (s == null) return;
-
-              float[] k = s.skel;
-              if (k != null) {
-                paint.setStyle(Paint.Style.STROKE);
-                paint.setStrokeWidth(2f * d);
-                paint.setColor(Color.argb(100, 255, 255, 255));
-                for (int[] c : CONN) canvas.drawLine(k[2 * c[0]], k[2 * c[0] + 1], k[2 * c[1]], k[2 * c[1] + 1], paint);
-                paint.setStyle(Paint.Style.FILL);
-                paint.setColor(Color.argb(150, 255, 255, 255));
-                for (int i = 0; i < 21; i++) canvas.drawCircle(k[2 * i], k[2 * i + 1], 2.5f * d, paint);
+              String[] ln = lines;
+              if (ln == null) return;
+              paint.setStyle(Paint.Style.FILL);
+              paint.setColor(Color.WHITE);
+              paint.setTextSize(11f * d);
+              paint.setShadowLayer(3f * d, 0f, 0f, Color.BLACK);
+              float y = 18f * d;
+              for (String t : ln) {
+                if (t == null || t.length() == 0) continue;
+                canvas.drawText(t, 10f * d, y, paint);
+                y += 15f * d;
               }
-
-              if (s.hasCursor) {
-                int col = Color.WHITE;
-                if (s.pinched) col = Color.rgb(94, 234, 212);
-                else if (s.region == 2) col = Color.rgb(255, 214, 0);
-                else if (s.region == 3) col = Color.rgb(0, 230, 118);
-                paint.setStyle(Paint.Style.STROKE);
-                paint.setStrokeWidth(3f * d);
-                paint.setColor(col);
-                canvas.drawCircle(s.cx, s.cy, (s.pinched ? 10f : 16f) * d, paint);
-                paint.setStyle(Paint.Style.FILL);
-                canvas.drawCircle(s.cx, s.cy, 4f * d, paint);
-              }
-
-              if (s.hasCursor && s.fist) {
-                float r = 26f * d;
-                oval.set(s.cx - r, s.cy - r, s.cx + r, s.cy + r);
-                paint.setStyle(Paint.Style.STROKE);
-                paint.setStrokeWidth(5f * d);
-                paint.setColor(Color.argb(90, 255, 82, 82));
-                canvas.drawCircle(s.cx, s.cy, r, paint);
-                if (s.progress > 0f) {
-                  paint.setColor(Color.rgb(255, 82, 82));
-                  canvas.drawArc(oval, -90f, 360f * Math.min(1f, s.progress), false, paint);
-                }
-              }
-
-              String[] ln = s.lines;
-              if (ln != null) {
-                paint.setStyle(Paint.Style.FILL);
-                paint.setColor(Color.WHITE);
-                paint.setTextSize(12f * d);
-                paint.setShadowLayer(3f * d, 0f, 0f, Color.BLACK);
-                float y = 20f * d;
-                for (String t : ln) {
-                  if (t == null || t.length() == 0) continue;
-                  canvas.drawText(t, 10f * d, y, paint);
-                  y += 16f * d;
-                }
-                paint.clearShadowLayer();
-              }
+              paint.clearShadowLayer();
             }
           }
           EOF
@@ -4726,6 +4718,14 @@ jobs:
             static final float PINCH_ON = 0.16f, PINCH_OFF = 0.26f;
             static final float S_MIN = 0.4f, S_MAX = 3f;
             static final long FIST_MS = 1000;
+            // mover/redimensionar so comeca depois de segurar a pinca na barra/canto por um instante (evita arrasto acidental)
+            static final long DWELL_MS = 220;
+            // espera antes de criar a primeira janela, para o ARCore firmar a escala do mundo
+            static final long SPAWN_WAIT_MS = 2500;
+            private static final int[][] CONN = {
+              {0, 1}, {1, 2}, {2, 3}, {3, 4}, {0, 5}, {5, 6}, {6, 7}, {7, 8}, {5, 9}, {9, 10}, {10, 11}, {11, 12},
+              {9, 13}, {13, 14}, {14, 15}, {15, 16}, {13, 17}, {17, 18}, {18, 19}, {19, 20}, {0, 17}
+            };
 
             private static final class Win {
               Pose pose; Anchor anchor; float s = 1f; final ArPanel panel;
@@ -4750,6 +4750,7 @@ jobs:
 
             volatile Session session;
             volatile ArOverlay overlay;
+            volatile String focusText = "";
             volatile boolean viewportChanged = true;
             private volatile boolean recenterReq = false;
             private volatile int handRot = 90;
@@ -4772,7 +4773,7 @@ jobs:
 
             // barra, alca, "+", destaque
             private int flatProg = 0, flatPosLoc = 0, flatUvLoc = 0, flatMvpLoc = 0, flatTexLoc = 0, flatColLoc = 0;
-            private int barTex = 0, cornerTex = 0, plusTex = 0, roundTex = 0;
+            private int barTex = 0, cornerTex = 0, plusTex = 0, roundTex = 0, discTex = 0, ringTex = 0;
             private final FloatBuffer unitVerts = floatBuf(new float[]{-0.5f, -0.5f, 0f, 0.5f, -0.5f, 0f, -0.5f, 0.5f, 0f, 0.5f, 0.5f, 0f});
             private final FloatBuffer unitUvs = floatBuf(new float[]{0f, 1f, 1f, 1f, 0f, 0f, 1f, 0f});
 
@@ -4782,6 +4783,9 @@ jobs:
             private final ArrayList<Win> wins = new ArrayList<Win>();
             private final CopyOnWriteArrayList<ArPanel> panels = new CopyOnWriteArrayList<ArPanel>();
             private boolean needSpawn = true;
+            private long trackOkSince = 0;
+            private final float[] camP = new float[3];
+            private final float dp;
 
             // rastreio do ARCore
             private boolean tracking = false, dim = false;
@@ -4806,6 +4810,9 @@ jobs:
             private boolean firstSample = true;
             private float cx = 0f, cy = 0f;
             private float ratio = 1f, sizeS = 0.1f;
+            private float pfx = 0f, pfy = 0f, vxc = 0f, vyc = 0f;
+            private long prevDetMs = 0;
+            private float handAgeMs = 0f;
             private int sizeOut = 0, handN = 0;
             private boolean pinch = false, handFist = false;
             private int pinchN = 0, fistN = 0;
@@ -4821,6 +4828,8 @@ jobs:
             private float lastPx = -1f, lastPy = -1f;
             private final float[] pl = new float[3];
             private long lastClick = 0;
+            private Hit pend = null;
+            private long pendSince = 0;
 
             // punho para fechar
             private Win fistWin = null;
@@ -4834,6 +4843,7 @@ jobs:
 
             ArRenderer(ArActivity act, ArHand tracker) {
               this.act = act; this.tracker = tracker;
+              this.dp = act.getResources().getDisplayMetrics().density;
             }
 
             void recenter() { recenterReq = true; }
@@ -4901,6 +4911,8 @@ jobs:
               cornerTex = bitmapTex(makeCorner());
               plusTex = bitmapTex(makePlus());
               roundTex = bitmapTex(makeRound());
+              discTex = bitmapTex(makeDisc());
+              ringTex = bitmapTex(makeRing());
 
               // contexto GL novo (raro): refaz as texturas das janelas que ja existiam
               for (Win w : wins) {
@@ -4968,7 +4980,10 @@ jobs:
                   say("Janela centralizada");
                 }
                 Pose camPose = camera.getDisplayOrientedPose();
-                if (tracking && needSpawn) {
+                float[] ct = camPose.getTranslation();
+                camP[0] = ct[0]; camP[1] = ct[1]; camP[2] = ct[2];
+                if (tracking) { if (trackOkSince == 0) trackOkSince = nowMs; } else trackOkSince = 0;
+                if (needSpawn && tracking && nowMs - trackOkSince >= SPAWN_WAIT_MS) {
                   createFirstWindow(s, camPose);
                   needSpawn = false;
                 }
@@ -4978,6 +4993,7 @@ jobs:
                 updateInteraction(s, frame, camPose.getTranslation());
 
                 drawWindows();
+                drawHand();
                 errorText = "";
               } catch (Throwable e) {
                 errorText = e.toString();
@@ -5257,10 +5273,12 @@ jobs:
               viewValid = false; pinch = false; pinchN = 0; handN = 0; fistN = 0; handFist = false;
               firstSample = true; sizeOut = 0;
               fX.reset(); fY.reset();
+              vxc = 0f; vyc = 0f; pend = null;
             }
 
             private void onDetection(Frame frame, ArHand.Result r, long now) {
-              tDet = now;
+              long cap = tracker.latestSubmit;
+              tDet = (cap > 0 && cap <= now) ? cap : now;   // quando a imagem foi capturada, nao quando a IA terminou
               if (r == null) {
                 viewValid = false;   // o estado da pinca fica ate a mao sumir de vez
                 return;
@@ -5296,7 +5314,16 @@ jobs:
               float ry = y8 * (1f - w) + (y4 + y8) * 0.5f * w;
               fX.f(rx, now);
               fY.f(ry, now);
-              if (firstSample) { cx = fX.x; cy = fY.x; firstSample = false; }
+              if (firstSample) {
+                cx = fX.x; cy = fY.x; firstSample = false;
+                pfx = fX.x; pfy = fY.x; vxc = 0f; vyc = 0f;
+              } else {
+                float dtd = Math.max(0.02f, (now - prevDetMs) / 1000f);
+                vxc += ((fX.x - pfx) / dtd - vxc) * 0.6f;
+                vyc += ((fY.x - pfy) / dtd - vyc) * 0.6f;
+                pfx = fX.x; pfy = fY.x;
+              }
+              prevDetMs = now;
             }
 
             private void updateInteraction(Session s, Frame frame, float[] camPos) {
@@ -5314,13 +5341,21 @@ jobs:
               if (!has && (handN != 0 || pinch || handFist || skel != null)) resetHand();
 
               if (has) {
-                float lead = Math.min(0.09f, (now - tDet) / 1000f + 0.02f);
-                float kc = 1f - (float) Math.exp(-dt * 35f), ks = 1f - (float) Math.exp(-dt * 25f);
-                cx += (fX.x + fX.v * lead - cx) * kc;
-                cy += (fY.x + fY.v * lead - cy) * kc;
+                // compensa o atraso: a imagem da mao tem "age" ms de idade; projeta o movimento ate agora
+                float age = Math.min(0.15f, Math.max(0f, (now - tDet) / 1000f));
+                handAgeMs = age * 1000f;
+                float lead = age + 0.016f;
+                float lim = Math.max(40f, vw * 0.12f);
+                float dxp = Math.max(-lim, Math.min(lim, vxc * lead)), dyp = Math.max(-lim, Math.min(lim, vyc * lead));
+                float kc = 1f - (float) Math.exp(-dt * 45f), ks = 1f - (float) Math.exp(-dt * 40f);
+                cx += (fX.x + dxp - cx) * kc;
+                cy += (fY.x + dyp - cy) * kc;
                 if (viewValid) {
                   if (skel == null) skel = viewPts.clone();
-                  else for (int i = 0; i < 42; i++) skel[i] += (viewPts[i] - skel[i]) * ks;
+                  else for (int i = 0; i < 42; i += 2) {
+                    skel[i] += (viewPts[i] + dxp - skel[i]) * ks;
+                    skel[i + 1] += (viewPts[i + 1] + dyp - skel[i + 1]) * ks;
+                  }
                 }
               } else {
                 skel = null;
@@ -5342,9 +5377,22 @@ jobs:
               }
 
               if (pinchOn && !pinchWasOn) {
-                if (hit != null) grab(s, hit, now);
+                pend = null;
+                if (hit != null) {
+                  // mover e redimensionar pedem um instante de pinca firme; toque e botoes agem na hora
+                  if (hit.region == R_BAR || hit.region == R_CORNER) { pend = hit; pendSince = now; }
+                  else grab(s, hit, now);
+                }
               } else if (!pinchOn && pinchWasOn) {
                 release(s);
+                pend = null;
+              }
+              if (pinchOn && pend != null) {
+                if (hit != null && hit.win == pend.win && hit.region == pend.region) {
+                  if (now - pendSince >= DWELL_MS) { Hit hh = hit; pend = null; grab(s, hh, now); }
+                } else {
+                  pend = null;   // saiu da barra/canto antes de confirmar: ignora
+                }
               }
               pinchWasOn = pinchOn;
 
@@ -5566,43 +5614,112 @@ jobs:
               messageUntil = SystemClock.uptimeMillis() + 2500;
             }
 
+            /** Texto de depuracao: atualiza so 4 vezes por segundo, na View pequena do canto. */
             private void publishOverlay() {
               ArOverlay ov = overlay;
               if (ov == null) return;
               long now = SystemClock.uptimeMillis();
-              if (now - lastHud > 250) {
-                lastHud = now;
-                String l1 = "AR: " + trackText + "  perdas: " + lostCount + (lostCount > 0 ? "  motivo: " + lastReason + "  ultima: " + lastLostMs + " ms" : "");
-                String l2 = "gl: " + Math.round(glFps) + " fps  ar: " + Math.round(arFps) + " fps  " + camInfo;
-                String l3 = "mao: " + (skel != null ? "sim" : "nao") + "  pinca: " + String.format("%.2f", ratio) + (handFist ? "  PUNHO" : "")
-                  + "  det: " + Math.round(tracker.detFps) + " fps / " + Math.round(tracker.detMs) + " ms";
-                int noAnchor = 0;
-                for (Win w : wins) if (w.anchor == null) noAnchor++;
-                String st = dragWin != null ? "mover" : sizeWin != null ? "redimensionar" : touchWin != null ? "toque" : fistProg > 0f ? "punho" : "-";
-                String l4 = "janelas: " + wins.size() + "  sem ancora: " + noAnchor + "  acao: " + st;
-                String l5 = "";
-                String l6 = "";
-                if (!wins.isEmpty()) {
-                  ArPanel p = wins.get(0).panel;
-                  l5 = "painel 1: " + p.where + "  quadros: " + p.frames + (p.got ? "" : " (sem imagem)");
-                  l6 = p.err;
-                }
-                String l7 = !"ok".equals(tracker.status) ? tracker.status : "";
-                String l8 = glError.length() > 0 ? glError : errorText;
-                String l9 = now < messageUntil ? message : "";
-                String l10 = "2 toques no topo: esquerda = modo do painel, direita = recentrar";
-                hudLines = new String[]{l1, l2, l3, l4, l5, l6, l7, l8, l9, l10};
+              if (now - lastHud < 250) return;
+              lastHud = now;
+              String l1 = "AR: " + trackText + "  perdas: " + lostCount + (lostCount > 0 ? "  motivo: " + lastReason + "  ultima: " + lastLostMs + " ms" : "");
+              String l2 = "gl: " + Math.round(glFps) + " fps  ar: " + Math.round(arFps) + " fps  " + camInfo;
+              String l3 = "mao: " + (skel != null ? "sim" : "nao") + "  pinca: " + String.format("%.2f", ratio) + (handFist ? "  PUNHO" : "")
+                + "  ia(" + tracker.delegateName + "): " + Math.round(tracker.detFps) + " fps / " + Math.round(tracker.detMs) + " ms"
+                + "  atraso: " + Math.round(handAgeMs) + " ms";
+              int noAnchor = 0;
+              for (Win w : wins) if (w.anchor == null) noAnchor++;
+              String st = dragWin != null ? "mover" : sizeWin != null ? "redimensionar" : touchWin != null ? "toque" : fistProg > 0f ? "punho" : pend != null ? "segurando..." : "-";
+              String l4 = "janelas: " + wins.size() + "  sem ancora: " + noAnchor + "  acao: " + st;
+              String l5 = "cam: " + fmt(camP[0]) + " " + fmt(camP[1]) + " " + fmt(camP[2]) + " m";
+              if (!wins.isEmpty()) {
+                float[] wt = wins.get(0).current().getTranslation();
+                float dx = wt[0] - camP[0], dy = wt[1] - camP[1], dz = wt[2] - camP[2];
+                l5 += "   distancia da janela 1: " + fmt((float) Math.sqrt(dx * dx + dy * dy + dz * dz)) + " m";
               }
-              ArOverlay.Snap sn = new ArOverlay.Snap();
-              sn.skel = skel == null ? null : skel.clone();
-              sn.cx = cx; sn.cy = cy;
-              sn.hasCursor = skel != null;
-              sn.pinched = pinchWasOn;
-              sn.region = hoverRegion;
-              sn.fist = skel != null && handFist && fistN >= 3;
-              sn.progress = fistProg;
-              sn.lines = hudLines;
-              ov.update(sn);
+              String l6 = "", l7 = "";
+              if (!wins.isEmpty()) {
+                ArPanel p = wins.get(0).panel;
+                l6 = "painel 1: " + p.where + "  quadros: " + p.frames + (p.got ? "" : " (sem imagem)");
+                l7 = p.err;
+              }
+              if (l7.length() == 0) l7 = !"ok".equals(tracker.status) ? tracker.status : tracker.note;
+              String l8 = glError.length() > 0 ? glError : errorText;
+              String l9 = needSpawn ? "Firmando o rastreio do ARCore... olhe em volta devagar" : (now < messageUntil ? message : "");
+              String l10 = focusText;
+              String l11 = "2 toques nos cantos: topo-esq painel | topo-dir recentrar | base-esq IA cpu/gpu | base-dir foco";
+              ov.update(new String[]{l1, l2, l3, l4, l5, l6, l7, l8, l9, l10, l11});
+            }
+
+            private static String fmt(float v) { return String.format("%.2f", v); }
+
+            // =============================================================
+            // Mao desenhada no proprio GL (sem camada extra por cima)
+            // =============================================================
+
+            /** Quadrado em pixels de tela: centro (x,y), tamanho w x h, girado por ang. */
+            private void sq(int tex, float x, float y, float w, float h, float ang, float r, float g, float b, float a) {
+              float c = (float) Math.cos(ang), sn = (float) Math.sin(ang);
+              float[] m = mvp;
+              for (int i = 0; i < 16; i++) m[i] = 0f;
+              m[0] = 2f * c * w / vw;   m[1] = -2f * sn * w / vh;
+              m[4] = -2f * sn * h / vw; m[5] = -2f * c * h / vh;
+              m[10] = 1f;
+              m[12] = 2f * x / vw - 1f; m[13] = 1f - 2f * y / vh; m[15] = 1f;
+              GLES20.glUniformMatrix4fv(flatMvpLoc, 1, false, m, 0);
+              GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, tex);
+              GLES20.glUniform4f(flatColLoc, r * a, g * a, b * a, a);
+              GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
+            }
+
+            private void drawHand() {
+              float[] k = skel;
+              if (k == null || flatProg == 0 || vw == 0) return;
+              GLES20.glDisable(GLES20.GL_DEPTH_TEST);
+              GLES20.glEnable(GLES20.GL_BLEND);
+              GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE_MINUS_SRC_ALPHA);
+              GLES20.glUseProgram(flatProg);
+              GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
+              GLES20.glUniform1i(flatTexLoc, 0);
+              unitVerts.position(0);
+              unitUvs.position(0);
+              GLES20.glVertexAttribPointer(flatPosLoc, 3, GLES20.GL_FLOAT, false, 0, unitVerts);
+              GLES20.glVertexAttribPointer(flatUvLoc, 2, GLES20.GL_FLOAT, false, 0, unitUvs);
+              GLES20.glEnableVertexAttribArray(flatPosLoc);
+              GLES20.glEnableVertexAttribArray(flatUvLoc);
+
+              // esqueleto
+              for (int[] c : CONN) {
+                float x0 = k[2 * c[0]], y0 = k[2 * c[0] + 1], x1 = k[2 * c[1]], y1 = k[2 * c[1] + 1];
+                float dx = x1 - x0, dy = y1 - y0;
+                float len = (float) Math.sqrt(dx * dx + dy * dy);
+                sq(roundTex, (x0 + x1) * 0.5f, (y0 + y1) * 0.5f, len, 2.2f * dp, (float) Math.atan2(dy, dx), 1f, 1f, 1f, 0.42f);
+              }
+              for (int i = 0; i < 21; i++) sq(discTex, k[2 * i], k[2 * i + 1], 5.5f * dp, 5.5f * dp, 0f, 1f, 1f, 1f, 0.6f);
+
+              // cursor
+              float r = 1f, g = 1f, b = 1f;
+              if (pinchWasOn) { r = 0.37f; g = 0.92f; b = 0.83f; }
+              else if (hoverRegion == R_BAR) { r = 1f; g = 0.84f; b = 0f; }
+              else if (hoverRegion == R_CORNER) { r = 0f; g = 0.9f; b = 0.46f; }
+              else if (hoverRegion == R_PLUS || hoverRegion == R_CHROME) { r = 0.37f; g = 0.92f; b = 0.83f; }
+              float dia = (pinchWasOn ? 20f : 32f) * dp;
+              sq(ringTex, cx, cy, dia, dia, 0f, r, g, b, 1f);
+              sq(discTex, cx, cy, 8f * dp, 8f * dp, 0f, r, g, b, 1f);
+
+              // punho segurado: anel vermelho que enche em 1 s
+              if (handFist && fistN >= 3) {
+                sq(ringTex, cx, cy, 52f * dp, 52f * dp, 0f, 1f, 0.32f, 0.32f, 0.35f);
+                int n = Math.round(fistProg * 28f);
+                for (int i = 0; i < n; i++) {
+                  double a = -Math.PI / 2.0 + i * (2.0 * Math.PI / 28.0);
+                  sq(discTex, cx + (float) Math.cos(a) * 26f * dp, cy + (float) Math.sin(a) * 26f * dp, 6f * dp, 6f * dp, 0f, 1f, 0.32f, 0.32f, 1f);
+                }
+              }
+
+              GLES20.glDisableVertexAttribArray(flatPosLoc);
+              GLES20.glDisableVertexAttribArray(flatUvLoc);
+              GLES20.glDisable(GLES20.GL_BLEND);
+              GLES20.glEnable(GLES20.GL_DEPTH_TEST);
             }
 
             // =============================================================
@@ -5677,6 +5794,26 @@ jobs:
               Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
               p.setColor(Color.WHITE);
               c.drawRoundRect(new RectF(0f, 0f, 64f, 64f), 18f, 18f, p);
+              return b;
+            }
+
+            private static Bitmap makeDisc() {
+              Bitmap b = Bitmap.createBitmap(64, 64, Bitmap.Config.ARGB_8888);
+              Canvas c = new Canvas(b);
+              Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+              p.setColor(Color.WHITE);
+              c.drawCircle(32f, 32f, 30f, p);
+              return b;
+            }
+
+            private static Bitmap makeRing() {
+              Bitmap b = Bitmap.createBitmap(64, 64, Bitmap.Config.ARGB_8888);
+              Canvas c = new Canvas(b);
+              Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+              p.setColor(Color.WHITE);
+              p.setStyle(Paint.Style.STROKE);
+              p.setStrokeWidth(6f);
+              c.drawCircle(32f, 32f, 28f, p);
               return b;
             }
 
@@ -5805,6 +5942,7 @@ jobs:
           import android.os.Handler;
           import android.os.Looper;
           import android.view.Display;
+          import android.view.Gravity;
           import android.view.MotionEvent;
           import android.view.View;
           import android.view.ViewGroup;
@@ -5834,7 +5972,8 @@ jobs:
             private boolean installRequested = false;
             private final Handler ui = new Handler(Looper.getMainLooper());
             private float density = 1f;
-            private long tapL = 0, tapR = 0;
+            private long tapL = 0, tapR = 0, tapBL = 0, tapBR = 0;
+            private boolean focusFixed = false;
 
             private final DisplayManager.DisplayListener dl = new DisplayManager.DisplayListener() {
               @Override public void onDisplayAdded(int id) { }
@@ -5869,7 +6008,10 @@ jobs:
 
               root = new FrameLayout(this);
               root.addView(gl, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-              root.addView(overlay, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+              // so o painel de texto, pequeno, no canto: nada de camada de tela cheia por cima do GL
+              FrameLayout.LayoutParams hud = new FrameLayout.LayoutParams((int) (520f * density), (int) (200f * density));
+              hud.gravity = Gravity.TOP | Gravity.START;
+              root.addView(overlay, hud);
               setContentView(root);
 
               DisplayManager dm = (DisplayManager) getSystemService(DISPLAY_SERVICE);
@@ -5954,29 +6096,46 @@ jobs:
               }
             }
 
-            /** Depuracao: 2 toques rapidos no canto superior esquerdo = modo do painel, no direito = recentrar. */
+            /** Depuracao: 2 toques rapidos num canto. Topo: painel (esq) / recentrar (dir). Base: IA cpu-gpu (esq) / foco (dir). */
             @Override public boolean onTouchEvent(MotionEvent e) {
-              if (e.getAction() == MotionEvent.ACTION_DOWN && e.getY() < 100f * density) {
-                long now = System.currentTimeMillis();
-                float w = root.getWidth();
-                if (e.getX() < 100f * density) {
-                  if (now - tapL < 600) { tapL = 0; renderer.toggleMode(); } else tapL = now;
-                } else if (e.getX() > w - 100f * density) {
-                  if (now - tapR < 600) { tapR = 0; renderer.recenter(); } else tapR = now;
-                }
-                return true;
+              if (e.getAction() != MotionEvent.ACTION_DOWN) return super.onTouchEvent(e);
+              float w = root.getWidth(), h = root.getHeight(), z = 100f * density;
+              boolean left = e.getX() < z, right = e.getX() > w - z, top = e.getY() < z, bottom = e.getY() > h - z;
+              long now = System.currentTimeMillis();
+              if (top && left) {
+                if (now - tapL < 600) { tapL = 0; renderer.toggleMode(); } else tapL = now;
+              } else if (top && right) {
+                if (now - tapR < 600) { tapR = 0; renderer.recenter(); } else tapR = now;
+              } else if (bottom && left) {
+                if (now - tapBL < 600) { tapBL = 0; tracker.toggleDelegate(); } else tapBL = now;
+              } else if (bottom && right) {
+                if (now - tapBR < 600) { tapBR = 0; toggleFocus(); } else tapBR = now;
+              } else {
+                return super.onTouchEvent(e);
               }
-              return super.onTouchEvent(e);
+              return true;
             }
 
             // ---- configuracao do ARCore: so o que usamos ----
 
             private void configure(Session s) {
-              // igual ao projeto de teste: so foco automatico e imagem mais recente; o resto fica no padrao do ARCore
+              // igual ao projeto de teste: foco e imagem mais recente; o resto fica no padrao do ARCore
               Config c = new Config(s);
-              c.setFocusMode(Config.FocusMode.AUTO);
+              c.setFocusMode(focusFixed ? Config.FocusMode.FIXED : Config.FocusMode.AUTO);
               c.setUpdateMode(Config.UpdateMode.LATEST_CAMERA_IMAGE);
               s.configure(c);
+              renderer.focusText = "foco: " + (focusFixed ? "fixo (mais estavel no mundo)" : "automatico (mao mais nitida)");
+            }
+
+            /** Teste: foco fixo evita que a lente "respire" ao chegar perto de algo, o que pode enganar o rastreio. */
+            private void toggleFocus() {
+              focusFixed = !focusFixed;
+              try {
+                if (session != null) configure(session);
+                Toast.makeText(this, focusFixed ? "Foco fixo" : "Foco automatico", Toast.LENGTH_SHORT).show();
+              } catch (Throwable t) {
+                Toast.makeText(this, "Foco: " + t, Toast.LENGTH_LONG).show();
+              }
             }
           }
           EOF
