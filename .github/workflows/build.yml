@@ -3635,7 +3635,7 @@ jobs:
             """
           patch(J, "void spPick() {", JAVA + "\n            void spPick() {")
           PY
-            - name: Modo AR (Fase 2)
+      - name: Modo AR (Fase 2)
         run: |
           mkdir -p app/src/main/java/com/vr/launcher
           python3 - <<'PY'
