@@ -3635,9 +3635,6 @@ jobs:
             """
           patch(J, "void spPick() {", JAVA + "\n            void spPick() {")
           PY
-
-
-
       - name: Modo AR (Fase 2)
         run: |
           mkdir -p app/src/main/java/com/vr/launcher
@@ -3966,6 +3963,288 @@ jobs:
                 return xp;
               }
               void reset() { init = false; v = 0f; }
+            }
+          }
+          EOF
+          cat > app/src/main/java/com/vr/launcher/ArImu.java <<'EOF'
+          package com.vr.launcher;
+
+          import android.content.Context;
+          import android.hardware.Sensor;
+          import android.hardware.SensorEvent;
+          import android.hardware.SensorEventListener;
+          import android.hardware.SensorManager;
+          import android.os.Handler;
+          import android.os.HandlerThread;
+
+          /** Orientacao do celular pelo giroscopio (vetor de rotacao "game": sem bussola, so giroscopio + gravidade). */
+          final class ArImu implements SensorEventListener {
+
+            final boolean available;
+            private final SensorManager sm;
+            private final Sensor sensor;
+            private final HandlerThread thread = new HandlerThread("ar-imu");
+            private Handler handler;
+            private boolean started = false;
+
+            private final Object lock = new Object();
+            private final float[] r = new float[9];
+            private final float[] tmp = new float[9];
+            private final float[] q4 = new float[4];
+            private boolean has = false;
+
+            ArImu(Context c) {
+              sm = (SensorManager) c.getSystemService(Context.SENSOR_SERVICE);
+              Sensor s = sm == null ? null : sm.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR);
+              if (s == null && sm != null) s = sm.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
+              sensor = s;
+              available = s != null;
+            }
+
+            void start() {
+              if (!available) return;
+              if (handler == null) {
+                thread.start();
+                handler = new Handler(thread.getLooper());
+              }
+              if (!started) {
+                sm.registerListener(this, sensor, 10000, handler);   // 100 Hz
+                started = true;
+              }
+            }
+
+            void stop() {
+              if (sm != null && started) {
+                sm.unregisterListener(this);
+                started = false;
+              }
+            }
+
+            void close() {
+              stop();
+              if (handler != null) thread.quitSafely();
+            }
+
+            /** Copia a rotacao atual (3x3 por linhas, aparelho -> mundo ENU). Falso se ainda nao ha leitura. */
+            boolean get(float[] out9) {
+              synchronized (lock) {
+                if (!has) return false;
+                System.arraycopy(r, 0, out9, 0, 9);
+                return true;
+              }
+            }
+
+            @Override public void onSensorChanged(SensorEvent e) {
+              float[] v = e.values;
+              if (v == null || v.length < 3) return;
+              float x = v[0], y = v[1], z = v[2];
+              float w = v.length > 3 ? v[3] : (float) Math.sqrt(Math.max(0f, 1f - x * x - y * y - z * z));
+              q4[0] = x; q4[1] = y; q4[2] = z; q4[3] = w;
+              SensorManager.getRotationMatrixFromVector(tmp, q4);
+              synchronized (lock) {
+                System.arraycopy(tmp, 0, r, 0, 9);
+                has = true;
+              }
+            }
+
+            @Override public void onAccuracyChanged(Sensor s, int accuracy) { }
+          }
+          EOF
+          cat > app/src/main/java/com/vr/launcher/ArFuse.java <<'EOF'
+          package com.vr.launcher;
+
+          /**
+           * Fusao ARCore + giroscopio. Enquanto o ARCore rastreia, aprende como os eixos do giroscopio se
+           * relacionam com os da camera (testa as 24 orientacoes possiveis e fica com a que bate com o ARCore)
+           * e o desvio de direcao (yaw) entre os dois. Quando o ARCore perde o rastreio, a orientacao continua
+           * pelo giroscopio (3DoF) em vez de congelar. Todas as matrizes 3x3 sao por linhas: m[3*linha + coluna].
+           */
+          final class ArFuse {
+
+            // ENU (z para cima) -> mundo do ARCore (y para cima)
+            private static final float[] E = {1f, 0f, 0f, 0f, 0f, 1f, 0f, -1f, 0f};
+            private static final float[][] CAND = candidates();
+
+            private final double[] err = new double[CAND.length];
+            private double wsum = 0.0;
+            private final float[] refAr = new float[9], refG = new float[9], prevG = new float[9];
+            private boolean hasRef = false, hasPrev = false;
+            private int best = -1;
+            private float bestErr = 99f, secondErr = 99f;
+            private boolean ready = false;
+            private float yc = 1f, ys = 0f;
+            private boolean yawInit = false;
+
+            private final float[] a = new float[9], b = new float[9], c = new float[9], d = new float[9];
+
+            /** Calibrado e com direcao conhecida: pode assumir quando o ARCore perder o rastreio. */
+            boolean usable() { return ready && yawInit && best >= 0; }
+
+            String status() {
+              if (usable()) return "calibrado (erro " + Math.round(bestErr * 10f) / 10f + " graus)";
+              return "calibrando " + Math.min(3, (int) wsum) + "/3: vire a cabeca em varias direcoes";
+            }
+
+            /** Chamar a cada quadro em que o ARCore rastreia. rAr: camera->mundo do ARCore. rG: aparelho->ENU do giroscopio. */
+            void feed(float[] rAr, float[] rG) {
+              float spd = hasPrev ? angle(prevG, rG) : 0f;
+              System.arraycopy(rG, 0, prevG, 0, 9);
+              hasPrev = true;
+
+              if (!hasRef) {
+                System.arraycopy(rAr, 0, refAr, 0, 9);
+                System.arraycopy(rG, 0, refG, 0, 9);
+                hasRef = true;
+              } else if (angle(refAr, rAr) > 20f) {
+                // rotacao relativa no referencial da camera: o ARCore e o giroscopio medem a mesma coisa, so em eixos diferentes
+                mulTN(refAr, rAr, a);   // relAr
+                mulTN(refG, rG, b);     // relG
+                for (int k = 0; k < CAND.length; k++) {
+                  float[] m = CAND[k];
+                  mul(b, m, c);
+                  mulTN(m, c, d);       // M^T * relG * M
+                  err[k] = err[k] * 0.92 + angle(a, d);
+                }
+                wsum = wsum * 0.92 + 1.0;
+                double b1 = 1e18, b2 = 1e18;
+                int bi = -1;
+                for (int k = 0; k < CAND.length; k++) {
+                  double v = err[k] / wsum;
+                  if (v < b1) { b2 = b1; b1 = v; bi = k; } else if (v < b2) { b2 = v; }
+                }
+                best = bi;
+                bestErr = (float) b1;
+                secondErr = (float) b2;
+                ready = wsum >= 2.5 && bestErr < 10f && secondErr - bestErr > 10f;
+                System.arraycopy(rAr, 0, refAr, 0, 9);
+                System.arraycopy(rG, 0, refG, 0, 9);
+              }
+              if (best >= 0 && ready && spd < 1.5f) yawUpdate(rAr, rG);
+            }
+
+            private void base(float[] rG, float[] out) {
+              mul(rG, CAND[best], c);   // aparelho -> eixos da tela
+              mul(E, c, out);           // ENU -> mundo do ARCore
+            }
+
+            private void yawUpdate(float[] rAr, float[] rG) {
+              float[] ref = new float[9], q = new float[9];
+              base(rG, ref);
+              mulNT(rAr, ref, q);       // deve ser uma rotacao so em torno do eixo vertical
+              if (q[4] < 0.97f) return;
+              float th = (float) Math.atan2(q[2], q[0]);
+              float cc = (float) Math.cos(th), ss = (float) Math.sin(th);
+              if (!yawInit) {
+                yc = cc; ys = ss; yawInit = true;
+              } else {
+                yc += (cc - yc) * 0.03f;
+                ys += (ss - ys) * 0.03f;
+                float n = (float) Math.sqrt(yc * yc + ys * ys);
+                if (n > 1e-4f) { yc /= n; ys /= n; }
+              }
+            }
+
+            /** Orientacao da camera (camera->mundo do ARCore) a partir so do giroscopio. */
+            boolean fused(float[] rG, float[] out) {
+              if (!usable()) return false;
+              float[] ref = new float[9];
+              base(rG, ref);
+              float[] ry = {yc, 0f, ys, 0f, 1f, 0f, -ys, 0f, yc};
+              mul(ry, ref, out);
+              return true;
+            }
+
+            // =============================================================
+            // Matematica pequena
+            // =============================================================
+
+            static void mul(float[] x, float[] y, float[] o) {
+              float[] t = new float[9];
+              for (int i = 0; i < 3; i++)
+                for (int j = 0; j < 3; j++)
+                  t[3 * i + j] = x[3 * i] * y[j] + x[3 * i + 1] * y[3 + j] + x[3 * i + 2] * y[6 + j];
+              System.arraycopy(t, 0, o, 0, 9);
+            }
+
+            /** x^T * y */
+            static void mulTN(float[] x, float[] y, float[] o) {
+              float[] t = new float[9];
+              for (int i = 0; i < 3; i++)
+                for (int j = 0; j < 3; j++)
+                  t[3 * i + j] = x[i] * y[j] + x[3 + i] * y[3 + j] + x[6 + i] * y[6 + j];
+              System.arraycopy(t, 0, o, 0, 9);
+            }
+
+            /** x * y^T */
+            static void mulNT(float[] x, float[] y, float[] o) {
+              float[] t = new float[9];
+              for (int i = 0; i < 3; i++)
+                for (int j = 0; j < 3; j++)
+                  t[3 * i + j] = x[3 * i] * y[3 * j] + x[3 * i + 1] * y[3 * j + 1] + x[3 * i + 2] * y[3 * j + 2];
+              System.arraycopy(t, 0, o, 0, 9);
+            }
+
+            /** Angulo (graus) da rotacao que leva x em y. */
+            static float angle(float[] x, float[] y) {
+              float t = 0f;
+              for (int k = 0; k < 9; k++) t += x[k] * y[k];
+              float cs = Math.max(-1f, Math.min(1f, (t - 1f) * 0.5f));
+              return (float) Math.toDegrees(Math.acos(cs));
+            }
+
+            /** As 24 matrizes de permutacao com sinais e determinante +1. */
+            private static float[][] candidates() {
+              int[][] perms = {{0, 1, 2}, {0, 2, 1}, {1, 0, 2}, {1, 2, 0}, {2, 0, 1}, {2, 1, 0}};
+              int[] parity = {1, -1, -1, 1, 1, -1};
+              float[][] out = new float[24][];
+              int n = 0;
+              for (int p = 0; p < 6; p++) {
+                for (int sg = 0; sg < 8; sg++) {
+                  int s0 = (sg & 1) == 0 ? 1 : -1, s1 = (sg & 2) == 0 ? 1 : -1, s2 = (sg & 4) == 0 ? 1 : -1;
+                  if (parity[p] * s0 * s1 * s2 != 1) continue;
+                  float[] m = new float[9];
+                  m[3 * perms[p][0] + 0] = s0;
+                  m[3 * perms[p][1] + 1] = s1;
+                  m[3 * perms[p][2] + 2] = s2;
+                  out[n++] = m;
+                }
+              }
+              return out;
+            }
+
+            static void quatFromMat(float[] m, float[] q) {
+              float t = m[0] + m[4] + m[8];
+              float x, y, z, w;
+              if (t > 0f) {
+                float s = (float) Math.sqrt(t + 1f) * 2f;
+                w = 0.25f * s; x = (m[7] - m[5]) / s; y = (m[2] - m[6]) / s; z = (m[3] - m[1]) / s;
+              } else if (m[0] > m[4] && m[0] > m[8]) {
+                float s = (float) Math.sqrt(1f + m[0] - m[4] - m[8]) * 2f;
+                w = (m[7] - m[5]) / s; x = 0.25f * s; y = (m[1] + m[3]) / s; z = (m[2] + m[6]) / s;
+              } else if (m[4] > m[8]) {
+                float s = (float) Math.sqrt(1f + m[4] - m[0] - m[8]) * 2f;
+                w = (m[2] - m[6]) / s; x = (m[1] + m[3]) / s; y = 0.25f * s; z = (m[5] + m[7]) / s;
+              } else {
+                float s = (float) Math.sqrt(1f + m[8] - m[0] - m[4]) * 2f;
+                w = (m[3] - m[1]) / s; x = (m[2] + m[6]) / s; y = (m[5] + m[7]) / s; z = 0.25f * s;
+              }
+              q[0] = x; q[1] = y; q[2] = z; q[3] = w;
+            }
+
+            static void matFromQuat(float[] q, float[] m) {
+              float x = q[0], y = q[1], z = q[2], w = q[3];
+              m[0] = 1f - 2f * (y * y + z * z); m[1] = 2f * (x * y - z * w);     m[2] = 2f * (x * z + y * w);
+              m[3] = 2f * (x * y + z * w);     m[4] = 1f - 2f * (x * x + z * z); m[5] = 2f * (y * z - x * w);
+              m[6] = 2f * (x * z - y * w);     m[7] = 2f * (y * z + x * w);     m[8] = 1f - 2f * (x * x + y * y);
+            }
+
+            static void nlerp(float[] p, float[] q, float t, float[] out) {
+              float dot = p[0] * q[0] + p[1] * q[1] + p[2] * q[2] + p[3] * q[3];
+              float sg = dot < 0f ? -1f : 1f;
+              float n = 0f;
+              for (int i = 0; i < 4; i++) { out[i] = p[i] * (1f - t) + q[i] * sg * t; n += out[i] * out[i]; }
+              n = (float) Math.sqrt(n);
+              if (n > 1e-6f) for (int i = 0; i < 4; i++) out[i] /= n;
             }
           }
           EOF
@@ -4751,10 +5030,17 @@ jobs:
             volatile Session session;
             volatile ArOverlay overlay;
             volatile String focusText = "";
+            volatile ArImu imu;
+            volatile boolean hybridOn = true;       // 6DoF -> 3DoF quando o ARCore perde o rastreio
+            volatile boolean fullView = true;       // imagem da camera inteira (sem corte/zoom)
+            private volatile boolean vpDirty = true;
             volatile boolean viewportChanged = true;
             private volatile boolean recenterReq = false;
             private volatile int handRot = 90;
 
+            // area de desenho: com a imagem inteira da camera ela pode ficar menor que a tela (faixas pretas)
+            private int sw = 0, sh = 0, vpX = 0, vpY = 0;
+            private float imgAspect = 0f;
             private int vw = 0, vh = 0;
             private boolean camTexSet = false;
             private long lastFedTs = 0;
@@ -4783,6 +5069,13 @@ jobs:
             private final ArrayList<Win> wins = new ArrayList<Win>();
             private final CopyOnWriteArrayList<ArPanel> panels = new CopyOnWriteArrayList<ArPanel>();
             private boolean needSpawn = true;
+            private final ArFuse fuse = new ArFuse();
+            private boolean hybridActive = false, anchorLost = false;
+            private float[] lastPos = null;
+            private final float[] frozenPos = new float[3];
+            private long blendT0 = 0;
+            private final float[] rAr = new float[9], rG = new float[9], rF = new float[9], rB = new float[9];
+            private final float[] qF = new float[4], qA = new float[4], qB = new float[4];
             private long trackOkSince = 0;
             private final float[] camP = new float[3];
             private final float dp;
@@ -4923,14 +5216,42 @@ jobs:
             }
 
             @Override public void onSurfaceChanged(GL10 gl, int width, int height) {
-              GLES20.glViewport(0, 0, width, height);
-              vw = width;
-              vh = height;
+              sw = width;
+              sh = height;
+              vpDirty = true;
+            }
+
+            /** Define a area de desenho. Com fullView a imagem da camera aparece inteira, sem cortar nada (sem zoom). */
+            private void updateViewport() {
+              if (sw <= 0 || sh <= 0) return;
+              if (!fullView || imgAspect <= 0f) {
+                vpX = 0; vpY = 0; vw = sw; vh = sh;
+              } else {
+                float ia = sw >= sh ? imgAspect : 1f / imgAspect;
+                float sa = (float) sw / sh;
+                if (sa > ia) { vh = sh; vw = Math.round(sh * ia); }
+                else { vw = sw; vh = Math.round(sw / ia); }
+                vpX = (sw - vw) / 2;
+                vpY = (sh - vh) / 2;
+              }
               viewportChanged = true;
+            }
+
+            void toggleView() {
+              fullView = !fullView;
+              vpDirty = true;
+              say(fullView ? "Imagem inteira (sem zoom)" : "Imagem preenchendo a tela");
+            }
+
+            void toggleHybrid() {
+              hybridOn = !hybridOn;
+              say(hybridOn ? "Modo hibrido ligado (giroscopio)" : "Modo hibrido desligado");
             }
 
             @Override public void onDrawFrame(GL10 gl) {
               GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT | GLES20.GL_DEPTH_BUFFER_BIT);
+              if (vpDirty) { vpDirty = false; updateViewport(); }
+              GLES20.glViewport(vpX, vpY, vw, vh);
               Session s = session;
               if (s == null) return;
               long nowMs = SystemClock.uptimeMillis();
@@ -4964,12 +5285,11 @@ jobs:
 
                 drawBackground();
 
-                camera.getViewMatrix(view, 0);
                 camera.getProjectionMatrix(proj, 0, 0.1f, 30f);
+                trackStats(camera, nowMs);
+                Pose camPose = resolveCamera(s, camera, nowMs);   // preenche "view": ARCore ou, sem rastreio, giroscopio
                 Matrix.multiplyMM(vp, 0, proj, 0, view, 0);
                 Matrix.invertM(invVp, 0, vp, 0);
-
-                trackStats(camera, nowMs);
                 if (camInfo.length() == 0) readCamInfo(s);
 
                 if (recenterReq) {
@@ -4979,7 +5299,6 @@ jobs:
                   needSpawn = true;
                   say("Janela centralizada");
                 }
-                Pose camPose = camera.getDisplayOrientedPose();
                 float[] ct = camPose.getTranslation();
                 camP[0] = ct[0]; camP[1] = ct[1]; camP[2] = ct[2];
                 if (tracking) { if (trackOkSince == 0) trackOkSince = nowMs; } else trackOkSince = 0;
@@ -4990,7 +5309,7 @@ jobs:
                 maintainAnchors(s);
 
                 if (!dim) feedTracker(frame);
-                updateInteraction(s, frame, camPose.getTranslation());
+                updateInteraction(s, frame, ct);
 
                 drawWindows();
                 drawHand();
@@ -5017,14 +5336,95 @@ jobs:
               tracking = camera.getTrackingState() == TrackingState.TRACKING;
               if (tracking) {
                 if (lostSince != 0) { lastLostMs = now - lostSince; lostSince = 0; }
-                dim = false;
                 trackText = "rastreando";
               } else {
                 if (lostSince == 0) { lostSince = now; lostCount++; }
                 lastReason = String.valueOf(camera.getTrackingFailureReason());
-                dim = now - lostSince > 300;
                 trackText = "SEM RASTREIO (" + lastReason + ")";
               }
+            }
+
+            private static void poseToMat(Pose p, float[] m) {
+              float[] x = p.getXAxis(), y = p.getYAxis(), z = p.getZAxis();
+              m[0] = x[0]; m[1] = y[0]; m[2] = z[0];
+              m[3] = x[1]; m[4] = y[1]; m[5] = z[1];
+              m[6] = x[2]; m[7] = y[2]; m[8] = z[2];
+            }
+
+            /** view = inverso da pose da camera (posicao p, rotacao r camera->mundo). */
+            private void buildView(float[] p, float[] r, float[] out) {
+              for (int c = 0; c < 3; c++) {
+                for (int rr = 0; rr < 3; rr++) out[c * 4 + rr] = r[3 * c + rr];
+                out[c * 4 + 3] = 0f;
+              }
+              for (int rr = 0; rr < 3; rr++) out[12 + rr] = -(r[rr] * p[0] + r[3 + rr] * p[1] + r[6 + rr] * p[2]);
+              out[15] = 1f;
+            }
+
+            /**
+             * Decide de onde vem a camera virtual. Com rastreio: ARCore (6DoF), e o giroscopio e calibrado em paralelo.
+             * Sem rastreio: a posicao fica onde estava e a orientacao segue o giroscopio (3DoF), em vez de congelar a tela.
+             * Ao voltar o rastreio, a transicao e suavizada; se o ARCore reiniciou o mundo, as janelas sao re-ancoradas.
+             */
+            private Pose resolveCamera(Session s, Camera camera, long now) {
+              Pose ar = camera.getDisplayOrientedPose();
+              ArImu im = imu;
+              boolean imuOk = im != null && im.get(rG);
+              poseToMat(ar, rAr);
+
+              if (tracking) {
+                if (imuOk && hybridOn) fuse.feed(rAr, rG);
+                if (hybridActive) {
+                  hybridActive = false;
+                  boolean reset = anchorLost;
+                  anchorLost = false;
+                  if (imuOk && fuse.usable() && lastPos != null) {
+                    if (reset) {
+                      // o ARCore comecou um mundo novo: leva as janelas para ele mantendo a posicao relativa a camera
+                      fuse.fused(rG, rF);
+                      ArFuse.quatFromMat(rF, qF);
+                      Pose pf = new Pose(lastPos, qF);
+                      Pose conv = ar.compose(pf.inverse());
+                      for (Win w : wins) w.pose = conv.compose(w.pose);
+                      say("Rastreio refeito: janelas reposicionadas");
+                    } else {
+                      System.arraycopy(lastPos, 0, frozenPos, 0, 3);
+                      blendT0 = now;
+                    }
+                  }
+                }
+                if (!hybridActive) anchorLost = false;   // ancora derrubada com o rastreio normal nao e "mundo novo"
+                float[] t = ar.getTranslation();
+                if (lastPos == null) lastPos = new float[3];
+                lastPos[0] = t[0]; lastPos[1] = t[1]; lastPos[2] = t[2];
+              } else if (hybridOn && imuOk && fuse.usable() && lastPos != null && lostSince != 0 && now - lostSince > 120) {
+                hybridActive = true;
+              }
+              if (!hybridOn) hybridActive = false;
+              dim = !tracking && !hybridActive && lostSince != 0 && now - lostSince > 300;
+
+              if (hybridActive && imuOk && fuse.fused(rG, rF)) {
+                buildView(lastPos, rF, view);
+                ArFuse.quatFromMat(rF, qF);
+                return new Pose(lastPos, qF);
+              }
+              if (blendT0 != 0) {
+                float k = (now - blendT0) / 400f;
+                if (k >= 1f || !imuOk || !fuse.fused(rG, rF)) {
+                  blendT0 = 0;
+                } else {
+                  float[] t = ar.getTranslation();
+                  float[] pos = {frozenPos[0] + (t[0] - frozenPos[0]) * k, frozenPos[1] + (t[1] - frozenPos[1]) * k, frozenPos[2] + (t[2] - frozenPos[2]) * k};
+                  ArFuse.quatFromMat(rF, qF);
+                  ArFuse.quatFromMat(rAr, qA);
+                  ArFuse.nlerp(qF, qA, k, qB);
+                  ArFuse.matFromQuat(qB, rB);
+                  buildView(pos, rB, view);
+                  return new Pose(pos, qB);
+                }
+              }
+              camera.getViewMatrix(view, 0);
+              return ar;
             }
 
             private void readCamInfo(Session s) {
@@ -5033,6 +5433,8 @@ jobs:
                 Size t = cc.getTextureSize();
                 Size im = cc.getImageSize();
                 camInfo = "cam: textura " + t.getWidth() + "x" + t.getHeight() + "  imagem " + im.getWidth() + "x" + im.getHeight();
+                float lo = Math.min(t.getWidth(), t.getHeight());
+                if (lo > 0f) { imgAspect = Math.max(t.getWidth(), t.getHeight()) / lo; vpDirty = true; }
               } catch (Throwable e) {
                 camInfo = "cam: ?";
               }
@@ -5138,7 +5540,7 @@ jobs:
                 if (a != null) {
                   TrackingState st = a.getTrackingState();
                   if (st == TrackingState.TRACKING) w.pose = a.getPose();
-                  else if (st == TrackingState.STOPPED) { w.anchor = null; }
+                  else if (st == TrackingState.STOPPED) { w.anchor = null; anchorLost = true; }
                 }
                 if (w.anchor == null && tracking) w.anchor = anchorOf(s, w.pose);
               }
@@ -5363,7 +5765,7 @@ jobs:
 
               boolean fistOn = has && handFist && fistN >= 3;
               // sem rastreio do ARCore ou com a mao fechada, nada e pego nem arrastado
-              boolean pinchOn = has && !fistOn && pinch && pinchN >= 2 && handN >= 3 && tracking && !dim;
+              boolean pinchOn = has && !fistOn && pinch && pinchN >= 2 && handN >= 3 && (tracking || hybridActive) && !dim;
               hoverRegion = R_NONE;
               hoverElem = 0;
               hoverWin = null;
@@ -5621,7 +6023,7 @@ jobs:
               long now = SystemClock.uptimeMillis();
               if (now - lastHud < 250) return;
               lastHud = now;
-              String l1 = "AR: " + trackText + "  perdas: " + lostCount + (lostCount > 0 ? "  motivo: " + lastReason + "  ultima: " + lastLostMs + " ms" : "");
+              String l1 = "AR: " + (hybridActive ? "SEM RASTREIO -> 3DoF (giroscopio)" : trackText) + "  perdas: " + lostCount + (lostCount > 0 ? "  motivo: " + lastReason + "  ultima: " + lastLostMs + " ms" : "");
               String l2 = "gl: " + Math.round(glFps) + " fps  ar: " + Math.round(arFps) + " fps  " + camInfo;
               String l3 = "mao: " + (skel != null ? "sim" : "nao") + "  pinca: " + String.format("%.2f", ratio) + (handFist ? "  PUNHO" : "")
                 + "  ia(" + tracker.delegateName + "): " + Math.round(tracker.detFps) + " fps / " + Math.round(tracker.detMs) + " ms"
@@ -5645,8 +6047,10 @@ jobs:
               if (l7.length() == 0) l7 = !"ok".equals(tracker.status) ? tracker.status : tracker.note;
               String l8 = glError.length() > 0 ? glError : errorText;
               String l9 = needSpawn ? "Firmando o rastreio do ARCore... olhe em volta devagar" : (now < messageUntil ? message : "");
-              String l10 = focusText;
-              String l11 = "2 toques nos cantos: topo-esq painel | topo-dir recentrar | base-esq IA cpu/gpu | base-dir foco";
+              ArImu im = imu;
+              String l10 = focusText + "  |  imagem: " + (fullView ? "inteira" : "preenchida")
+                + "  |  hibrido: " + (hybridOn ? (im == null || !im.available ? "sem giroscopio" : fuse.status()) : "desligado");
+              String l11 = "2 toques: topo-esq painel | topo-dir recentrar | topo-meio imagem | base-esq IA | base-dir foco | base-meio hibrido";
               ov.update(new String[]{l1, l2, l3, l4, l5, l6, l7, l8, l9, l10, l11});
             }
 
@@ -5972,7 +6376,8 @@ jobs:
             private boolean installRequested = false;
             private final Handler ui = new Handler(Looper.getMainLooper());
             private float density = 1f;
-            private long tapL = 0, tapR = 0, tapBL = 0, tapBR = 0;
+            private long tapL = 0, tapR = 0, tapBL = 0, tapBR = 0, tapTM = 0, tapBM = 0;
+            private ArImu imu;
             private boolean focusFixed = false;
 
             private final DisplayManager.DisplayListener dl = new DisplayManager.DisplayListener() {
@@ -5995,8 +6400,10 @@ jobs:
               density = getResources().getDisplayMetrics().density;
 
               tracker = new ArHand(getApplicationContext());
+              imu = new ArImu(getApplicationContext());
               overlay = new ArOverlay(this);
               renderer = new ArRenderer(this, tracker);
+              renderer.imu = imu;
               renderer.overlay = overlay;
 
               gl = new GLSurfaceView(this);
@@ -6060,10 +6467,12 @@ jobs:
                 return;
               }
               gl.onResume();
+              imu.start();
             }
 
             @Override protected void onPause() {
               super.onPause();
+              imu.stop();
               if (session != null) {
                 gl.onPause();
                 session.pause();
@@ -6074,6 +6483,7 @@ jobs:
               DisplayManager dm = (DisplayManager) getSystemService(DISPLAY_SERVICE);
               dm.unregisterDisplayListener(dl);
               tracker.close();
+              imu.close();
               renderer.shutdown();
               if (session != null) { session.close(); session = null; }
               super.onDestroy();
@@ -6110,6 +6520,10 @@ jobs:
                 if (now - tapBL < 600) { tapBL = 0; tracker.toggleDelegate(); } else tapBL = now;
               } else if (bottom && right) {
                 if (now - tapBR < 600) { tapBR = 0; toggleFocus(); } else tapBR = now;
+              } else if (top && Math.abs(e.getX() - w / 2f) < z) {
+                if (now - tapTM < 600) { tapTM = 0; renderer.toggleView(); } else tapTM = now;
+              } else if (bottom && Math.abs(e.getX() - w / 2f) < z) {
+                if (now - tapBM < 600) { tapBM = 0; renderer.toggleHybrid(); } else tapBM = now;
               } else {
                 return super.onTouchEvent(e);
               }
