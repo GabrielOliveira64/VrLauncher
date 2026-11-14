@@ -3635,6 +3635,7 @@ jobs:
             """
           patch(J, "void spPick() {", JAVA + "\n            void spPick() {")
           PY
+
       - name: Modo AR (Fase 2)
         run: |
           mkdir -p app/src/main/java/com/vr/launcher
@@ -3645,6 +3646,19 @@ jobs:
                   print('ja aplicado em', path)
                   return
               assert old in s, 'nao achei em ' + path + ': ' + old
+              open(path, 'w', encoding='utf-8').write(s.replace(old, new, 1))
+          def soft(path, old, new, skip=None):
+              import os
+              if not os.path.exists(path):
+                  print('AVISO: nao achei', path)
+                  return
+              s = open(path, encoding='utf-8').read()
+              if skip and skip in s:
+                  print('ja aplicado em', path)
+                  return
+              if old not in s:
+                  print('AVISO: trecho nao encontrado em', path, '->', old)
+                  return
               open(path, 'w', encoding='utf-8').write(s.replace(old, new, 1))
           patch('app/build.gradle', "implementation 'com.google.guava:guava:32.1.3-android'", "implementation 'com.google.guava:guava:32.1.3-android'\n  implementation 'com.google.ar:core:1.44.0'", 'com.google.ar:core')
           patch('app/src/main/AndroidManifest.xml', '</application>', """<meta-data android:name="com.google.ar.core" android:value="optional"/>
@@ -3658,6 +3672,8 @@ jobs:
                 </intent-filter>
               </activity>
             </application>""", '.ArActivity')
+          soft('app/src/main/assets/ui.js', "['cfg', 'Configurações', soon]", "['cfg', 'Modo AR 6DoF', function () { if (window.Android && Android.openAr) { toast('Abrindo o modo AR...'); Android.openAr(); } else { toast('Modo AR indisponível'); } }]", 'Android.openAr')
+          soft('app/src/main/java/com/vr/launcher/MainActivity.java', 'class Bridge {', 'class Bridge {\n              @JavascriptInterface public void openAr() { ui.post(() -> { try { startActivity(new android.content.Intent(MainActivity.this, ArActivity.class)); finish(); } catch (Throwable t) { } }); }', 'openAr()')
           PY
           cat > app/src/main/java/com/vr/launcher/ArHand.java <<'EOF'
           package com.vr.launcher;
@@ -3702,6 +3718,7 @@ jobs:
             volatile String delegateName = "cpu";
             volatile String note = "";
             private volatile boolean gpu = false;
+            private final AtomicBoolean fellBack = new AtomicBoolean(false);
             volatile String status = "carregando modelo...";
             volatile float detFps = 0f;
             volatile float detMs = 0f;
@@ -3720,8 +3737,9 @@ jobs:
             private int[] pixels = new int[0];
             private byte[] yb = new byte[0], ub = new byte[0], vb = new byte[0];
 
-            ArHand(Context ctx) {
+            ArHand(Context ctx, boolean useGpu) {
               context = ctx.getApplicationContext();
+              gpu = useGpu;
               thread.start();
               handler = new Handler(thread.getLooper());
               handler.post(new Runnable() { @Override public void run() { loadModel(); } });
@@ -3765,15 +3783,22 @@ jobs:
               busy.set(lm == null);
             }
 
+            boolean wantsGpu() { return gpu; }
+
             /** Alterna a IA da mao entre CPU e GPU (teste de desempenho). Recarrega o modelo na thread da IA. */
             void toggleDelegate() {
+              reload(!gpu);
+            }
+
+            private void reload(final boolean useGpu) {
+              gpu = useGpu;
               handler.post(new Runnable() {
                 @Override public void run() {
                   busy.set(true);
                   HandLandmarker old = landmarker;
                   landmarker = null;
                   if (old != null) { try { old.close(); } catch (Throwable t) { } }
-                  gpu = !gpu;
+                  gpu = useGpu;
                   latest = null;
                   detMs = 0f;
                   detFps = 0f;
@@ -3810,7 +3835,13 @@ jobs:
                     try {
                       process(w, h, r, yRow, uvRow, uvPix, sub);
                     } catch (Throwable t) {
-                      status = "erro: " + t;
+                      if (gpu && fellBack.compareAndSet(false, true)) {
+                        // a GPU falhou durante o uso: volta sozinha para a CPU
+                        note = " (gpu falhou: " + t.getClass().getSimpleName() + ")";
+                        reload(false);
+                      } else {
+                        status = "erro: " + t;
+                      }
                     } finally {
                       busy.set(false);
                     }
@@ -4992,7 +5023,10 @@ jobs:
             static final float CHROME_Z = 0.004f;
             static final int MAX_WINS = 3;
 
-            static final int R_NONE = 0, R_BODY = 1, R_BAR = 2, R_CORNER = 3, R_CHROME = 4, R_PLUS = 5;
+            static final int R_NONE = 0, R_BODY = 1, R_BAR = 2, R_CORNER = 3, R_CHROME = 4, R_PLUS = 5, R_EXIT = 6;
+            // segurar a pinca no botao "voltar ao modo original" por este tempo (evita sair sem querer)
+            static final long EXIT_MS = 600;
+            static final String[] VIEW_NAMES = {"preenchida (corta)", "meio-termo", "inteira (faixas)", "esticada (tela cheia)"};
             // pinca: liga com as pontas coladas, so solta quando abre de verdade
             static final float PINCH_ON = 0.16f, PINCH_OFF = 0.26f;
             static final float S_MIN = 0.4f, S_MAX = 3f;
@@ -5032,14 +5066,14 @@ jobs:
             volatile String focusText = "";
             volatile ArImu imu;
             volatile boolean hybridOn = true;       // 6DoF -> 3DoF quando o ARCore perde o rastreio
-            volatile boolean fullView = true;       // imagem da camera inteira (sem corte/zoom)
+            volatile int viewMode = 1;              // 0 preenchida (corta), 1 meio-termo, 2 inteira (faixas), 3 esticada (tela cheia)
             private volatile boolean vpDirty = true;
             volatile boolean viewportChanged = true;
             private volatile boolean recenterReq = false;
             private volatile int handRot = 90;
 
             // area de desenho: com a imagem inteira da camera ela pode ficar menor que a tela (faixas pretas)
-            private int sw = 0, sh = 0, vpX = 0, vpY = 0;
+            private int sw = 0, sh = 0, vpX = 0, vpY = 0, vpW = 0, vpH = 0;
             private float imgAspect = 0f;
             private int vw = 0, vh = 0;
             private boolean camTexSet = false;
@@ -5059,7 +5093,7 @@ jobs:
 
             // barra, alca, "+", destaque
             private int flatProg = 0, flatPosLoc = 0, flatUvLoc = 0, flatMvpLoc = 0, flatTexLoc = 0, flatColLoc = 0;
-            private int barTex = 0, cornerTex = 0, plusTex = 0, roundTex = 0, discTex = 0, ringTex = 0;
+            private int barTex = 0, cornerTex = 0, plusTex = 0, roundTex = 0, discTex = 0, ringTex = 0, exitTex = 0;
             private final FloatBuffer unitVerts = floatBuf(new float[]{-0.5f, -0.5f, 0f, 0.5f, -0.5f, 0f, -0.5f, 0.5f, 0f, 0.5f, 0.5f, 0f});
             private final FloatBuffer unitUvs = floatBuf(new float[]{0f, 1f, 1f, 1f, 0f, 0f, 1f, 0f});
 
@@ -5206,6 +5240,7 @@ jobs:
               roundTex = bitmapTex(makeRound());
               discTex = bitmapTex(makeDisc());
               ringTex = bitmapTex(makeRing());
+              exitTex = bitmapTex(makeExit());
 
               // contexto GL novo (raro): refaz as texturas das janelas que ja existiam
               for (Win w : wins) {
@@ -5221,26 +5256,36 @@ jobs:
               vpDirty = true;
             }
 
-            /** Define a area de desenho. Com fullView a imagem da camera aparece inteira, sem cortar nada (sem zoom). */
+            /** Define a area de desenho conforme o modo de imagem (cortada, meio-termo, inteira com faixas ou esticada). */
             private void updateViewport() {
               if (sw <= 0 || sh <= 0) return;
-              if (!fullView || imgAspect <= 0f) {
-                vpX = 0; vpY = 0; vw = sw; vh = sh;
+              int mode = viewMode;
+              if (mode == 0 || imgAspect <= 0f) {
+                vpX = 0; vpY = 0; vpW = sw; vpH = sh; vw = sw; vh = sh;
               } else {
-                float ia = sw >= sh ? imgAspect : 1f / imgAspect;
+                float ia = sw >= sh ? imgAspect : 1f / imgAspect;   // proporcao da imagem da camera na orientacao da tela
                 float sa = (float) sw / sh;
-                if (sa > ia) { vh = sh; vw = Math.round(sh * ia); }
-                else { vw = sw; vh = Math.round(sw / ia); }
-                vpX = (sw - vw) / 2;
-                vpY = (sh - vh) / 2;
+                float a = mode == 1 ? (float) Math.sqrt(ia * sa) : ia;
+                int fw, fh;
+                if (sa > a) { fh = sh; fw = Math.round(sh * a); }
+                else { fw = sw; fh = Math.round(sw / a); }
+                if (mode == 3) {
+                  // imagem inteira esticada ate encher a tela: o ARCore enxerga a proporcao da camera, so o desenho e esticado
+                  vpX = 0; vpY = 0; vpW = sw; vpH = sh;
+                  vh = sh; vw = Math.round(sh * ia);
+                } else {
+                  vpW = fw; vpH = fh; vw = fw; vh = fh;
+                  vpX = (sw - fw) / 2;
+                  vpY = (sh - fh) / 2;
+                }
               }
               viewportChanged = true;
             }
 
             void toggleView() {
-              fullView = !fullView;
+              viewMode = (viewMode + 1) % 4;
               vpDirty = true;
-              say(fullView ? "Imagem inteira (sem zoom)" : "Imagem preenchendo a tela");
+              say("Imagem: " + VIEW_NAMES[viewMode]);
             }
 
             void toggleHybrid() {
@@ -5251,7 +5296,7 @@ jobs:
             @Override public void onDrawFrame(GL10 gl) {
               GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT | GLES20.GL_DEPTH_BUFFER_BIT);
               if (vpDirty) { vpDirty = false; updateViewport(); }
-              GLES20.glViewport(vpX, vpY, vw, vh);
+              GLES20.glViewport(vpX, vpY, vpW, vpH);
               Session s = session;
               if (s == null) return;
               long nowMs = SystemClock.uptimeMillis();
@@ -5397,7 +5442,7 @@ jobs:
                 float[] t = ar.getTranslation();
                 if (lastPos == null) lastPos = new float[3];
                 lastPos[0] = t[0]; lastPos[1] = t[1]; lastPos[2] = t[2];
-              } else if (hybridOn && imuOk && fuse.usable() && lastPos != null && lostSince != 0 && now - lostSince > 120) {
+              } else if (hybridOn && imuOk && fuse.usable() && lastPos != null && lostSince != 0) {
                 hybridActive = true;
               }
               if (!hybridOn) hybridActive = false;
@@ -5617,6 +5662,9 @@ jobs:
                   float ps = PLUS_S * (plusOn ? 1.25f : 1f);
                   quad(plusTex, PLUS_X, BAR_CY, ps, ps, plusOn ? 0.37f : 1f, plusOn ? 0.92f : 1f, plusOn ? 0.83f : 1f, pa, dimV);
                 }
+                boolean exitOn = hov && hoverRegion == R_EXIT;
+                float es = PLUS_S * (exitOn ? 1.25f : 1f);
+                quad(exitTex, -PLUS_X, BAR_CY, es, es, 1f, exitOn ? 0.62f : 1f, exitOn ? 0.25f : 1f, exitOn ? 1f : 0.85f, dimV);
                 if (w.chromeVer >= 0) quad(w.chromeTex, 0f, HH + CH_GAP + CH_H / 2f, CH_W, CH_H, 1f, 1f, 1f, 1f, dimV);
                 if (hov && hoverRegion == R_CHROME) highlight(w, hoverElem, dimV);
               }
@@ -5782,7 +5830,7 @@ jobs:
                 pend = null;
                 if (hit != null) {
                   // mover e redimensionar pedem um instante de pinca firme; toque e botoes agem na hora
-                  if (hit.region == R_BAR || hit.region == R_CORNER) { pend = hit; pendSince = now; }
+                  if (hit.region == R_BAR || hit.region == R_CORNER || hit.region == R_EXIT) { pend = hit; pendSince = now; }
                   else grab(s, hit, now);
                 }
               } else if (!pinchOn && pinchWasOn) {
@@ -5791,7 +5839,7 @@ jobs:
               }
               if (pinchOn && pend != null) {
                 if (hit != null && hit.win == pend.win && hit.region == pend.region) {
-                  if (now - pendSince >= DWELL_MS) { Hit hh = hit; pend = null; grab(s, hh, now); }
+                  if (now - pendSince >= (pend.region == R_EXIT ? EXIT_MS : DWELL_MS)) { Hit hh = hit; pend = null; grab(s, hh, now); }
                 } else {
                   pend = null;   // saiu da barra/canto antes de confirmar: ignora
                 }
@@ -5855,6 +5903,9 @@ jobs:
                 lastPx = toPx(w, h.lx / w.s, true);
                 lastPy = toPx(w, h.ly / w.s, false);
                 sendTouch(w, MotionEvent.ACTION_DOWN, lastPx, lastPy);
+              } else if (h.region == R_EXIT) {
+                say("Voltando ao modo original...");
+                act.exitToOriginal();
               } else if (h.region == R_PLUS) {
                 if (now - lastClick > 400) { lastClick = now; newWindowNear(s, w); }
               } else if (h.region == R_CHROME) {
@@ -5996,6 +6047,7 @@ jobs:
               regElem = 0;
               if (Math.abs(x - CSX) <= CS_HIT && Math.abs(y - CSY) <= CS_HIT) return R_CORNER;
               if (wins.size() < MAX_WINS && Math.abs(x - PLUS_X) <= PLUS_HIT && Math.abs(y - BAR_CY) <= PLUS_HIT) return R_PLUS;
+              if (Math.abs(x + PLUS_X) <= PLUS_HIT && Math.abs(y - BAR_CY) <= PLUS_HIT) return R_EXIT;
               if (Math.abs(x) <= BAR_HIT_X && Math.abs(y - BAR_CY) <= BAR_HIT_Y) return R_BAR;
               if (Math.abs(x) <= HW && Math.abs(y) <= HH) return R_BODY;
               float y0 = HH + CH_GAP;
@@ -6048,9 +6100,9 @@ jobs:
               String l8 = glError.length() > 0 ? glError : errorText;
               String l9 = needSpawn ? "Firmando o rastreio do ARCore... olhe em volta devagar" : (now < messageUntil ? message : "");
               ArImu im = imu;
-              String l10 = focusText + "  |  imagem: " + (fullView ? "inteira" : "preenchida")
+              String l10 = focusText + "  |  imagem: " + VIEW_NAMES[viewMode]
                 + "  |  hibrido: " + (hybridOn ? (im == null || !im.available ? "sem giroscopio" : fuse.status()) : "desligado");
-              String l11 = "2 toques: topo-esq painel | topo-dir recentrar | topo-meio imagem | base-esq IA | base-dir foco | base-meio hibrido";
+              String l11 = "2 toques: topo-esq painel | topo-dir recentrar | topo-meio imagem | base-esq IA | base-dir foco | base-meio hibrido | meio-esq voltar ao modo original";
               ov.update(new String[]{l1, l2, l3, l4, l5, l6, l7, l8, l9, l10, l11});
             }
 
@@ -6106,6 +6158,7 @@ jobs:
               else if (hoverRegion == R_BAR) { r = 1f; g = 0.84f; b = 0f; }
               else if (hoverRegion == R_CORNER) { r = 0f; g = 0.9f; b = 0.46f; }
               else if (hoverRegion == R_PLUS || hoverRegion == R_CHROME) { r = 0.37f; g = 0.92f; b = 0.83f; }
+              else if (hoverRegion == R_EXIT) { r = 1f; g = 0.62f; b = 0.25f; }
               float dia = (pinchWasOn ? 20f : 32f) * dp;
               sq(ringTex, cx, cy, dia, dia, 0f, r, g, b, 1f);
               sq(discTex, cx, cy, 8f * dp, 8f * dp, 0f, r, g, b, 1f);
@@ -6188,6 +6241,26 @@ jobs:
               p.setStrokeCap(Paint.Cap.ROUND);
               c.drawLine(26f, 48f, 70f, 48f, p);
               c.drawLine(48f, 26f, 48f, 70f, p);
+              return b;
+            }
+
+            /** Botao "voltar ao modo original": disco branco com seta para a esquerda. */
+            private static Bitmap makeExit() {
+              Bitmap b = Bitmap.createBitmap(96, 96, Bitmap.Config.ARGB_8888);
+              Canvas c = new Canvas(b);
+              Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+              p.setColor(Color.WHITE);
+              c.drawCircle(48f, 48f, 44f, p);
+              p.setColor(Color.rgb(24, 27, 38));
+              p.setStyle(Paint.Style.STROKE);
+              p.setStrokeWidth(9f);
+              p.setStrokeCap(Paint.Cap.ROUND);
+              Path path = new Path();
+              path.moveTo(54f, 28f);
+              path.lineTo(32f, 48f);
+              path.lineTo(54f, 68f);
+              c.drawPath(path, p);
+              c.drawLine(32f, 48f, 68f, 48f, p);
               return b;
             }
 
@@ -6339,6 +6412,8 @@ jobs:
 
           import android.Manifest;
           import android.app.Activity;
+          import android.content.Intent;
+          import android.content.SharedPreferences;
           import android.content.pm.PackageManager;
           import android.hardware.display.DisplayManager;
           import android.opengl.GLSurfaceView;
@@ -6376,7 +6451,8 @@ jobs:
             private boolean installRequested = false;
             private final Handler ui = new Handler(Looper.getMainLooper());
             private float density = 1f;
-            private long tapL = 0, tapR = 0, tapBL = 0, tapBR = 0, tapTM = 0, tapBM = 0;
+            private long tapL = 0, tapR = 0, tapBL = 0, tapBR = 0, tapTM = 0, tapBM = 0, tapML = 0;
+            private SharedPreferences prefs;
             private ArImu imu;
             private boolean focusFixed = false;
 
@@ -6399,11 +6475,16 @@ jobs:
               }
               density = getResources().getDisplayMetrics().density;
 
-              tracker = new ArHand(getApplicationContext());
+              prefs = getSharedPreferences("ar", MODE_PRIVATE);
+              focusFixed = prefs.getBoolean("focusFixed", false);
+              // IA da mao na GPU por padrao (a CPU chegou a 240 ms por quadro junto com o ARCore); cai para CPU se falhar
+              tracker = new ArHand(getApplicationContext(), prefs.getBoolean("gpu", true));
               imu = new ArImu(getApplicationContext());
               overlay = new ArOverlay(this);
               renderer = new ArRenderer(this, tracker);
               renderer.imu = imu;
+              renderer.viewMode = prefs.getInt("view", 1);
+              renderer.hybridOn = prefs.getBoolean("hybrid", true);
               renderer.overlay = overlay;
 
               gl = new GLSurfaceView(this);
@@ -6517,13 +6598,15 @@ jobs:
               } else if (top && right) {
                 if (now - tapR < 600) { tapR = 0; renderer.recenter(); } else tapR = now;
               } else if (bottom && left) {
-                if (now - tapBL < 600) { tapBL = 0; tracker.toggleDelegate(); } else tapBL = now;
+                if (now - tapBL < 600) { tapBL = 0; tracker.toggleDelegate(); savePrefs(); } else tapBL = now;
               } else if (bottom && right) {
                 if (now - tapBR < 600) { tapBR = 0; toggleFocus(); } else tapBR = now;
               } else if (top && Math.abs(e.getX() - w / 2f) < z) {
-                if (now - tapTM < 600) { tapTM = 0; renderer.toggleView(); } else tapTM = now;
+                if (now - tapTM < 600) { tapTM = 0; renderer.toggleView(); savePrefs(); } else tapTM = now;
               } else if (bottom && Math.abs(e.getX() - w / 2f) < z) {
-                if (now - tapBM < 600) { tapBM = 0; renderer.toggleHybrid(); } else tapBM = now;
+                if (now - tapBM < 600) { tapBM = 0; renderer.toggleHybrid(); savePrefs(); } else tapBM = now;
+              } else if (left && Math.abs(e.getY() - h / 2f) < z) {
+                if (now - tapML < 600) { tapML = 0; exitToOriginal(); } else tapML = now;
               } else {
                 return super.onTouchEvent(e);
               }
@@ -6541,11 +6624,33 @@ jobs:
               renderer.focusText = "foco: " + (focusFixed ? "fixo (mais estavel no mundo)" : "automatico (mao mais nitida)");
             }
 
+            private void savePrefs() {
+              try {
+                prefs.edit().putBoolean("focusFixed", focusFixed).putBoolean("gpu", tracker.wantsGpu())
+                  .putInt("view", renderer.viewMode).putBoolean("hybrid", renderer.hybridOn).apply();
+              } catch (Throwable t) { }
+            }
+
+            /** Volta para o modo original do VR Launcher (sem AR). */
+            void exitToOriginal() {
+              runOnUiThread(new Runnable() {
+                @Override public void run() {
+                  try {
+                    startActivity(new Intent(ArActivity.this, MainActivity.class));
+                    finish();
+                  } catch (Throwable t) {
+                    Toast.makeText(ArActivity.this, "Nao consegui voltar: " + t, Toast.LENGTH_LONG).show();
+                  }
+                }
+              });
+            }
+
             /** Teste: foco fixo evita que a lente "respire" ao chegar perto de algo, o que pode enganar o rastreio. */
             private void toggleFocus() {
               focusFixed = !focusFixed;
               try {
                 if (session != null) configure(session);
+                savePrefs();
                 Toast.makeText(this, focusFixed ? "Foco fixo" : "Foco automatico", Toast.LENGTH_SHORT).show();
               } catch (Throwable t) {
                 Toast.makeText(this, "Foco: " + t, Toast.LENGTH_LONG).show();
