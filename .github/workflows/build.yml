@@ -3653,7 +3653,7 @@ jobs:
                   print('AVISO: nao achei', path)
                   return
               s = open(path, encoding='utf-8').read()
-              if skip and skip in s:
+              if (skip and skip in s) or (not skip and new in s):
                   print('ja aplicado em', path)
                   return
               if old not in s:
@@ -3672,7 +3672,29 @@ jobs:
                 </intent-filter>
               </activity>
             </application>""", '.ArActivity')
-          soft('app/src/main/assets/ui.js', "['cfg', 'Configurações', soon]", "['cfg', 'Modo AR 6DoF', function () { if (window.Android && Android.openAr) { toast('Abrindo o modo AR...'); Android.openAr(); } else { toast('Modo AR indisponível'); } }]", 'Android.openAr')
+          UI = 'app/src/main/assets/ui.js'
+          SK = None
+          soft(UI, "miSpace = null;", "miSpace = null, T_cfg = [], miCfg = null;", SK)
+          soft(UI, "['cfg', 'Configurações', soon]", "['cfg', 'Configurações', function () { setTab('cfg'); }]", SK)
+          soft(UI, "if (m[0] === 'space') miSpace = d;", "if (m[0] === 'space') miSpace = d; if (m[0] === 'cfg') miCfg = d;", SK)
+          soft(UI, "tabApps.style.zIndex = 200; tabHelp.style.zIndex = 200; tabSpace.style.zIndex = 200;",
+           "var tabCfg = mk2('tab', '<div class=\"tt\">CONFIGURAÇÕES</div><div class=\"cfl\"></div>'); tabCfg.style.zIndex = 200; " +
+           "(function () { var l = tabCfg.querySelector('.cfl'), r = document.createElement('div'); r.className = 'cfr'; " +
+           "r.innerHTML = '<div class=\"cft\"><b>Modo 6DoF (AR)</b><span>Janelas e menu fixos no espaço, usando o ARCore. Para voltar ao modo original: botão de saída dentro do modo 6DoF.</span></div><div class=\"cfs\"><i></i></div>'; l.appendChild(r); " +
+           "T_cfg.push({ k: 'btn', el: r, fn: function () { if (window.Android && Android.openAr) { r.classList.add('on'); toast('Entrando no modo 6DoF...'); setTimeout(function () { Android.openAr(); r.classList.remove('on'); }, 350); } else toast('Modo 6DoF indisponível'); } }); })(); " +
+           "tabApps.style.zIndex = 200; tabHelp.style.zIndex = 200; tabSpace.style.zIndex = 200;", SK)
+          soft(UI, "['space', tabSpace]]", "['space', tabSpace], ['cfg', tabCfg]]", SK)
+          soft(UI, "tabSpace.style.display = TAB === 'space' ? 'flex' : 'none';", "tabSpace.style.display = TAB === 'space' ? 'flex' : 'none'; tabCfg.style.display = TAB === 'cfg' ? 'flex' : 'none';", SK)
+          soft(UI, "miSpace.classList.toggle('on', TAB === 'space');", "miSpace.classList.toggle('on', TAB === 'space'); miCfg.classList.toggle('on', TAB === 'cfg');", SK)
+          soft(UI, "(TAB === 'space' ? tabSpace : null)", "(TAB === 'space' ? tabSpace : (TAB === 'cfg' ? tabCfg : null))", SK)
+          soft(UI, "else if (TAB === 'space') t = t.concat(T_space);", "else if (TAB === 'space') t = t.concat(T_space); else if (TAB === 'cfg') t = t.concat(T_cfg);", SK)
+          soft(UI, "RHS.space].forEach", "RHS.space, RHS.cfg].forEach", SK)
+          soft(UI, "'.mi.hand,.ai.hand{background:#fff;color:#000}',",
+           "'.mi.hand,.ai.hand{background:#fff;color:#000}', '.cfl{flex:1;display:flex;flex-direction:column;gap:14px}', " +
+           "'.cfr{display:flex;align-items:center;gap:22px;padding:22px 26px;border-radius:30px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.12)}', " +
+           "'.cfr.hand{background:#fff;color:#000}', '.cft{flex:1;display:flex;flex-direction:column;gap:6px}', '.cft b{font-size:28px;font-weight:600}', '.cft span{font-size:19px;font-weight:300;opacity:.8;line-height:1.3}', " +
+           "'.cfs{width:92px;height:50px;border-radius:25px;background:rgba(255,255,255,.25);position:relative;flex:none}', '.cfs i{position:absolute;left:5px;top:5px;width:40px;height:40px;border-radius:50%;background:#fff;transition:left .2s}', " +
+           "'.cfr.hand .cfs{background:rgba(0,0,0,.3)}', '.cfr.hand .cfs i{background:#000}', '.cfr.on .cfs{background:#3ddc84}', '.cfr.on .cfs i{left:47px}',", SK)
           soft('app/src/main/java/com/vr/launcher/MainActivity.java', 'class Bridge {', 'class Bridge {\n              @JavascriptInterface public void openAr() { ui.post(() -> { try { startActivity(new android.content.Intent(MainActivity.this, ArActivity.class)); finish(); } catch (Throwable t) { } }); }', 'openAr()')
           PY
           cat > app/src/main/java/com/vr/launcher/ArHand.java <<'EOF'
@@ -6544,7 +6566,9 @@ jobs:
                 }
                 session.resume();
               } catch (Exception e) {
-                Toast.makeText(this, "Erro ARCore: " + e, Toast.LENGTH_LONG).show();
+                // sem ARCore neste aparelho (ou falha ao abrir a camera): volta para o modo original
+                Toast.makeText(this, "Modo 6DoF indisponivel: " + e, Toast.LENGTH_LONG).show();
+                ui.postDelayed(new Runnable() { @Override public void run() { exitToOriginal(); } }, 2500);
                 return;
               }
               gl.onResume();
@@ -6574,8 +6598,13 @@ jobs:
               super.onRequestPermissionsResult(code, perms, res);
               if (res.length == 0 || res[0] != PackageManager.PERMISSION_GRANTED) {
                 Toast.makeText(this, "Preciso da permissao da camera", Toast.LENGTH_LONG).show();
-                finish();
+                exitToOriginal();
               }
+            }
+
+            /** Voltar = sair do modo 6DoF e voltar ao modo original. */
+            @Override public void onBackPressed() {
+              exitToOriginal();
             }
 
             @Override public void onWindowFocusChanged(boolean focus) {
@@ -6676,6 +6705,8 @@ jobs:
             git push || echo "::warning::Nao consegui salvar a chave no repositorio. Confira as permissoes do passo 2."
           fi
           if [ -f release.jks ]; then printf 'pass=%s\n' "$KS_PASS" > keystore.properties; fi
+                            
+
       
       - name: Compilar
         run: gradle assembleDebug --no-daemon
