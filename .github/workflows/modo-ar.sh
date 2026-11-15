@@ -2,7 +2,7 @@
 # Modo AR (6DoF) do VR Launcher: tudo do 6DoF fica neste arquivo.
 # Para atualizar: envie um modo-ar.sh novo para o repositorio, substituindo este.
 set -e
-echo "modo-ar.sh: Fase 4 - abas do modo original, tela curva, menu vertical, gesto (2026-11-15)"
+echo "modo-ar.sh: Fase 4b - menu limpo, barra unica, gesto sem polegar (2026-11-15)"
 mkdir -p app/src/main/java/com/vr/launcher
 python3 - <<'PY'
 def patch(path, old, new, skip=None):
@@ -689,24 +689,25 @@ import android.graphics.Path;
 import android.graphics.RectF;
 
 /**
- * Barra do navegador acima de cada janela (abas, voltar, avancar, endereco, fechar).
- * Desenhada num bitmap 960x182 que vira textura; o desenho usa unidades de 720x136.
+ * Barra do navegador acima de cada janela, minimalista: uma fileira com voltar, avancar, endereco,
+ * botao de abas e fechar janela. O botao de abas mostra/oculta, acima da fileira, as abas da janela com o "+".
+ * Desenhada num bitmap 960x167 que vira textura; o desenho usa unidades de 576x100.
  */
 final class ArChrome {
 
-  static final int DW = 720, DH = 136;
-  static final int BW = 960, BH = 182;
+  static final int DW = 576, DH = 100;
+  static final int BW = 960, BH = 167;
   static final float K = BW / (float) DW;
 
-  static final int NONE = 0, TAB = 1, TABX = 2, NEW = 3, WINX = 4, BACK = 5, FWD = 6, URL = 7;
+  static final int NONE = 0, TAB = 1, TABX = 2, NEW = 3, WINX = 4, BACK = 5, FWD = 6, URL = 7, TABS = 8;
 
-  // linha das abas e linha de navegacao (unidades de projeto)
-  private static final float R1_T = 4f, R1_B = 56f, R2_T = 62f, R2_B = 132f;
-  private static final float NEW_X0 = 660f, NEW_X1 = 714f;
-  private static final float TABS_X0 = 6f, TABS_X1 = 654f, GAP = 4f, TAB_MAX = 200f;
-  private static final float BACK_X0 = 6f, BACK_X1 = 76f, FWD_X0 = 80f, FWD_X1 = 150f;
-  private static final float URL_X0 = 154f, URL_X1 = 640f, WINX_X0 = 644f, WINX_X1 = 714f;
-  private static final float PAD = 3f;
+  // fileira das abas (so quando aberta, em cima) e fileira de navegacao (embaixo)
+  private static final float R1_T = 0f, R1_B = 44f, R2_T = 50f, R2_B = 100f;
+  private static final float PADX = 8f, GAP = 4f, TAB_MAX = 150f, PLUSW = 44f;
+  private static final float BACK_X0 = 8f, BACK_X1 = 58f, FWD_X0 = 62f, FWD_X1 = 112f;
+  private static final float URL_X0 = 118f, URL_X1 = 458f, TABS_X0 = 462f, TABS_X1 = 512f, WINX_X0 = 518f, WINX_X1 = 568f;
+  private static final float PAD = 4f;
+  private static final int WHITE = Color.WHITE, DIM = Color.argb(80, 255, 255, 255);
 
   private static final Paint P = new Paint(Paint.ANTI_ALIAS_FLAG);
   private static final RectF R = new RectF(0f, 0f, 0f, 0f);
@@ -715,36 +716,40 @@ final class ArChrome {
   private ArChrome() { }
 
   static float tabW(int n) {
-    float w = (TABS_X1 - TABS_X0 - (n - 1) * GAP) / Math.max(1, n);
+    float w = (DW - 2f * PADX - PLUSW - GAP - (n - 1) * GAP) / Math.max(1, n);
     return Math.min(TAB_MAX, w);
   }
 
-  static float tabX0(int i, int n) { return TABS_X0 + i * (tabW(n) + GAP); }
+  static float tabX0(int i, int n) { return PADX + i * (tabW(n) + GAP); }
 
   /** Retangulo (x0,y0,x1,y1) em unidades de projeto de um elemento. */
   static void rect(int elem, int idx, int n, float[] out) {
-    float x0 = 0f, x1 = 0f, y0 = R1_T, y1 = R1_B;
+    float x0 = 0f, x1 = 0f, y0 = R2_T, y1 = R2_B;
     switch (elem) {
-      case TAB: x0 = tabX0(idx, n); x1 = x0 + tabW(n); break;
-      case TABX: x1 = tabX0(idx, n) + tabW(n) - 3f; x0 = x1 - 44f; y0 = R1_T + 3f; y1 = R1_B - 3f; break;
-      case NEW: x0 = NEW_X0; x1 = NEW_X1; break;
-      case BACK: x0 = BACK_X0; x1 = BACK_X1; y0 = R2_T; y1 = R2_B; break;
-      case FWD: x0 = FWD_X0; x1 = FWD_X1; y0 = R2_T; y1 = R2_B; break;
-      case URL: x0 = URL_X0; x1 = URL_X1; y0 = R2_T; y1 = R2_B; break;
-      case WINX: x0 = WINX_X0; x1 = WINX_X1; y0 = R2_T; y1 = R2_B; break;
+      case TAB: x0 = tabX0(idx, n); x1 = x0 + tabW(n); y0 = R1_T; y1 = R1_B; break;
+      case TABX: x1 = tabX0(idx, n) + tabW(n) - 4f; x0 = x1 - 36f; y0 = R1_T + 4f; y1 = R1_B - 4f; break;
+      case NEW: x0 = tabX0(n, n); x1 = x0 + PLUSW; y0 = R1_T; y1 = R1_B; break;
+      case BACK: x0 = BACK_X0; x1 = BACK_X1; break;
+      case FWD: x0 = FWD_X0; x1 = FWD_X1; break;
+      case URL: x0 = URL_X0; x1 = URL_X1; break;
+      case TABS: x0 = TABS_X0; x1 = TABS_X1; break;
+      case WINX: x0 = WINX_X0; x1 = WINX_X1; break;
       default: break;
     }
     out[0] = x0; out[1] = y0; out[2] = x1; out[3] = y1;
   }
 
   /** dx, dy em unidades de projeto (0,0 = canto superior esquerdo). Devolve elem | (indice << 8). */
-  static int hit(float dx, float dy, int n, int cur) {
+  static int hit(float dx, float dy, int n, int cur, boolean tabsOpen) {
     if (dx < 0f || dx > DW || dy < 0f || dy > DH) return NONE;
     float[] r = new float[4];
     if (dy <= (R1_B + R2_T) / 2f) {
-      rect(NEW, 0, n, r);
-      if (in(dx, dy, r)) return NEW;
-      if (cur >= 0 && cur < n) {
+      if (!tabsOpen) return NONE;
+      if (n < ArPanel.MAXT) {
+        rect(NEW, 0, n, r);
+        if (in(dx, dy, r)) return NEW;
+      }
+      if (n > 1 && cur >= 0 && cur < n) {
         rect(TABX, cur, n, r);
         if (in(dx, dy, r)) return TABX | (cur << 8);
       }
@@ -754,14 +759,11 @@ final class ArChrome {
       }
       return NONE;
     }
-    rect(BACK, 0, n, r);
-    if (in(dx, dy, r)) return BACK;
-    rect(FWD, 0, n, r);
-    if (in(dx, dy, r)) return FWD;
-    rect(WINX, 0, n, r);
-    if (in(dx, dy, r)) return WINX;
-    rect(URL, 0, n, r);
-    if (in(dx, dy, r)) return URL;
+    int[] order = {BACK, FWD, TABS, WINX, URL};
+    for (int e : order) {
+      rect(e, 0, n, r);
+      if (in(dx, dy, r)) return e;
+    }
     return NONE;
   }
 
@@ -773,48 +775,54 @@ final class ArChrome {
   // Desenho
   // =============================================================
 
-  static void draw(Bitmap bmp, ArPanel.Snap s) {
+  static void draw(Bitmap bmp, ArPanel.Snap s, boolean tabsOpen) {
     Canvas c = new Canvas(bmp);
     bmp.eraseColor(0);
     c.scale(K, K);
     float[] r = new float[4];
-
-    // fundo: vidro escuro, bem discreto
-    fill(c, 0f, 0f, DW, DH, 30f, Color.argb(208, 14, 16, 24));
-
     int n = s.n;
-    for (int i = 0; i < n; i++) {
-      rect(TAB, i, n, r);
-      boolean sel = i == s.cur;
-      if (sel) fill(c, r[0], r[1], r[2], r[3], 20f, Color.argb(255, 48, 54, 74));
-      float textR = r[2] - (sel ? 52f : 12f);
-      text(c, s.titles[i], r[0] + 16f, 36f, textR - (r[0] + 16f), 22f, sel ? Color.WHITE : Color.rgb(150, 156, 176));
-      if (sel && n > 1) {
-        rect(TABX, i, n, r);
-        cross(c, (r[0] + r[2]) / 2f, (r[1] + r[3]) / 2f, 7f, Color.rgb(200, 205, 220), 3.5f);
+    int bg = Color.argb(135, 10, 12, 18);
+
+    if (tabsOpen) {
+      fill(c, 0f, R1_T, DW, R1_B, 22f, bg);
+      for (int i = 0; i < n; i++) {
+        rect(TAB, i, n, r);
+        boolean sel = i == s.cur;
+        if (sel) fill(c, r[0], r[1] + 4f, r[2], r[3] - 4f, 18f, Color.argb(60, 255, 255, 255));
+        float textR = r[2] - (sel && n > 1 ? 44f : 12f);
+        text(c, s.titles[i], r[0] + 14f, 29f, textR - (r[0] + 14f), 20f, sel ? WHITE : Color.argb(170, 255, 255, 255));
+        if (sel && n > 1) {
+          rect(TABX, i, n, r);
+          cross(c, (r[0] + r[2]) / 2f, (r[1] + r[3]) / 2f, 6f, WHITE, 3f);
+        }
+      }
+      if (n < ArPanel.MAXT) {
+        rect(NEW, 0, n, r);
+        float cx = (r[0] + r[2]) / 2f, cy = (r[1] + r[3]) / 2f;
+        line(c, cx - 8f, cy, cx + 8f, cy, WHITE, 3.5f);
+        line(c, cx, cy - 8f, cx, cy + 8f, WHITE, 3.5f);
       }
     }
-    if (n < ArPanel.MAXT) {
-      rect(NEW, 0, n, r);
-      float cx = (r[0] + r[2]) / 2f, cy = (r[1] + r[3]) / 2f;
-      fill(c, cx - 22f, cy - 22f, cx + 22f, cy + 22f, 22f, Color.argb(40, 255, 255, 255));
-      line(c, cx - 9f, cy, cx + 9f, cy, Color.rgb(225, 229, 240), 3.5f);
-      line(c, cx, cy - 9f, cx, cy + 9f, Color.rgb(225, 229, 240), 3.5f);
-    }
 
+    // fileira unica: voltar, avancar, endereco, abas, fechar
+    fill(c, 0f, R2_T, DW, R2_B, 25f, bg);
     rect(BACK, 0, n, r);
-    arrow(c, (r[0] + r[2]) / 2f, (r[1] + r[3]) / 2f, -1f, s.back ? Color.WHITE : Color.argb(70, 255, 255, 255));
+    arrow(c, (r[0] + r[2]) / 2f, (r[1] + r[3]) / 2f, -1f, s.back ? WHITE : DIM);
     rect(FWD, 0, n, r);
-    arrow(c, (r[0] + r[2]) / 2f, (r[1] + r[3]) / 2f, 1f, s.fwd ? Color.WHITE : Color.argb(70, 255, 255, 255));
+    arrow(c, (r[0] + r[2]) / 2f, (r[1] + r[3]) / 2f, 1f, s.fwd ? WHITE : DIM);
 
     rect(URL, 0, n, r);
-    fill(c, r[0], r[1], r[2], r[3], 34f, Color.argb(255, 30, 34, 48));
-    textCenter(c, shortUrl(s.url), (r[0] + r[2]) / 2f, (r[1] + r[3]) / 2f + 8f, r[2] - r[0] - 40f, 24f, Color.rgb(200, 205, 222));
+    fill(c, r[0], r[1] + 7f, r[2], r[3] - 7f, 18f, Color.argb(46, 255, 255, 255));
+    textCenter(c, shortUrl(s.url), (r[0] + r[2]) / 2f, (r[1] + r[3]) / 2f + 7f, r[2] - r[0] - 28f, 20f, WHITE);
+
+    rect(TABS, 0, n, r);
+    float tx = (r[0] + r[2]) / 2f, ty = (r[1] + r[3]) / 2f;
+    if (tabsOpen) fill(c, tx - 21f, ty - 21f, tx + 21f, ty + 21f, 21f, Color.argb(60, 255, 255, 255));
+    outline(c, tx - 11f, ty - 6f, tx + 5f, ty + 10f, 4f, WHITE, 3f);
+    outline(c, tx - 5f, ty - 11f, tx + 11f, ty + 5f, 4f, WHITE, 3f);
 
     rect(WINX, 0, n, r);
-    float wx = (r[0] + r[2]) / 2f, wy = (r[1] + r[3]) / 2f;
-    fill(c, wx - 28f, wy - 28f, wx + 28f, wy + 28f, 28f, Color.argb(60, 255, 255, 255));
-    cross(c, wx, wy, 9f, Color.rgb(240, 214, 218), 4f);
+    cross(c, (r[0] + r[2]) / 2f, (r[1] + r[3]) / 2f, 8f, WHITE, 3.5f);
   }
 
   static String shortUrl(String u) {
@@ -829,6 +837,14 @@ final class ArChrome {
 
   private static void fill(Canvas c, float x0, float y0, float x1, float y1, float rad, int col) {
     P.setStyle(Paint.Style.FILL);
+    P.setColor(col);
+    R.set(x0, y0, x1, y1);
+    c.drawRoundRect(R, rad, rad, P);
+  }
+
+  private static void outline(Canvas c, float x0, float y0, float x1, float y1, float rad, int col, float w) {
+    P.setStyle(Paint.Style.STROKE);
+    P.setStrokeWidth(w);
     P.setColor(col);
     R.set(x0, y0, x1, y1);
     c.drawRoundRect(R, rad, rad, P);
@@ -850,15 +866,15 @@ final class ArChrome {
   /** dir = -1 seta para a esquerda, +1 para a direita. */
   private static void arrow(Canvas c, float cx, float cy, float dir, int col) {
     P.setStyle(Paint.Style.STROKE);
-    P.setStrokeWidth(5f);
+    P.setStrokeWidth(4f);
     P.setStrokeCap(Paint.Cap.ROUND);
     P.setColor(col);
     PATH.reset();
-    PATH.moveTo(cx - dir * 4f, cy - 15f);
-    PATH.lineTo(cx + dir * 10f, cy);
-    PATH.lineTo(cx - dir * 4f, cy + 15f);
+    PATH.moveTo(cx - dir * 3f, cy - 10f);
+    PATH.lineTo(cx + dir * 7f, cy);
+    PATH.lineTo(cx - dir * 3f, cy + 10f);
     c.drawPath(PATH, P);
-    c.drawLine(cx + dir * 10f, cy, cx - dir * 14f, cy, P);
+    c.drawLine(cx + dir * 7f, cy, cx - dir * 10f, cy, P);
   }
 
   private static void textCenter(Canvas c, String t, float cx, float baseY, float maxW, float size, int col) {
@@ -1478,7 +1494,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
   // botao "+" (nova janela), ao lado da barra
   static final float PLUS_X = 0.225f, PLUS_S = 0.045f, PLUS_HIT = 0.028f;
   // barra do navegador, acima da janela
-  static final float CH_GAP = 0.012f, CH_W = 2f * HW, CH_H = CH_W * ArChrome.DH / ArChrome.DW;
+  static final float CH_GAP = 0.012f, CH_W = 2f * HW * 0.8f, CH_H = CH_W * ArChrome.DH / ArChrome.DW;
   static final float CHROME_Z = 0.004f;
   static final int MAX_WINS = 3;
 
@@ -1487,8 +1503,12 @@ final class ArRenderer implements GLSurfaceView.Renderer {
   static final float CURVE_TH = 0.30f, RN = HW / CURVE_TH;
   static final int CN = 28;
   // menu 3D: trilho vertical de icones (so icones) com a aba ao lado direito
-  static final int RAIL_N = 6;
-  static final float RAIL_P = 0.064f, RAIL_IC = 0.05f, RAIL_HALF = 0.04f, RAIL_DIST = 0.9f, RAIL_H = RAIL_N * RAIL_P;
+  static final int RAIL_N = 5;
+  // RAIL_TOP: espaco do relogio no topo; o relogio tem a mesma largura dos icones
+  static final float RAIL_P = 0.064f, RAIL_IC = 0.05f, RAIL_HALF = 0.04f, RAIL_DIST = 0.9f, RAIL_TOP = 0.05f, RAIL_H = RAIL_TOP + RAIL_N * RAIL_P;
+  static final float CLOCK_W = RAIL_IC, CLOCK_H = 0.03f;
+  // home, centralizar, espacial, apps, configuracoes (indices de makeGlyph)
+  static final int[] RAIL_GLYPH = {0, 1, 3, 4, 5};
   static final String[] VIEW_NAMES = {"preenchida (corta)", "meio-termo", "inteira (faixas)", "esticada (tela cheia)"};
   // pinca: liga com as pontas coladas, so solta quando abre de verdade
   static final float PINCH_ON = 0.16f, PINCH_OFF = 0.26f;
@@ -1509,6 +1529,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     boolean hidden = false;   // aba do menu fechada
     boolean linked = false;   // aba do menu: segue o trilho
     boolean rail = false;     // o proprio trilho de icones (sem painel)
+    boolean tabsOpen = false, chromeOpen = false;   // fileira de abas acima da barra do navegador
     final boolean menu;   // janela do menu 3D: sem barra de navegador, sem "+" nem curva, nao fecha
     int chromeTex = 0, chromeVer = -1;
     Bitmap chromeBmp;
@@ -1600,7 +1621,10 @@ final class ArRenderer implements GLSurfaceView.Renderer {
   private float menuReveal = 0f;
   private int menuTab = -1;
   private final int[] icoTex = new int[RAIL_N];
-  private int plusGlyph = 0, curveGlyph = 0;
+  private int curveGlyph = 0, clockTex = 0;
+  private Bitmap clockBmp = null;
+  private long clockSlot = -1;
+  private long lastPeaceMs = 0;
   // gesto de dois dedos descendo (abre / fecha / traz o menu)
   private boolean peace = false, swActive = false, swDone = false;
   private int peaceN = 0, swMode = 0;
@@ -1739,9 +1763,11 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     roundTex = bitmapTex(makeRound());
     discTex = bitmapTex(makeDisc());
     ringTex = bitmapTex(makeRing());
-    plusGlyph = bitmapTex(makeGlyph(6));
     curveGlyph = bitmapTex(makeGlyph(7));
-    for (int k = 0; k < RAIL_N; k++) icoTex[k] = bitmapTex(makeGlyph(k));
+    for (int k = 0; k < RAIL_N; k++) icoTex[k] = bitmapTex(makeGlyph(RAIL_GLYPH[k]));
+    clockBmp = Bitmap.createBitmap(200, 120, Bitmap.Config.ARGB_8888);
+    clockTex = emptyTex2d();
+    clockSlot = -1;
 
     // contexto GL novo (raro): refaz as texturas das janelas que ja existiam
     for (Win w : wins) {
@@ -2238,11 +2264,12 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     // barra do navegador: so redesenha o bitmap quando algo mudou (aba, titulo, endereco)
     for (Win w : wins) {
       ArPanel.Snap sn = w.panel.snap;
-      if (sn != null && sn.ver != w.chromeVer && w.chromeBmp != null) {
-        ArChrome.draw(w.chromeBmp, sn);
+      if (sn != null && (sn.ver != w.chromeVer || w.tabsOpen != w.chromeOpen) && w.chromeBmp != null) {
+        ArChrome.draw(w.chromeBmp, sn, w.tabsOpen);
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, w.chromeTex);
         GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, w.chromeBmp, 0);
         w.chromeVer = sn.ver;
+        w.chromeOpen = w.tabsOpen;
       }
     }
 
@@ -2294,13 +2321,11 @@ final class ArRenderer implements GLSurfaceView.Renderer {
       boolean hov = idle && hoverWin == w;
       boolean barOn = (dragWin == w) || (hov && hoverRegion == R_BAR);
       boolean cornOn = (sizeWin == w) || (hov && hoverRegion == R_CORNER);
-      boolean plusOn = hov && hoverRegion == R_PLUS;
       boolean barAct = dragWin == w, cornAct = sizeWin == w;
       float ba = barOn ? 0.95f : 0.55f, ca = cornOn ? 0.95f : 0.5f;
       quad(barTex, 0f, BAR_CY, BAR_W * (barOn ? 1.15f : 0.62f), BAR_H * (barOn ? 1.2f : 0.7f), barAct ? 0.37f : 1f, barAct ? 0.92f : 1f, barAct ? 0.83f : 1f, ba, dimV);
       quad(cornerTex, CSX, CSY, CS * (cornOn ? 1.2f : 0.8f), CS * (cornOn ? 1.2f : 0.8f), cornAct ? 0.37f : 1f, cornAct ? 0.92f : 1f, cornAct ? 0.83f : 1f, ca, dimV);
       if (!w.menu) {
-        if (webCount() < MAX_WINS) iconBtn(plusGlyph, PLUS_X, BAR_CY, PLUS_S * (plusOn ? 1.2f : 0.9f), plusOn, false, 1f, dimV);
         boolean curveOn = hov && hoverRegion == R_CURVE;
         iconBtn(curveGlyph, -PLUS_X, BAR_CY, PLUS_S * (curveOn ? 1.2f : 0.9f), curveOn, w.curved, 1f, dimV);
       }
@@ -2321,12 +2346,18 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     if (rw == null || menuReveal < 0.01f) return;
     modelOf(rw);
     boolean hov = idle && hoverWin == rw;
-    float rv = menuReveal * (RAIL_N + 1);
+    float rv = menuReveal * (RAIL_N + 2);
+    float ac = Math.max(0f, Math.min(1f, rv));
+    if (ac > 0f && clockTex != 0 && clockBmp != null) {
+      updateClock();
+      float ec = ac * ac * (3f - 2f * ac);
+      quad(clockTex, 0f, -0.019f + (1f - ec) * 0.05f, CLOCK_W * (0.8f + 0.2f * ec), CLOCK_H * (0.8f + 0.2f * ec), 1f, 1f, 1f, ec, dimV);
+    }
     for (int k = 0; k < RAIL_N; k++) {
-      float a = Math.max(0f, Math.min(1f, rv - k));
+      float a = Math.max(0f, Math.min(1f, rv - (k + 1)));
       if (a <= 0f) continue;
       float e = a * a * (3f - 2f * a);
-      float y = -(k + 0.5f) * RAIL_P + (1f - e) * 0.05f;
+      float y = -(RAIL_TOP + (k + 0.5f) * RAIL_P) + (1f - e) * 0.05f;
       boolean hot = hov && hoverRegion == R_ICON && hoverElem == k;
       boolean sel = k >= 2 && menuTab == k && tabWin != null && !tabWin.hidden;
       float sc = (0.7f + 0.3f * e) * (hot ? 1.15f : 1f);
@@ -2335,7 +2366,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     if (menuReveal > 0.9f) {
       boolean barOn = (dragWin == rw) || (hov && hoverRegion == R_BAR);
       boolean act = dragWin == rw;
-      quad(barTex, 0f, -RAIL_N * RAIL_P - 0.034f, 0.07f * (barOn ? 1.25f : 0.8f), 0.008f * (barOn ? 1.5f : 1f), act ? 0.37f : 1f, act ? 0.92f : 1f, act ? 0.83f : 1f, barOn ? 0.95f : 0.55f, dimV);
+      quad(barTex, 0f, -RAIL_H - 0.034f, 0.07f * (barOn ? 1.25f : 0.8f), 0.008f * (barOn ? 1.5f : 1f), act ? 0.37f : 1f, act ? 0.92f : 1f, act ? 0.83f : 1f, barOn ? 0.95f : 0.55f, dimV);
     }
   }
 
@@ -2523,7 +2554,9 @@ final class ArRenderer implements GLSurfaceView.Renderer {
       skel = null;
     }
 
-    updateMenuGesture(s, has && peace && peaceN >= 3 && skel != null, camPos, now);
+    if (peace) lastPeaceMs = now;
+    boolean peaceEff = has && skel != null && !handFist && ((peace && peaceN >= 2) || (swActive && now - lastPeaceMs < 250));
+    updateMenuGesture(s, peaceEff, camPos, now);
 
     boolean fistOn = has && handFist && fistN >= 3;
     // sem rastreio do ARCore ou com a mao fechada, nada e pego nem arrastado
@@ -2643,6 +2676,9 @@ final class ArRenderer implements GLSurfaceView.Renderer {
       case ArChrome.TABX:
         if (n == 1) closeWindow(w);
         else w.panel.closeTab(idx);
+        break;
+      case ArChrome.TABS:
+        w.tabsOpen = !w.tabsOpen;
         break;
       case ArChrome.NEW:
         if (n >= ArPanel.MAXT) say("Maximo de " + ArPanel.MAXT + " abas");
@@ -2799,26 +2835,25 @@ final class ArRenderer implements GLSurfaceView.Renderer {
   private int region(Win w, float x, float y) {
     regElem = 0;
     if (w.rail) {
-      float barY = -(RAIL_N * RAIL_P) - 0.034f;
+      float barY = -RAIL_H - 0.034f;
       if (Math.abs(x) <= 0.05f && Math.abs(y - barY) <= 0.026f && menuReveal > 0.9f) return R_BAR;
-      if (Math.abs(x) <= 0.036f && y <= 0f && y >= -RAIL_N * RAIL_P) {
-        int k = Math.min(RAIL_N - 1, (int) (-y / RAIL_P));
-        if (menuReveal * (RAIL_N + 1) - k > 0.6f) { regElem = k; return R_ICON; }
+      if (Math.abs(x) <= 0.036f && y <= -RAIL_TOP && y >= -RAIL_H) {
+        int k = Math.min(RAIL_N - 1, (int) ((-y - RAIL_TOP) / RAIL_P));
+        if (menuReveal * (RAIL_N + 2) - (k + 1) > 0.6f) { regElem = k; return R_ICON; }
       }
       return R_NONE;
     }
     if (Math.abs(x - CSX) <= CS_HIT && Math.abs(y - CSY) <= CS_HIT) return R_CORNER;
-    if (!w.menu && webCount() < MAX_WINS && Math.abs(x - PLUS_X) <= PLUS_HIT && Math.abs(y - BAR_CY) <= PLUS_HIT) return R_PLUS;
     if (!w.menu && Math.abs(x + PLUS_X) <= PLUS_HIT && Math.abs(y - BAR_CY) <= PLUS_HIT) return R_CURVE;
     if (Math.abs(x) <= BAR_HIT_X && Math.abs(y - BAR_CY) <= BAR_HIT_Y) return R_BAR;
     if (Math.abs(x) <= HW && Math.abs(y) <= HH) return R_BODY;
     float y0 = HH + CH_GAP;
-    if (!w.menu && y >= y0 - 0.006f && y <= y0 + CH_H + 0.006f && Math.abs(x) <= HW + 0.006f) {
+    if (!w.menu && y >= y0 - 0.006f && y <= y0 + CH_H + 0.006f && Math.abs(x) <= CH_W / 2f + 0.006f) {
       ArPanel.Snap sn = w.panel.snap;
       if (sn != null) {
         float dx = Math.max(0f, Math.min(ArChrome.DW, (x / CH_W + 0.5f) * ArChrome.DW));
         float dy = Math.max(0f, Math.min(ArChrome.DH, (1f - (y - y0) / CH_H) * ArChrome.DH));
-        int e = ArChrome.hit(dx, dy, sn.n, sn.cur);
+        int e = ArChrome.hit(dx, dy, sn.n, sn.cur, w.tabsOpen);
         if (e != ArChrome.NONE) { regElem = e; return R_CHROME; }
       }
     }
@@ -2833,44 +2868,40 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     return (float) Math.hypot(v[2 * a] - v[2 * b], v[2 * a + 1] - v[2 * b + 1]);
   }
 
-  /** Dois dedos (indicador e medio) levantados e juntos, os outros dobrados: mesma pose do app original. */
+  /**
+   * Dois dedos (indicador e medio) esticados para cima e juntos; anelar e mindinho dobrados.
+   * O polegar nao importa (solto, dobrado ou encostado). Tolerante a mao inclinada.
+   */
   private boolean computePeace() {
     float[] v = viewPts;
     float palm = dd(v, 0, 9);
     if (palm < 1f) return false;
-    float e8 = dd(v, 8, 0) / Math.max(dd(v, 6, 0), 1f), e12 = dd(v, 12, 0) / Math.max(dd(v, 10, 0), 1f);
+    float d8 = dd(v, 8, 0), d12 = dd(v, 12, 0);
+    float e8 = d8 / Math.max(dd(v, 6, 0), 1f), e12 = d12 / Math.max(dd(v, 10, 0), 1f);
     float e16 = dd(v, 16, 0) / Math.max(dd(v, 14, 0), 1f), e20 = dd(v, 20, 0) / Math.max(dd(v, 18, 0), 1f);
-    boolean up8 = (v[1] - v[17]) > 0.55f * dd(v, 8, 0), up12 = (v[1] - v[25]) > 0.55f * dd(v, 12, 0);
-    return e8 > 1.2f && e12 > 1.2f && e16 < 1.1f && e20 < 1.1f && up8 && up12 && dd(v, 8, 12) / palm < 0.5f;
-  }
-
-  /** A mao esta sobre o trilho (ou sobre a aba aberta)? */
-  private boolean overMenu(float[] cam, float px, float py) {
-    float[] dir = rayDir(px, py, cam);
-    if (railWin != null && planeHit(railWin, cam, dir, pl)) {
-      if (Math.abs(pl[0]) <= 0.14f && pl[1] <= 0.08f && pl[1] >= -RAIL_H - 0.08f) return true;
-    }
-    if (tabWin != null && !tabWin.hidden && planeHit(tabWin, cam, dir, pl)) {
-      if (Math.abs(pl[0]) <= HW * tabWin.s + 0.05f && Math.abs(pl[1]) <= HH * tabWin.s + 0.06f) return true;
-    }
-    return false;
+    // pontas dos dois dedos acima do pulso e a mao mais ou menos em pe
+    boolean up8 = (v[1] - v[17]) > 0.35f * d8, up12 = (v[1] - v[25]) > 0.35f * d12;
+    boolean straight = e8 > 1.1f && e12 > 1.1f;
+    boolean others = e16 < 1.2f && e20 < 1.2f;
+    boolean together = dd(v, 8, 12) / palm < 0.6f;
+    return straight && others && up8 && up12 && together;
   }
 
   /**
-   * Dois dedos descendo: com o menu fechado, abre (os icones surgem descendo atras da mao); sobre o menu, fecha;
-   * fora do menu, traz o menu para onde voce olha. Soltar no meio do caminho termina o que passou da metade.
+   * Dois dedos descendo: com o menu fechado, abre (os icones surgem descendo atras da mao); com o menu aberto, fecha.
+   * Soltar no meio do caminho termina o que passou da metade. Depois de concluir, so um gesto novo (mao solta) age.
    */
   private void updateMenuGesture(Session s, boolean on, float[] cam, long now) {
     if (on && railWin != null) {
       float px = (skel[16] + skel[24]) * 0.5f, py = (skel[17] + skel[25]) * 0.5f;
-      if (!swActive || now - swT > 1200) {
+      if (!swActive || (!swDone && now - swT > 1200)) {
         swActive = true; swDone = false; swY0 = py; swT = now; swProg = 0f;
         if (!menuOpen) {
           swMode = 1;
           placeRailAtRay(s, cam, rayDir(px, py, cam));
           menuReveal = 0f;
         } else {
-          swMode = overMenu(cam, px, py) ? 2 : 3;
+          swMode = 2;
         }
       } else if (py < swY0) {
         swY0 = py; swT = now;
@@ -2883,16 +2914,12 @@ final class ArRenderer implements GLSurfaceView.Renderer {
         } else if (swMode == 2) {
           menuReveal = 1f - swProg;
           if (swProg >= 1f) { hideMenu(); swDone = true; }
-        } else if (swMode == 3 && swProg >= 1f) {
-          placeRailAtRay(s, cam, rayDir(vw / 2f, vh / 2f, cam));
-          menuReveal = 0f;
-          swDone = true;
         }
       }
     } else if (swActive) {
       if (!swDone) {
         if (swMode == 1) menuOpen = swProg >= 0.5f;
-        else if (swMode == 2 && swProg >= 0.5f) hideMenu();
+        else if (swMode == 2) { if (swProg >= 0.5f) hideMenu(); }
       }
       swActive = false; swMode = 0; swDone = false;
     }
@@ -2905,6 +2932,33 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     float d = target - menuReveal;
     float step = 2.8f * dt;
     menuReveal += Math.max(-step, Math.min(step, d));
+  }
+
+  /** Relogio do menu: HH:MM, com os dois pontos piscando; redesenha duas vezes por segundo. */
+  private void updateClock() {
+    long slot = System.currentTimeMillis() / 500L;
+    if (slot == clockSlot) return;
+    clockSlot = slot;
+    java.util.Calendar cal = java.util.Calendar.getInstance();
+    String hh = String.format("%02d", cal.get(java.util.Calendar.HOUR_OF_DAY)), mm = String.format("%02d", cal.get(java.util.Calendar.MINUTE));
+    Bitmap b = clockBmp;
+    b.eraseColor(0);
+    Canvas c = new Canvas(b);
+    Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+    p.setStyle(Paint.Style.FILL);
+    p.setColor(Color.argb(190, 18, 20, 28));
+    c.drawRoundRect(new RectF(0f, 0f, 200f, 120f), 40f, 40f, p);
+    p.setColor(Color.WHITE);
+    p.setTextSize(58f);
+    float wh = p.measureText(hh), wm = p.measureText(mm), wc = p.measureText(":");
+    float x = (200f - (wh + wc + wm)) / 2f, base = 76f;
+    c.drawText(hh, x, base, p);
+    p.setColor(Color.argb((slot & 1L) == 0L ? 255 : 90, 255, 255, 255));
+    c.drawText(":", x + wh, base - 3f, p);
+    p.setColor(Color.WHITE);
+    c.drawText(mm, x + wh + wc, base, p);
+    GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, clockTex);
+    GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, b, 0);
   }
 
   private void hideMenu() {
@@ -2925,7 +2979,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     if (k == 0) { closeTab(); return; }
     if (k == 1) { recenter(); return; }
     if (menuTab == k && tabWin != null && !tabWin.hidden) { closeTab(); return; }
-    openTab(k == 2 ? "help" : k == 3 ? "space" : k == 4 ? "apps" : "cfg", k);
+    openTab(k == 2 ? "space" : k == 3 ? "apps" : "cfg", k);
   }
 
   private void openTab(String name, int k) {
@@ -3151,10 +3205,14 @@ final class ArRenderer implements GLSurfaceView.Renderer {
         c.drawText("?", 48f, 67f, p);
         break;
       }
-      case 3:   // globo
+      case 3:   // mundo: circulo, meridiano, equador e dois paralelos
+        p.setStrokeWidth(6f);
         c.drawCircle(48f, 48f, 35f, p);
-        c.drawOval(new RectF(13f, 35f, 83f, 61f), p);
-        c.drawOval(new RectF(35f, 13f, 61f, 83f), p);
+        c.drawOval(new RectF(31f, 13f, 65f, 83f), p);
+        c.drawLine(13f, 48f, 83f, 48f, p);
+        pa.moveTo(19f, 29f); pa.quadTo(48f, 40f, 77f, 29f);
+        pa.moveTo(19f, 67f); pa.quadTo(48f, 56f, 77f, 67f);
+        c.drawPath(pa, p);
         break;
       case 4:   // apps
         p.setStrokeWidth(6f);
@@ -3727,7 +3785,11 @@ final class ArMenuPage {
     ".ai{border-radius:14px;background:rgba(255,255,255,.09);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;font-size:12px}\n" +
     ".lg{width:44px;height:44px;border-radius:12px;background:#fff;color:#000;font-weight:600;font-size:22px;display:flex;align-items:center;justify-content:center;overflow:hidden}\n" +
     ".lg img{width:30px;height:30px}\n" +
-    ".row{display:flex;align-items:center;gap:12px;padding:8px 12px;border-radius:14px;background:rgba(255,255,255,.09);margin-bottom:8px;min-height:62px}\n" +
+    ".row{display:flex;align-items:center;gap:12px;padding:6px 12px;border-radius:14px;background:rgba(255,255,255,.09);margin-bottom:6px;min-height:52px}\n" +
+    ".chev{font-size:26px;opacity:.7;width:40px;text-align:center}\n" +
+    ".hd{display:flex;align-items:center;gap:10px;margin:-2px 0 8px}\n" +
+    ".back{padding:7px 14px;border-radius:14px;background:rgba(255,255,255,.12);font-size:14px}\n" +
+    ".hd h1{margin:0}\n" +
     ".row .t{flex:1}\n" +
     ".row b{font-size:16px;display:block;margin-bottom:2px}\n" +
     ".row span{font-size:12px;opacity:.78;line-height:1.25;display:block}\n" +
@@ -3746,14 +3808,13 @@ final class ArMenuPage {
     "</style></head>\n" +
     "<body><div id=\"app\">\n" +
     "<div id=\"main\">\n" +
-    "  <div class=\"pg\" id=\"p-help\"><h1>GESTOS</h1><div class=\"hl\">\n" +
+    "  <div class=\"pg\" id=\"p-help\"><div class=\"hd\"><div class=\"back\" data-go=\"cfg\">&lsaquo; Voltar</div><h1>AJUDA</h1></div><div class=\"hl\">\n" +
     "    <div class=\"hi\"><b>Pin&ccedil;a</b> (polegar + indicador) &mdash; toca e clica</div>\n" +
     "    <div class=\"hi\"><b>Pin&ccedil;a na barra</b> e arrastar &mdash; move a janela ou o menu</div>\n" +
     "    <div class=\"hi\"><b>Pin&ccedil;a no canto</b> e puxar &mdash; muda o tamanho</div>\n" +
-    "    <div class=\"hi\"><b>Bot&atilde;o +</b> &mdash; nova janela (at&eacute; 3)</div>\n" +
-    "    <div class=\"hi\"><b>Bot&atilde;o da tela curva</b> (esquerda da barra) &mdash; curva ou desencurva a janela</div>\n" +
+    "    <div class=\"hi\"><b>Bot&atilde;o da tela curva</b> (embaixo, &agrave; esquerda) &mdash; curva ou desencurva a janela</div>\n" +
     "    <div class=\"hi\"><b>Punho fechado por 1 s</b> na janela &mdash; fecha a janela</div>\n" +
-    "    <div class=\"hi\"><b>Dois dedos juntos descendo</b> &mdash; abre ou fecha o menu; fora dele, traz o menu para onde voc&ecirc; olha</div>\n" +
+    "    <div class=\"hi\"><b>Dois dedos juntos e esticados, descendo</b> &mdash; abre ou fecha o menu (sem o polegar)</div>\n" +
     "    <div class=\"hi\"><b>Configura&ccedil;&otilde;es</b> &mdash; desligar o 6DoF volta ao modo original</div>\n" +
     "  </div></div>\n" +
     "  <div class=\"pg\" id=\"p-space\"><h1>ESPACIAL</h1><div class=\"soon\">O modo espacial (360&deg;)<br>chega em uma pr&oacute;xima fase do 6DoF.</div></div>\n" +
@@ -3761,6 +3822,7 @@ final class ArMenuPage {
     "  <div class=\"pg\" id=\"p-cfg\"><h1>CONFIGURA&Ccedil;&Otilde;ES</h1>\n" +
     "    <div class=\"row\" data-act=\"orig\"><div class=\"t\"><b>Modo 6DoF (AR)</b><span id=\"s6\">Ligado. Desligue para voltar ao modo original.</span></div><div class=\"sw on\" id=\"sw6\"><i></i></div></div>\n" +
     "    <div class=\"row\" data-act=\"gpu\"><div class=\"t\"><b>IA da m&atilde;o na GPU</b><span>Mais r&aacute;pido. Se travar, use a CPU.</span></div><div class=\"sw\" id=\"swg\"><i></i></div></div>\n" +
+    "    <div class=\"row\" data-go=\"help\"><div class=\"t\"><b>Ajuda e gestos</b><span>Como usar a m&atilde;o no modo 6DoF.</span></div><div class=\"chev\">&rsaquo;</div></div>\n" +
     "    <div class=\"row\" data-act=\"hybrid\"><div class=\"t\"><b>Modo h&iacute;brido</b><span>Usa o girosc&oacute;pio quando o ARCore perde o rastreio.</span></div><div class=\"sw\" id=\"swh\"><i></i></div></div>\n" +
     "  </div>\n" +
     "</div></div>\n" +
@@ -3783,6 +3845,7 @@ final class ArMenuPage {
     "function refresh(){var s={};try{s=JSON.parse(A.state())}catch(e){}\n" +
     "  document.getElementById('swg').className='sw'+(s.gpu?' on':'');\n" +
     "  document.getElementById('swh').className='sw'+(s.hybrid?' on':'');}\n" +
+    "document.querySelectorAll('[data-go]').forEach(function(e){e.onclick=function(){show(e.getAttribute('data-go'));};});\n" +
     "document.querySelectorAll('[data-act]').forEach(function(e){e.onclick=function(){\n" +
     "  var a=e.getAttribute('data-act');act(a);\n" +
     "  if(a==='orig'){document.getElementById('s6').textContent='Voltando ao modo original...';document.getElementById('sw6').className='sw';}\n" +
