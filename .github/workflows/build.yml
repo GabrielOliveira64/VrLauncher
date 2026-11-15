@@ -3638,7 +3638,7 @@ jobs:
 
       - name: Modo AR (6DoF)
         run: |
-          if [ -f modo-ar.sh ]; then bash modo-ar.sh; else echo "::warning::modo-ar.sh nao encontrado: o modo 6DoF nao sera incluido"; fi                                                                           
+          if [ -f .github/workflows/modo-ar.sh ]; then bash .github/workflows/modo-ar.sh; else echo "::warning::modo-ar.sh nao encontrado: o modo 6DoF nao sera incluido"; fi                                                                         
       - name: Assinatura fixa
         env:
           KS_PASS: ${{ secrets.KS_PASS }}
@@ -3657,9 +3657,6 @@ jobs:
             git push || echo "::warning::Nao consegui salvar a chave no repositorio. Confira as permissoes do passo 2."
           fi
           if [ -f release.jks ]; then printf 'pass=%s\n' "$KS_PASS" > keystore.properties; fi
-                            
-
-      
       - name: Compilar
         run: gradle assembleDebug --no-daemon
       - uses: actions/upload-artifact@v4
