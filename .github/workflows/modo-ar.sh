@@ -2,7 +2,7 @@
 # Modo AR (6DoF) do VR Launcher: tudo do 6DoF fica neste arquivo.
 # Para atualizar: envie um modo-ar.sh novo para o repositorio, substituindo este.
 set -e
-echo "modo-ar.sh: Fase 4b - menu limpo, barra unica, gesto sem polegar (2026-11-15)"
+echo "modo-ar.sh: Fase 5 - teclado virtual, editar endereco, agrupar e minimizar (2026-11-15)"
 mkdir -p app/src/main/java/com/vr/launcher
 python3 - <<'PY'
 def patch(path, old, new, skip=None):
@@ -776,6 +776,11 @@ final class ArChrome {
   // =============================================================
 
   static void draw(Bitmap bmp, ArPanel.Snap s, boolean tabsOpen) {
+    draw(bmp, s, tabsOpen, null, false, false);
+  }
+
+  /** edit != null: o endereco esta sendo editado (texto, cursor piscando e, se sel, tudo selecionado). */
+  static void draw(Bitmap bmp, ArPanel.Snap s, boolean tabsOpen, String edit, boolean caret, boolean selAll) {
     Canvas c = new Canvas(bmp);
     bmp.eraseColor(0);
     c.scale(K, K);
@@ -812,8 +817,14 @@ final class ArChrome {
     arrow(c, (r[0] + r[2]) / 2f, (r[1] + r[3]) / 2f, 1f, s.fwd ? WHITE : DIM);
 
     rect(URL, 0, n, r);
-    fill(c, r[0], r[1] + 7f, r[2], r[3] - 7f, 18f, Color.argb(46, 255, 255, 255));
-    textCenter(c, shortUrl(s.url), (r[0] + r[2]) / 2f, (r[1] + r[3]) / 2f + 7f, r[2] - r[0] - 28f, 20f, WHITE);
+    if (edit != null) {
+      fill(c, r[0], r[1] + 7f, r[2], r[3] - 7f, 18f, Color.argb(80, 255, 255, 255));
+      outline(c, r[0] + 1f, r[1] + 8f, r[2] - 1f, r[3] - 8f, 17f, Color.argb(230, 94, 234, 212), 2f);
+      editText(c, selAll ? shortUrl(edit) : edit, r[0] + 14f, r[2] - 14f, (r[1] + r[3]) / 2f + 7f, caret, selAll);
+    } else {
+      fill(c, r[0], r[1] + 7f, r[2], r[3] - 7f, 18f, Color.argb(46, 255, 255, 255));
+      textCenter(c, shortUrl(s.url), (r[0] + r[2]) / 2f, (r[1] + r[3]) / 2f + 7f, r[2] - r[0] - 28f, 20f, WHITE);
+    }
 
     rect(TABS, 0, n, r);
     float tx = (r[0] + r[2]) / 2f, ty = (r[1] + r[3]) / 2f;
@@ -823,6 +834,37 @@ final class ArChrome {
 
     rect(WINX, 0, n, r);
     cross(c, (r[0] + r[2]) / 2f, (r[1] + r[3]) / 2f, 8f, WHITE, 3.5f);
+  }
+
+  /** Texto do endereco em edicao: mostra o final se nao couber; cursor no fim; selecao pinta o fundo. */
+  private static void editText(Canvas c, String t, float x0, float x1, float baseY, boolean caret, boolean sel) {
+    P.setStyle(Paint.Style.FILL);
+    P.setTextSize(20f);
+    float maxW = x1 - x0 - 6f;
+    if (t.length() == 0) {
+      P.setColor(Color.argb(120, 255, 255, 255));
+      c.drawText("Digite o endereco ou pesquisa", x0, baseY, P);
+      if (caret) { P.setColor(WHITE); c.drawRect(x0 - 1f, baseY - 20f, x0 + 1f, baseY + 5f, P); }
+      return;
+    }
+    String out = t;
+    boolean cut = false;
+    while (out.length() > 1 && P.measureText(out) > maxW) { out = out.substring(1); cut = true; }
+    if (cut) out = "\u2026" + out.substring(1);
+    float w = P.measureText(out);
+    if (sel) {
+      P.setColor(Color.argb(150, 94, 234, 212));
+      R.set(x0 - 3f, baseY - 21f, x0 + w + 3f, baseY + 6f);
+      c.drawRoundRect(R, 6f, 6f, P);
+      P.setColor(Color.rgb(4, 32, 28));
+    } else {
+      P.setColor(WHITE);
+    }
+    c.drawText(out, x0, baseY, P);
+    if (caret && !sel) {
+      P.setColor(Color.rgb(94, 234, 212));
+      c.drawRect(x0 + w + 2f, baseY - 20f, x0 + w + 4f, baseY + 5f, P);
+    }
   }
 
   static String shortUrl(String u) {
@@ -997,6 +1039,8 @@ final class ArPanel {
   private final String home;
   /** Painel do menu 3D: pagina propria (ArMenuPage) com ponte "ArMenu" para o Java. */
   final boolean menu;
+  /** Teclado virtual: pagina propria (ArKbPage) com ponte "ArKb". */
+  final boolean kb;
   private long downTime = 0;
   private Runnable tick, watchdog;
 
@@ -1006,6 +1050,7 @@ final class ArPanel {
 
   ArPanel(ArActivity act, int pw, int ph, int dpi, String url, boolean menu) {
     this.act = act; this.pw = pw; this.ph = ph; this.dpi = dpi; this.home = url; this.menu = menu;
+    this.kb = menu && ArActivity.KB_URL.equals(url);
     this.id = ++seq;
     tabs.add(new Tab(url));
     android.opengl.Matrix.setIdentityM(stm, 0);
@@ -1028,9 +1073,89 @@ final class ArPanel {
       @Override public void run() {
         if (dead || cur >= tabs.size()) return;
         WebView w = tabs.get(cur).web;
-        if (w != null) w.loadUrl("javascript:" + js);
+        if (w != null) w.evaluateJavascript(js, null);
       }
     });
+  }
+
+  /** Aspas JavaScript para um texto qualquer. */
+  static String jsq(String t) {
+    StringBuilder b = new StringBuilder("'");
+    for (int i = 0; i < t.length(); i++) {
+      char c = t.charAt(i);
+      if (c == '\\') b.append("\\\\");
+      else if (c == '\'') b.append("\\'");
+      else if (c == '\n') b.append("\\n");
+      else if (c == '\r') b.append("\\r");
+      else if (c == '<') b.append("\\u003c");
+      else if (c == '\u2028') b.append("\\u2028");
+      else if (c == '\u2029') b.append("\\u2029");
+      else b.append(c);
+    }
+    return b.append('\'').toString();
+  }
+
+  /** Escreve texto no campo que esta com o foco na pagina (teclado virtual). */
+  void typeText(String t) {
+    eval("(function(t){try{var d=document,a=d.activeElement;"
+      + "while(a&&a.tagName==='IFRAME'){var n=null;try{n=a.contentDocument.activeElement}catch(e){break}"
+      + "if(!n||n===a.contentDocument.body)break;a=n;d=a.ownerDocument}"
+      + "if(!a||a===d.body)return;"
+      + "var ok=false;try{ok=d.execCommand('insertText',false,t)}catch(e){}"
+      + "if(!ok&&a.value!==undefined){var s=a.selectionStart,e2=a.selectionEnd,v=a.value;"
+      + "var nv=v.slice(0,s)+t+v.slice(e2);"
+      + "var st=Object.getOwnPropertyDescriptor(Object.getPrototypeOf(a),'value');"
+      + "if(st&&st.set)st.set.call(a,nv);else a.value=nv;"
+      + "try{a.selectionStart=a.selectionEnd=s+t.length}catch(e){}"
+      + "a.dispatchEvent(new Event('input',{bubbles:true}))}"
+      + "}catch(e){}})(" + jsq(t) + ")");
+  }
+
+  /** Teclas especiais no campo com foco: "back" (apagar) e "enter". */
+  void pressKey(String k) {
+    if ("back".equals(k)) {
+      eval("(function(){try{var d=document,a=d.activeElement;"
+        + "while(a&&a.tagName==='IFRAME'){var n=null;try{n=a.contentDocument.activeElement}catch(e){break}"
+        + "if(!n||n===a.contentDocument.body)break;a=n;d=a.ownerDocument}"
+        + "if(!a||a===d.body)return;"
+        + "var ok=false;try{ok=d.execCommand('delete')}catch(e){}"
+        + "if(!ok&&a.value!==undefined){var s=a.selectionStart,e2=a.selectionEnd,v=a.value;"
+        + "if(s===e2&&s>0){s--}"
+        + "var nv=v.slice(0,s)+v.slice(e2);"
+        + "var st=Object.getOwnPropertyDescriptor(Object.getPrototypeOf(a),'value');"
+        + "if(st&&st.set)st.set.call(a,nv);else a.value=nv;"
+        + "try{a.selectionStart=a.selectionEnd=s}catch(e){}"
+        + "a.dispatchEvent(new Event('input',{bubbles:true}))}"
+        + "}catch(e){}})()");
+    } else if ("enter".equals(k)) {
+      eval("(function(){try{var d=document,a=d.activeElement;"
+        + "while(a&&a.tagName==='IFRAME'){var n=null;try{n=a.contentDocument.activeElement}catch(e){break}"
+        + "if(!n||n===a.contentDocument.body)break;a=n;d=a.ownerDocument}"
+        + "if(!a||a===d.body)return;"
+        + "var o={key:'Enter',code:'Enter',keyCode:13,which:13,bubbles:true,cancelable:true};"
+        + "var go=a.dispatchEvent(new KeyboardEvent('keydown',o));"
+        + "a.dispatchEvent(new KeyboardEvent('keypress',o));"
+        + "if(go){var ml=a.tagName==='TEXTAREA'||a.isContentEditable;"
+        + "if(ml){try{d.execCommand('insertText',false,'\\n')}catch(e){}}"
+        + "else if(a.form){if(a.form.requestSubmit)a.form.requestSubmit();else a.form.submit()}}"
+        + "a.dispatchEvent(new KeyboardEvent('keyup',o));"
+        + "}catch(e){}})()");
+    }
+  }
+
+  /** Endereco digitado: endereco completo, dominio (acrescenta https://) ou pesquisa no Google. */
+  void navigate(String text) {
+    String u = text == null ? "" : text.trim();
+    if (u.length() == 0) return;
+    String l = u.toLowerCase();
+    if (l.startsWith("http://") || l.startsWith("https://") || l.startsWith("about:") || l.startsWith("file:")) {
+      // ja e um endereco
+    } else if (u.indexOf(' ') < 0 && (u.indexOf('.') > 0 || l.startsWith("localhost"))) {
+      u = "https://" + u;
+    } else {
+      try { u = "https://www.google.com/search?q=" + java.net.URLEncoder.encode(u, "UTF-8"); } catch (Throwable e) { return; }
+    }
+    go(u);
   }
 
   // =============================================================
@@ -1181,7 +1306,8 @@ final class ArPanel {
   private void load(Tab t) {
     if (t.web != null && !t.loaded) {
       t.loaded = true;
-      if (menu) t.web.loadDataWithBaseURL("https://vrlauncher.local/", ArMenuPage.HTML, "text/html", "utf-8", null);
+      if (kb) t.web.loadDataWithBaseURL("https://vrlauncher.local/", ArKbPage.HTML, "text/html", "utf-8", null);
+      else if (menu) t.web.loadDataWithBaseURL("https://vrlauncher.local/", ArMenuPage.HTML, "text/html", "utf-8", null);
       else t.web.loadUrl(t.url);
     }
   }
@@ -1351,6 +1477,12 @@ final class ArPanel {
     });
   }
 
+  private static final String FOCUS_JS = "(function(){if(window.__arf)return;window.__arf=1;var lt=0;"
+    + "['touchstart','mousedown','pointerdown'].forEach(function(n){document.addEventListener(n,function(){lt=Date.now()},true)});"
+    + "document.addEventListener('focusin',function(e){var t=e.target;if(!t||Date.now()-lt>1500)return;"
+    + "var ed=t.isContentEditable||t.tagName==='TEXTAREA'||(t.tagName==='INPUT'&&!/^(button|checkbox|radio|submit|range|color|file|image|reset|hidden)$/i.test(t.type||'text'));"
+    + "try{window.ArWeb&&ArWeb.focus(!!ed)}catch(x){}},true)})()";
+
   /** WebView que nunca abre o teclado do celular. */
   static final class QuietWebView extends WebView {
     QuietWebView(Context c) { super(c); }
@@ -1361,12 +1493,23 @@ final class ArPanel {
   private WebView newWeb(Context c, final Tab tab) {
     final WebView v = new QuietWebView(c);
     v.setBackgroundColor(menu ? Color.rgb(14, 16, 22) : Color.WHITE);
-    if (menu) {
+    if (kb) {
+      v.addJavascriptInterface(new Object() {
+        @JavascriptInterface public void key(String k) { ArPanel.this.act.kbKey(k); }
+      }, "ArKb");
+    } else if (menu) {
       v.addJavascriptInterface(new Object() {
         @JavascriptInterface public void act(String a) { ArPanel.this.act.menuAction(a); }
         @JavascriptInterface public String state() { return ArPanel.this.act.menuState(); }
         @JavascriptInterface public String page() { return ArPanel.this.act.menuPage; }
       }, "ArMenu");
+    } else {
+      // avisa quando um campo de texto da pagina ganha o foco, para abrir o teclado virtual
+      v.addJavascriptInterface(new Object() {
+        @JavascriptInterface public void focus(boolean editable) {
+          if (editable && cur < tabs.size() && tabs.get(cur) == tab) ArPanel.this.act.pageFocus(ArPanel.this);
+        }
+      }, "ArWeb");
     }
     WebSettings s = v.getSettings();
     s.setJavaScriptEnabled(true);
@@ -1379,6 +1522,7 @@ final class ArPanel {
         return !(u.startsWith("http:") || u.startsWith("https:") || u.startsWith("about:") || u.startsWith("blob:") || u.startsWith("data:"));
       }
       @Override public void onPageFinished(WebView view, String u) {
+        if (!menu) view.evaluateJavascript(FOCUS_JS, null);
         if (u != null && u.startsWith("http")) tab.url = u;
         publish();
       }
@@ -1498,7 +1642,9 @@ final class ArRenderer implements GLSurfaceView.Renderer {
   static final float CHROME_Z = 0.004f;
   static final int MAX_WINS = 3;
 
-  static final int R_NONE = 0, R_BODY = 1, R_BAR = 2, R_CORNER = 3, R_CHROME = 4, R_PLUS = 5, R_CURVE = 6, R_ICON = 7;
+  static final int R_NONE = 0, R_BODY = 1, R_BAR = 2, R_CORNER = 3, R_CHROME = 4, R_PLUS = 5, R_CURVE = 6, R_ICON = 7, R_KEY = 8, R_LINK = 9, R_BUBBLE = 10;
+  // grupos: janelas lado a lado num arco de raio GRP_R em volta de quem usa
+  static final float GGAP = 0.012f, GRP_R = 1.2f, BUB = 0.1f;
   // tela curva: meio angulo da curvatura (rad) e raio (arco = largura da janela)
   static final float CURVE_TH = 0.30f, RN = HW / CURVE_TH;
   static final int CN = 28;
@@ -1523,8 +1669,22 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     {9, 13}, {13, 14}, {14, 15}, {15, 16}, {13, 17}, {17, 18}, {18, 19}, {19, 20}, {0, 17}
   };
 
+  /** Grupo de janelas coladas lado a lado (esquerda -> direita); g = moldura do grupo. */
+  private static final class Grp {
+    final ArrayList<Win> m = new ArrayList<Win>();
+    Pose g;
+  }
+
   private static final class Win {
     Pose pose; Anchor anchor; float s = 1f; final ArPanel panel;
+    Grp group = null;
+    boolean kb = false;        // teclado virtual (segue a janela dona)
+    boolean min = false;       // minimizada: so aparece a bolha
+    boolean hold = false;      // sendo movida/redimensionada: nao refaz a ancora
+    boolean editing = false, urlSel = false;   // enderecos em edicao
+    String urlBuf = "";
+    long lockUntil = 0;        // bloqueada para interacao (alvo de agrupamento)
+    int chromeSig = 0, bubTex = 0;
     boolean curved = false;   // tela curva (so as laterais, na horizontal)
     boolean hidden = false;   // aba do menu fechada
     boolean linked = false;   // aba do menu: segue o trilho
@@ -1614,6 +1774,13 @@ final class ArRenderer implements GLSurfaceView.Renderer {
   private Win lastActive = null;
   volatile java.util.List<String> initWins = null;   // janelas/abas do modo original
   private Pose lastCamPose = null;
+
+  // teclado virtual, agrupar, minimizar
+  private Win kbWin = null, kbOwner = null, dropT = null, lastTapWin = null;
+  private int dropSide = 0;
+  private long lastTapMs = 0;
+  private Pose dragInv = null;
+  private int winShadeLoc = 0, keyGlyph = 0, linkGlyph = 0;
 
   // menu 3D
   private Win railWin = null, tabWin = null;
@@ -1750,6 +1917,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     winSLoc = GLES20.glGetUniformLocation(winProg, "u_S");
     winDimLoc = GLES20.glGetUniformLocation(winProg, "u_Dim");
     winHalfVLoc = GLES20.glGetUniformLocation(winProg, "u_HalfV");
+    winShadeLoc = GLES20.glGetUniformLocation(winProg, "u_Shade");
 
     flatProg = program(FLAT_VS, FLAT_FS);
     flatPosLoc = GLES20.glGetAttribLocation(flatProg, "a_Pos");
@@ -1764,6 +1932,8 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     discTex = bitmapTex(makeDisc());
     ringTex = bitmapTex(makeRing());
     curveGlyph = bitmapTex(makeGlyph(7));
+    keyGlyph = bitmapTex(makeGlyph(8));
+    linkGlyph = bitmapTex(makeGlyph(9));
     for (int k = 0; k < RAIL_N; k++) icoTex[k] = bitmapTex(makeGlyph(RAIL_GLYPH[k]));
     clockBmp = Bitmap.createBitmap(200, 120, Bitmap.Config.ARGB_8888);
     clockTex = emptyTex2d();
@@ -1882,6 +2052,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
       updateInteraction(s, frame, ct);
       animateMenu(frameDt);
       placeTab();
+      placeKb();
 
       drawWindows();
       drawHand();
@@ -2169,22 +2340,318 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     if (tracking) railWin.anchor = anchorOf(s, p);
   }
 
-  /** Centralizar: traz janelas e menu para a frente, sem fechar nada. */
+  /** Centralizar: traz janelas e menu para a frente, sem fechar nada. Grupos continuam juntos. */
   private void centerAll(Session s, Pose cp) {
     resetInteraction();
-    ArrayList<Win> web = new ArrayList<Win>();
-    for (Win w : wins) if (!w.menu) web.add(w);
-    for (int i = 0; i < web.size(); i++) {
-      Win w = web.get(i);
-      Pose p = arcPose(cp, i, web.size());
-      if (w.anchor != null) { try { w.anchor.detach(); } catch (Throwable e) { } w.anchor = null; }
-      w.pose = p;
-      if (tracking) w.anchor = anchorOf(s, p);
+    ArrayList<ArrayList<Win>> units = new ArrayList<ArrayList<Win>>();
+    ArrayList<Win> seen = new ArrayList<Win>();
+    for (Win w : wins) {
+      if (w.menu || seen.contains(w)) continue;
+      ArrayList<Win> u = new ArrayList<Win>(unit(w));
+      seen.addAll(u);
+      units.add(u);
     }
-    float left = web.size() > 0 ? (web.size() - 1) / 2f * ((2f * HW + 0.06f) / 1.2f) + HW / 1.2f + 0.16f : 0.15f;
+    float[] span = new float[units.size()];
+    float total = 0f;
+    for (int i = 0; i < units.size(); i++) {
+      ArrayList<Win> u = units.get(i);
+      float sp = 0f;
+      for (Win w : u) sp += 2f * (float) Math.atan(HW * w.s / GRP_R);
+      sp += (u.size() - 1) * GGAP / GRP_R;
+      span[i] = sp;
+      total += sp;
+    }
+    float gapA = 0.06f / GRP_R;
+    if (units.size() > 1) total += (units.size() - 1) * gapA;
+    float[] t = cp.getTranslation();
+    float h = heading(cp);
+    float cum = 0f;
+    for (int i = 0; i < units.size(); i++) {
+      ArrayList<Win> u = units.get(i);
+      float a = h + total / 2f - (cum + span[i] / 2f);
+      cum += span[i] + gapA;
+      Pose G = facing(t[0] + GRP_R * (float) Math.sin(a), t[1], t[2] + GRP_R * (float) Math.cos(a), t[0], t[2]);
+      Win w0 = u.get(0);
+      if (w0.group != null) {
+        w0.group.g = G;
+        layoutGroup(w0.group, G);
+      } else {
+        w0.pose = G;
+        if (w0.anchor != null) { try { w0.anchor.detach(); } catch (Throwable e) { } w0.anchor = null; }
+        if (tracking) w0.anchor = anchorOf(s, G);
+      }
+    }
+    float left = units.isEmpty() ? 0.15f : total / 2f + 0.16f;
     placeRailBeside(s, cp, Math.min(0.42f, left));
     if (menuOpen) menuReveal = 0f;
     say("Janelas centralizadas");
+  }
+
+  // =============================================================
+  // Grupos de janelas
+  // =============================================================
+
+  private ArrayList<Win> unit(Win w) {
+    if (w.group != null) return w.group.m;
+    ArrayList<Win> l = new ArrayList<Win>();
+    l.add(w);
+    return l;
+  }
+
+  /** Angulo (rad) do centro de cada janela do grupo no arco; as bordas se encostam com um vao pequeno. */
+  private static float[] groupAngles(Grp g) {
+    int n = g.m.size();
+    float[] a = new float[n], hw = new float[n];
+    float tot = 0f;
+    for (int i = 0; i < n; i++) { hw[i] = (float) Math.atan(HW * g.m.get(i).s / GRP_R); tot += 2f * hw[i]; }
+    tot += (n - 1) * GGAP / GRP_R;
+    float x = -tot / 2f;
+    for (int i = 0; i < n; i++) { a[i] = x + hw[i]; x += 2f * hw[i] + GGAP / GRP_R; }
+    return a;
+  }
+
+  /** Pose de uma janela do arco, relativa a moldura do grupo (+z da moldura aponta para quem olha). */
+  private static Pose localOf(float ph) {
+    return new Pose(new float[]{GRP_R * (float) Math.sin(ph), 0f, GRP_R * (1f - (float) Math.cos(ph))},
+      new float[]{0f, (float) Math.sin(-ph / 2f), 0f, (float) Math.cos(-ph / 2f)});
+  }
+
+  private Pose groupFrame(Grp g) {
+    return g.m.get(0).current().compose(localOf(groupAngles(g)[0]).inverse());
+  }
+
+  /** Poe todas as janelas do grupo no lugar, a partir da moldura G. As ancoras sao refeitas depois. */
+  private void layoutGroup(Grp g, Pose G) {
+    float[] ph = groupAngles(g);
+    for (int i = 0; i < g.m.size(); i++) {
+      Win m = g.m.get(i);
+      m.pose = G.compose(localOf(ph[i]));
+      if (m.anchor != null) { try { m.anchor.detach(); } catch (Throwable e) { } m.anchor = null; }
+    }
+  }
+
+  private void leaveGroup(Win w) {
+    Grp g = w.group;
+    if (g == null) return;
+    g.m.remove(w);
+    w.group = null;
+    if (g.m.size() < 2) {
+      for (Win m : g.m) m.group = null;
+      g.m.clear();
+    }
+  }
+
+  private static boolean endFree(Win b, int side) {
+    Grp g = b.group;
+    return g == null || (side > 0 ? g.m.get(g.m.size() - 1) == b : g.m.get(0) == b);
+  }
+
+  private boolean canJoin(Win a, Win b, int side) {
+    if (a == null || b == null || a == b || a.menu || b.menu || a.min || b.min || side == 0) return false;
+    if (a.group != null && a.group == b.group) return false;
+    if (unit(a).size() + unit(b).size() > MAX_WINS) return false;
+    return endFree(b, side);
+  }
+
+  /** Procura a janela que fica "embaixo" da que esta sendo arrastada (o raio passa pelo centro dela). */
+  private void findDrop(float[] camPos) {
+    Win a = dragWin;
+    if (a == null || a.menu || a.linked) { clearDrop(); return; }
+    float[] c = a.pose.getTranslation();
+    float dx = c[0] - camPos[0], dy = c[1] - camPos[1], dz = c[2] - camPos[2];
+    float len = (float) Math.sqrt(dx * dx + dy * dy + dz * dz);
+    if (len < 0.05f) { clearDrop(); return; }
+    float[] d = {dx / len, dy / len, dz / len};
+    Win best = null;
+    float bestT = 1e9f;
+    int bestSide = 0;
+    for (Win b : wins) {
+      if (b == a || b.menu || b.hidden || b.min) continue;
+      if (!planeHit(b, camPos, d, pl)) continue;
+      float lx = pl[0] / b.s, ly = pl[1] / b.s;
+      if (Math.abs(lx) > HW || Math.abs(ly) > HH) continue;
+      int sd = lx >= 0f ? 1 : -1;
+      if (b == dropT && Math.abs(lx) < 0.08f && dropSide != 0) sd = dropSide;   // histerese perto do meio
+      if (!canJoin(a, b, sd)) continue;
+      if (best == null || pl[2] < bestT) { best = b; bestT = pl[2]; bestSide = sd; }
+    }
+    if (best != null) {
+      if (best != dropT) say("Solte para agrupar");
+      best.lockUntil = SystemClock.uptimeMillis() + 700;
+      dropT = best;
+      dropSide = bestSide;
+    } else {
+      clearDrop();
+    }
+  }
+
+  private void clearDrop() { dropT = null; dropSide = 0; }
+
+  /** Junta a unidade de a (janela ou grupo) a de b, do lado indicado. b fica onde esta. */
+  private void joinGroups(Win a, Win b, int side) {
+    ArrayList<Win> ua = new ArrayList<Win>(unit(a)), ub = new ArrayList<Win>(unit(b));
+    Grp g = new Grp();
+    if (side > 0) { g.m.addAll(ub); g.m.addAll(ua); } else { g.m.addAll(ua); g.m.addAll(ub); }
+    Pose bp = b.current();
+    for (Win m : g.m) { m.group = g; m.hold = false; }
+    float[] ph = groupAngles(g);
+    Pose G = bp.compose(localOf(ph[g.m.indexOf(b)]).inverse());
+    g.g = G;
+    layoutGroup(g, G);
+    b.lockUntil = SystemClock.uptimeMillis() + 700;
+    a.lockUntil = b.lockUntil;
+    say("Janelas agrupadas");
+  }
+
+  /** Corrente entre duas janelas: separa o grupo naquele ponto. */
+  private void splitGroup(Win w) {
+    Grp g = w.group;
+    if (g == null) return;
+    int i = g.m.indexOf(w);
+    if (i <= 0) return;
+    ArrayList<Win> L = new ArrayList<Win>(g.m.subList(0, i)), R = new ArrayList<Win>(g.m.subList(i, g.m.size()));
+    for (Win m : g.m) m.group = null;
+    g.m.clear();
+    nudge(L, -0.04f);
+    nudge(R, 0.04f);
+    say("Janelas separadas");
+  }
+
+  private void nudge(ArrayList<Win> l, float dx) {
+    for (Win m : l) {
+      m.pose = m.current().compose(Pose.makeTranslation(dx, 0f, 0f));
+      if (m.anchor != null) { try { m.anchor.detach(); } catch (Throwable e) { } m.anchor = null; }
+    }
+    if (l.size() > 1) {
+      Grp ng = new Grp();
+      ng.m.addAll(l);
+      for (Win m : l) m.group = ng;
+    }
+  }
+
+  // =============================================================
+  // Minimizar (toque duplo na barra) e restaurar (toque na bolha)
+  // =============================================================
+
+  private void barTap(Win w, long now) {
+    if (w.menu || w.kb || w.min) return;
+    if (lastTapWin == w && now - lastTapMs < 800) { lastTapWin = null; minimize(w); }
+    else { lastTapWin = w; lastTapMs = now; }
+  }
+
+  private void minimize(Win w) {
+    if (w.menu || w.min) return;
+    leaveGroup(w);
+    if (kbOwner == w) hideKb();
+    w.editing = false;
+    w.tabsOpen = false;
+    String letter = "\u2022";
+    ArPanel.Snap sn = w.panel.snap;
+    if (sn != null && sn.cur >= 0 && sn.cur < sn.titles.length) {
+      String t = sn.titles[sn.cur];
+      for (int i = 0; i < t.length(); i++) {
+        if (Character.isLetterOrDigit(t.charAt(i))) { letter = t.substring(i, i + 1).toUpperCase(); break; }
+      }
+    }
+    if (w.bubTex != 0) GLES20.glDeleteTextures(1, new int[]{w.bubTex}, 0);
+    w.bubTex = bitmapTex(makeBubble(letter));
+    w.min = true;
+    if (lastActive == w) lastActive = null;
+    say("Janela minimizada (toque na bolha para voltar)");
+  }
+
+  private void restore(Win w) {
+    if (!w.min) return;
+    w.min = false;
+    if (w.bubTex != 0) { GLES20.glDeleteTextures(1, new int[]{w.bubTex}, 0); w.bubTex = 0; }
+    w.lockUntil = SystemClock.uptimeMillis() + 500;
+    lastActive = w;
+    say("Janela restaurada");
+  }
+
+  // =============================================================
+  // Teclado virtual e edicao do endereco
+  // =============================================================
+
+  private void ensureKb(Win owner) {
+    if (kbWin != null || session == null) return;
+    kbWin = addWindowP(session, owner.current(), newPanel(ArActivity.KB_URL, true), true, false);
+    kbWin.kb = true;
+    kbWin.s = 0.85f;
+    kbWin.hidden = true;
+  }
+
+  private void showKb(Win owner) {
+    ensureKb(owner);
+    if (kbWin == null) return;
+    if (kbOwner != null && kbOwner != owner) kbOwner.editing = false;
+    kbOwner = owner;
+    kbWin.hidden = false;
+    placeKb();
+  }
+
+  private void hideKb() {
+    if (kbOwner != null) kbOwner.editing = false;
+    kbOwner = null;
+    if (kbWin != null) kbWin.hidden = true;
+  }
+
+  private void toggleKb(Win w) {
+    if (kbWin != null && !kbWin.hidden && kbOwner == w) hideKb();
+    else showKb(w);
+  }
+
+  /** O teclado fica logo abaixo da janela dona, acompanhando quando ela se move. */
+  private void placeKb() {
+    if (kbWin == null || kbWin.hidden) return;
+    Win o = kbOwner;
+    if (o == null || !wins.contains(o) || o.min) { hideKb(); return; }
+    float y = -(HH * o.s + 0.09f * o.s + HH * kbWin.s);
+    kbWin.pose = o.current().compose(Pose.makeTranslation(0f, y, 0f));
+  }
+
+  void pageFocus(ArPanel p) {
+    for (Win w : wins) {
+      if (w.panel == p && !w.menu && !w.min) {
+        if (!(kbWin != null && !kbWin.hidden && kbOwner == w)) showKb(w);
+        return;
+      }
+    }
+  }
+
+  private void startUrlEdit(Win w) {
+    ArPanel.Snap sn = w.panel.snap;
+    showKb(w);
+    if (kbWin == null) return;
+    w.urlBuf = sn == null || sn.url == null ? "" : sn.url;
+    w.urlSel = w.urlBuf.length() > 0;
+    w.editing = true;
+  }
+
+  /** Tecla vinda do teclado virtual (thread do GL). Texto vai para o endereco em edicao ou para o campo da pagina. */
+  void kbKey(String tok) {
+    if (tok == null) return;
+    if (tok.equals("k:close")) { hideKb(); return; }
+    Win o = kbOwner;
+    if (o == null || !wins.contains(o)) return;
+    if (o.editing) {
+      if (tok.startsWith("t:")) {
+        if (o.urlSel) { o.urlBuf = ""; o.urlSel = false; }
+        if (o.urlBuf.length() < 400) o.urlBuf += tok.substring(2);
+      } else if (tok.equals("k:back")) {
+        if (o.urlSel) { o.urlBuf = ""; o.urlSel = false; }
+        else if (o.urlBuf.length() > 0) o.urlBuf = o.urlBuf.substring(0, o.urlBuf.length() - 1);
+      } else if (tok.equals("k:enter")) {
+        String t = o.urlBuf;
+        o.editing = false;
+        hideKb();
+        o.panel.navigate(t);
+      }
+      return;
+    }
+    if (tok.startsWith("t:")) o.panel.typeText(tok.substring(2));
+    else if (tok.equals("k:back")) o.panel.pressKey("back");
+    else if (tok.equals("k:enter")) o.panel.pressKey("enter");
   }
 
   private void spawnFront(Session s, String url) {
@@ -2225,6 +2692,11 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     if (hoverWin == w) { hoverWin = null; hoverRegion = R_NONE; }
     if (lastActive == w) lastActive = null;
     if (fistWin == w) { fistWin = null; fistProg = 0f; }
+    if (dropT == w) clearDrop();
+    if (lastTapWin == w) lastTapWin = null;
+    if (kbOwner == w) hideKb();
+    leaveGroup(w);
+    if (w.bubTex != 0) { GLES20.glDeleteTextures(1, new int[]{w.bubTex}, 0); w.bubTex = 0; }
     wins.remove(w);
     if (w.anchor != null) { try { w.anchor.detach(); } catch (Throwable e) { } w.anchor = null; }
     panels.remove(w.panel);
@@ -2241,13 +2713,13 @@ final class ArRenderer implements GLSurfaceView.Renderer {
 
   /** Mantem cada janela presa a uma ancora valida; se o ARCore derrubar a ancora, recria na ultima posicao boa. */
   private void maintainAnchors(Session s) {
-    for (Win w : wins) { if (!w.linked) maintain1(s, w); }
+    for (Win w : wins) { if (!w.linked && !w.kb) maintain1(s, w); }
     if (railWin != null) maintain1(s, railWin);
   }
 
   private void maintain1(Session s, Win w) {
     {
-      if (w == dragWin || (w == railWin && dragWin != null && dragWin.linked)) return;
+      if (w == dragWin || w.hold || (w == railWin && dragWin != null && dragWin.linked)) return;
       Anchor a = w.anchor;
       if (a != null) {
         TrackingState st = a.getTrackingState();
@@ -2264,8 +2736,11 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     // barra do navegador: so redesenha o bitmap quando algo mudou (aba, titulo, endereco)
     for (Win w : wins) {
       ArPanel.Snap sn = w.panel.snap;
-      if (sn != null && (sn.ver != w.chromeVer || w.tabsOpen != w.chromeOpen) && w.chromeBmp != null) {
-        ArChrome.draw(w.chromeBmp, sn, w.tabsOpen);
+      boolean caret = w.editing && ((System.currentTimeMillis() / 500L) & 1L) == 0L;
+      int sig = w.editing ? (w.urlBuf.hashCode() * 31 + (w.urlSel ? 2 : 0) + (caret ? 1 : 0) + 7) : 0;
+      if (sn != null && (sn.ver != w.chromeVer || w.tabsOpen != w.chromeOpen || sig != w.chromeSig) && w.chromeBmp != null) {
+        ArChrome.draw(w.chromeBmp, sn, w.tabsOpen, w.editing ? w.urlBuf : null, caret, w.urlSel);
+        w.chromeSig = sig;
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, w.chromeTex);
         GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, w.chromeBmp, 0);
         w.chromeVer = sn.ver;
@@ -2285,7 +2760,8 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     GLES20.glEnableVertexAttribArray(winPosLoc);
     GLES20.glEnableVertexAttribArray(winUvLoc);
     for (Win w : wins) {
-      if (w.hidden) continue;
+      if (w.hidden || w.min) continue;
+      GLES20.glUniform2f(winShadeLoc, w == dropT ? (float) dropSide : 0f, w == dropT ? 1f : 0f);
       FloatBuffer vb = w.curved ? curveVerts : winVerts, ub = w.curved ? curveUvs : winUvs;
       vb.position(0);
       ub.position(0);
@@ -2317,18 +2793,26 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     boolean idle = dragWin == null && sizeWin == null;
     for (Win w : wins) {
       if (w.hidden) continue;
+      if (w.min) { drawBubble(w, idle && hoverWin == w, dimV); continue; }
       modelOf(w);
       boolean hov = idle && hoverWin == w;
       boolean barOn = (dragWin == w) || (hov && hoverRegion == R_BAR);
       boolean cornOn = (sizeWin == w) || (hov && hoverRegion == R_CORNER);
       boolean barAct = dragWin == w, cornAct = sizeWin == w;
       float ba = barOn ? 0.95f : 0.55f, ca = cornOn ? 0.95f : 0.5f;
-      quad(barTex, 0f, BAR_CY, BAR_W * (barOn ? 1.15f : 0.62f), BAR_H * (barOn ? 1.2f : 0.7f), barAct ? 0.37f : 1f, barAct ? 0.92f : 1f, barAct ? 0.83f : 1f, ba, dimV);
-      quad(cornerTex, CSX, CSY, CS * (cornOn ? 1.2f : 0.8f), CS * (cornOn ? 1.2f : 0.8f), cornAct ? 0.37f : 1f, cornAct ? 0.92f : 1f, cornAct ? 0.83f : 1f, ca, dimV);
+      if (!w.kb) quad(barTex, 0f, BAR_CY, BAR_W * (barOn ? 1.15f : 0.62f), BAR_H * (barOn ? 1.2f : 0.7f), barAct ? 0.37f : 1f, barAct ? 0.92f : 1f, barAct ? 0.83f : 1f, ba, dimV);
+      if (!w.kb) quad(cornerTex, CSX, CSY, CS * (cornOn ? 1.2f : 0.8f), CS * (cornOn ? 1.2f : 0.8f), cornAct ? 0.37f : 1f, cornAct ? 0.92f : 1f, cornAct ? 0.83f : 1f, ca, dimV);
       if (!w.menu) {
         boolean curveOn = hov && hoverRegion == R_CURVE;
         iconBtn(curveGlyph, -PLUS_X, BAR_CY, PLUS_S * (curveOn ? 1.2f : 0.9f), curveOn, w.curved, 1f, dimV);
+        boolean keyOn = hov && hoverRegion == R_KEY, kbShown = kbWin != null && !kbWin.hidden && kbOwner == w;
+        iconBtn(keyGlyph, PLUS_X, BAR_CY, PLUS_S * (keyOn ? 1.2f : 0.9f), keyOn, kbShown, 1f, dimV);
+        if (w.group != null && w.group.m.indexOf(w) > 0) {
+          boolean lh = hov && hoverRegion == R_LINK;
+          iconBtn(linkGlyph, chainX(w), chainY(), 0.05f * (lh ? 1.2f : 0.95f), lh, false, 1f, dimV);
+        }
       }
+      if (w == dropT && dropSide != 0) iconBtn(linkGlyph, dropSide * HW / 2f, 0f, 0.1f, false, true, 1f, dimV);
       if (w.chromeVer >= 0) quad(w.chromeTex, 0f, HH + CH_GAP + CH_H / 2f, CH_W, CH_H, 1f, 1f, 1f, 1f, dimV);
       if (hov && hoverRegion == R_CHROME) highlight(w, hoverElem, dimV);
     }
@@ -2339,6 +2823,18 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     GLES20.glDepthMask(true);
     GLES20.glDisable(GLES20.GL_BLEND);
   }
+
+  /** Bolha da janela minimizada: disco com a inicial do site, no lugar da janela. */
+  private void drawBubble(Win w, boolean hov, float dimV) {
+    if (w.bubTex == 0) return;
+    w.current().toMatrix(model, 0);
+    bend = false;
+    float sz = BUB * (hov ? 1.15f : 1f);
+    quad(w.bubTex, 0f, 0f, sz, sz, 1f, 1f, 1f, 1f, dimV);
+  }
+
+  private static float chainX(Win w) { return -(HW + 0.006f / w.s); }
+  private static float chainY() { return HH + CH_GAP + CH_H / 2f; }
 
   /** Trilho do menu: so icones, um abaixo do outro; aparecem descendo. */
   private void drawRail(float dimV, boolean idle) {
@@ -2455,6 +2951,8 @@ final class ArRenderer implements GLSurfaceView.Renderer {
   private void resetInteraction() {
     if (touchWin != null) sendTouch(touchWin, MotionEvent.ACTION_CANCEL, lastPx, lastPy);
     dragWin = null; sizeWin = null; touchWin = null;
+    for (Win w : wins) w.hold = false;
+    clearDrop();
     pinchWasOn = false;
     fistWin = null; fistProg = 0f; fistLatched = false;
   }
@@ -2581,6 +3079,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
         else grab(s, hit, now);
       }
     } else if (!pinchOn && pinchWasOn) {
+      if (pend != null && pend.region == R_BAR) barTap(pend.win, now);   // pinca rapida na barra: toque
       release(s);
       pend = null;
     }
@@ -2611,7 +3110,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
       return;
     }
     if (fistLatched) return;
-    Win w = (hit != null && !hit.win.menu) ? hit.win : null;   // o menu nao fecha com o punho
+    Win w = (hit != null && !hit.win.menu && !hit.win.min) ? hit.win : null;   // o menu e as bolhas nao fecham com o punho
     if (w != null) {
       if (fistWin != w) { fistWin = w; fistStart = now; }
       fistHitMs = now;
@@ -2636,6 +3135,14 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     if (h.region == R_ICON) {
       if (now - lastClick > 350) { lastClick = now; menuSelect(h.elem); }
     } else if (h.region == R_CORNER) {
+      if (w.group != null) {
+        w.group.g = groupFrame(w.group);
+        for (Win m : w.group.m) {
+          m.pose = m.current();
+          m.hold = true;
+          if (m.anchor != null) { try { m.anchor.detach(); } catch (Throwable e) { } m.anchor = null; }
+        }
+      }
       sizeWin = w;
       sizeS0 = w.s;
       sizeD0 = Math.max(0.05f, (float) Math.hypot(h.lx, h.ly));
@@ -2644,7 +3151,18 @@ final class ArRenderer implements GLSurfaceView.Renderer {
       if (w.linked && railWin != null) {
         railWin.pose = railWin.current();
         if (railWin.anchor != null) { try { railWin.anchor.detach(); } catch (Throwable e) { } railWin.anchor = null; }
-      } else if (w.anchor != null) { try { w.anchor.detach(); } catch (Throwable e) { } w.anchor = null; }
+      } else {
+        if (w.group != null) {
+          w.group.g = groupFrame(w.group);
+          dragInv = localOf(groupAngles(w.group)[w.group.m.indexOf(w)]).inverse();
+        }
+        for (Win m : unit(w)) {
+          m.pose = m.current();
+          m.hold = true;
+          if (m.anchor != null) { try { m.anchor.detach(); } catch (Throwable e) { } m.anchor = null; }
+        }
+      }
+      clearDrop();
       dragWin = w;
       grabDist = h.t;
       grabSize = Math.max(sizeS, 0.001f);
@@ -2658,6 +3176,12 @@ final class ArRenderer implements GLSurfaceView.Renderer {
       sendTouch(w, MotionEvent.ACTION_DOWN, lastPx, lastPy);
     } else if (h.region == R_CURVE) {
       if (now - lastClick > 400) { lastClick = now; w.curved = !w.curved; say(w.curved ? "Tela curva" : "Tela plana"); }
+    } else if (h.region == R_KEY) {
+      if (now - lastClick > 400) { lastClick = now; toggleKb(w); }
+    } else if (h.region == R_LINK) {
+      if (now - lastClick > 400) { lastClick = now; splitGroup(w); }
+    } else if (h.region == R_BUBBLE) {
+      if (now - lastClick > 400) { lastClick = now; restore(w); }
     } else if (h.region == R_PLUS) {
       if (now - lastClick > 400) { lastClick = now; newWindowNear(s, w, null); }
     } else if (h.region == R_CHROME) {
@@ -2669,6 +3193,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     int code = elem & 0xFF, idx = elem >> 8;
     ArPanel.Snap sn = w.panel.snap;
     int n = sn == null ? 1 : sn.n;
+    if (code != ArChrome.URL && w.editing) { w.editing = false; hideKb(); }
     switch (code) {
       case ArChrome.TAB:
         w.panel.selectTab(idx);
@@ -2694,7 +3219,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
         w.panel.goForward();
         break;
       case ArChrome.URL:
-        say("Editar o endereco chega junto com o teclado");
+        startUrlEdit(w);
         break;
       default:
         break;
@@ -2706,14 +3231,23 @@ final class ArRenderer implements GLSurfaceView.Renderer {
       sendTouch(touchWin, MotionEvent.ACTION_UP, lastPx, lastPy);
       touchWin = null;
     }
+    Win sw = sizeWin;
     sizeWin = null;
+    if (sw != null) for (Win m : unit(sw)) m.hold = false;
     Win w = dragWin;
     if (w != null) {
       dragWin = null;
-      if (tracking) {   // sem rastreio, maintainAnchors prende depois
-        if (w.linked && railWin != null) railWin.anchor = anchorOf(s, railWin.pose);
-        else w.anchor = anchorOf(s, w.pose);
+      if (w.linked && railWin != null) {
+        if (tracking) railWin.anchor = anchorOf(s, railWin.pose);
+      } else if (dropT != null && canJoin(w, dropT, dropSide)) {
+        joinGroups(w, dropT, dropSide);
+      } else {
+        for (Win m : unit(w)) {
+          m.hold = false;
+          if (tracking) m.anchor = anchorOf(s, m.pose);   // sem rastreio, maintainAnchors prende depois
+        }
       }
+      clearDrop();
     }
   }
 
@@ -2723,6 +3257,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     float d = (float) Math.hypot(pl[0], pl[1]);
     float target = Math.max(S_MIN, Math.min(S_MAX, sizeS0 * d / sizeD0));
     w.s += (target - w.s) * 0.5f;
+    if (w.group != null && w.group.g != null) layoutGroup(w.group, w.group.g);
   }
 
   /** Mover: a janela segue a mira do dedo; a distancia vem do tamanho da mao (mao mais perto = janela mais perto). */
@@ -2743,6 +3278,12 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     Pose np = new Pose(new float[]{nx, ny, nz}, new float[]{0f, (float) Math.sin(yaw / 2f), 0f, (float) Math.cos(yaw / 2f)});
     w.pose = np;
     if (w.linked && railWin != null) railWin.pose = np.compose(Pose.makeTranslation(-tabOffX(), -tabOffY(), 0f));
+    if (w.group != null && dragInv != null) {
+      Pose G = np.compose(dragInv);
+      w.group.g = G;
+      layoutGroup(w.group, G);
+    }
+    if (!w.linked && !w.menu) findDrop(camPos);
   }
 
   private void doTouchMove(float[] camPos, float[] dir) {
@@ -2779,11 +3320,14 @@ final class ArRenderer implements GLSurfaceView.Renderer {
 
   private Hit raycast(float[] o, float[] d) {
     Hit best = null;
+    long nowR = SystemClock.uptimeMillis();
     for (int i = -1; i < wins.size(); i++) {
       Win w = i < 0 ? railWin : wins.get(i);
-      if (w == null || w.hidden || (w.rail && menuReveal < 0.05f)) continue;
+      if (w == null || w.hidden || (w.rail && menuReveal < 0.05f) || w.lockUntil > nowR) continue;
       if (!planeHit(w, o, d, pl)) continue;
-      int reg = region(w, pl[0] / w.s, pl[1] / w.s);
+      int reg;
+      if (w.min) { regElem = 0; reg = Math.hypot(pl[0], pl[1]) <= BUB * 0.6f ? R_BUBBLE : R_NONE; }
+      else reg = region(w, pl[0] / w.s, pl[1] / w.s);
       if (reg == R_NONE) continue;
       if (best == null || pl[2] < best.t) best = new Hit(w, pl[2], pl[0], pl[1], reg, regElem);
     }
@@ -2795,7 +3339,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     Pose inv = w.current().inverse();
     float[] lo = inv.transformPoint(o);
     float[] ld = inv.rotateVector(d);
-    if (w.curved) return cylHit(w, lo, ld, out);
+    if (w.curved && !w.min) return cylHit(w, lo, ld, out);
     if (Math.abs(ld[2]) < 1e-4f) return false;
     float t = -lo[2] / ld[2];
     if (t <= 0f) return false;
@@ -2843,7 +3387,11 @@ final class ArRenderer implements GLSurfaceView.Renderer {
       }
       return R_NONE;
     }
+    if (w.kb) return (Math.abs(x) <= HW && Math.abs(y) <= HH) ? R_BODY : R_NONE;
+    if (!w.menu && w.group != null && w.group.m.indexOf(w) > 0
+      && Math.abs(x - chainX(w)) <= 0.03f && Math.abs(y - chainY()) <= 0.03f) return R_LINK;
     if (Math.abs(x - CSX) <= CS_HIT && Math.abs(y - CSY) <= CS_HIT) return R_CORNER;
+    if (!w.menu && Math.abs(x - PLUS_X) <= PLUS_HIT && Math.abs(y - BAR_CY) <= PLUS_HIT) return R_KEY;
     if (!w.menu && Math.abs(x + PLUS_X) <= PLUS_HIT && Math.abs(y - BAR_CY) <= PLUS_HIT) return R_CURVE;
     if (Math.abs(x) <= BAR_HIT_X && Math.abs(y - BAR_CY) <= BAR_HIT_Y) return R_BAR;
     if (Math.abs(x) <= HW && Math.abs(y) <= HH) return R_BODY;
@@ -3029,8 +3577,8 @@ final class ArRenderer implements GLSurfaceView.Renderer {
       + "  ia(" + tracker.delegateName + "): " + Math.round(tracker.detFps) + " fps / " + Math.round(tracker.detMs) + " ms"
       + "  atraso: " + Math.round(handAgeMs) + " ms";
     int noAnchor = 0;
-    for (Win w : wins) if (w.anchor == null && !w.linked) noAnchor++;
-    String st = dragWin != null ? "mover" : sizeWin != null ? "redimensionar" : touchWin != null ? "toque" : fistProg > 0f ? "punho" : pend != null ? "segurando..." : "-";
+    for (Win w : wins) if (w.anchor == null && !w.linked && !w.kb) noAnchor++;
+    String st = dragWin != null ? "mover" : sizeWin != null ? "redimensionar" : touchWin != null ? "toque" : dropT != null ? "agrupar" : fistProg > 0f ? "punho" : pend != null ? "segurando..." : "-";
     String l4 = "janelas: " + webCount() + " (+menu)" + "  sem ancora: " + noAnchor + "  acao: " + st;
     String l5 = "cam: " + fmt(camP[0]) + " " + fmt(camP[1]) + " " + fmt(camP[2]) + " m";
     if (!wins.isEmpty()) {
@@ -3105,7 +3653,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     if (pinchWasOn) { r = 0.37f; g = 0.92f; b = 0.83f; }
     else if (hoverRegion == R_BAR) { r = 1f; g = 0.84f; b = 0f; }
     else if (hoverRegion == R_CORNER) { r = 0f; g = 0.9f; b = 0.46f; }
-    else if (hoverRegion == R_PLUS || hoverRegion == R_CHROME || hoverRegion == R_CURVE || hoverRegion == R_ICON) { r = 0.37f; g = 0.92f; b = 0.83f; }
+    else if (hoverRegion == R_PLUS || hoverRegion == R_CHROME || hoverRegion == R_CURVE || hoverRegion == R_ICON || hoverRegion == R_KEY || hoverRegion == R_LINK || hoverRegion == R_BUBBLE) { r = 0.37f; g = 0.92f; b = 0.83f; }
     float dia = (pinchWasOn ? 20f : 32f) * dp;
     sq(ringTex, cx, cy, dia, dia, 0f, r, g, b, 1f);
     sq(discTex, cx, cy, 8f * dp, 8f * dp, 0f, r, g, b, 1f);
@@ -3230,6 +3778,21 @@ final class ArRenderer implements GLSurfaceView.Renderer {
         c.drawLine(22f, 48f, 74f, 48f, p);
         c.drawLine(48f, 22f, 48f, 74f, p);
         break;
+      case 8:   // teclado: caixa com fileiras de teclas e a barra de espaco
+        p.setStrokeWidth(6f);
+        c.drawRoundRect(new RectF(10f, 26f, 86f, 70f), 9f, 9f, p);
+        p.setStrokeWidth(7f);
+        for (int i = 0; i < 4; i++) { c.drawLine(24f + i * 16f, 39f, 24.1f + i * 16f, 39f, p); c.drawLine(24f + i * 16f, 50f, 24.1f + i * 16f, 50f, p); }
+        c.drawLine(30f, 60f, 66f, 60f, p);
+        break;
+      case 9:   // corrente: dois elos
+        p.setStrokeWidth(7f);
+        c.save();
+        c.rotate(-45f, 48f, 48f);
+        c.drawRoundRect(new RectF(8f, 36f, 56f, 60f), 12f, 12f, p);
+        c.drawRoundRect(new RectF(40f, 36f, 88f, 60f), 12f, 12f, p);
+        c.restore();
+        break;
       default:  // tela curva: monitor visto de cima, so as laterais dobram
         p.setStrokeWidth(8f);
         pa.moveTo(14f, 34f); pa.quadTo(48f, 52f, 82f, 34f);
@@ -3239,6 +3802,27 @@ final class ArRenderer implements GLSurfaceView.Renderer {
         c.drawPath(pa, p);
         break;
     }
+    return b;
+  }
+
+  /** Bolha da janela minimizada: disco escuro com anel claro e a inicial do site. */
+  private static Bitmap makeBubble(String letter) {
+    Bitmap b = Bitmap.createBitmap(128, 128, Bitmap.Config.ARGB_8888);
+    Canvas c = new Canvas(b);
+    Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+    p.setStyle(Paint.Style.FILL);
+    p.setColor(Color.argb(225, 18, 20, 28));
+    c.drawCircle(64f, 64f, 60f, p);
+    p.setStyle(Paint.Style.STROKE);
+    p.setStrokeWidth(5f);
+    p.setColor(Color.argb(170, 255, 255, 255));
+    c.drawCircle(64f, 64f, 58f, p);
+    p.setStyle(Paint.Style.FILL);
+    p.setColor(Color.WHITE);
+    p.setTextAlign(Paint.Align.CENTER);
+    p.setTextSize(66f);
+    p.setFakeBoldText(true);
+    c.drawText(letter, 64f, 87f, p);
     return b;
   }
 
@@ -3366,6 +3950,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     "uniform float u_R;\n" +
     "uniform float u_Flat;\n" +
     "uniform float u_Dim;\n" +
+    "uniform vec2 u_Shade;\n" +
     "void main() {\n" +
     "  vec2 q = abs(v_P) - (u_Half - vec2(u_R));\n" +
     "  float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - u_R;\n" +
@@ -3374,6 +3959,11 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     "  vec2 uv = (u_Stm * vec4(v_Uv, 0.0, 1.0)).xy;\n" +
     "  vec3 c = texture2D(u_Tex, uv).rgb;\n" +
     "  c = mix(c, vec3(0.08, 0.09, 0.12), u_Flat) * u_Dim;\n" +
+    "  float on = step(0.5, abs(u_Shade.x));\n" +
+    "  float sd = on * step(0.0, u_Shade.x * v_P.x);\n" +
+    "  c = mix(c, vec3(0.02, 0.03, 0.05), sd * 0.62);\n" +
+    "  float seam = sd * (1.0 - smoothstep(0.0, 0.010, u_Half.x - abs(v_P.x)));\n" +
+    "  c = mix(c, vec3(0.37, 0.92, 0.83), seam * 0.95);\n" +
     "  c = mix(c, vec3(1.0), smoothstep(-0.0028, -0.0010, d) * 0.22);\n" +
     "  gl_FragColor = vec4(c * al, al);\n" +
     "}\n";
@@ -3439,6 +4029,7 @@ public class ArActivity extends Activity {
     "https://web.whatsapp.com/", "https://www.reddit.com/", "https://www.openstreetmap.org/", "https://news.google.com/"
   };
   static final String MENU_URL = "about:menu";
+  static final String KB_URL = "about:kb";
   /** Aba do menu que a pagina deve mostrar (lida pela pagina via ArMenu.page()). */
   volatile String menuPage = "apps";
 
@@ -3471,6 +4062,8 @@ public class ArActivity extends Activity {
   @Override protected void onCreate(Bundle b) {
     super.onCreate(b);
     getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+    // o teclado do celular nunca aparece: so o teclado virtual do AR
+    getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN);
     if (android.os.Build.VERSION.SDK_INT >= 28) {
       WindowManager.LayoutParams lp = getWindow().getAttributes();
       lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
@@ -3648,6 +4241,17 @@ public class ArActivity extends Activity {
     }
   }
 
+  /** Tecla do teclado virtual (thread da ponte JS): vai para a thread do GL. */
+  void kbKey(final String k) {
+    if (k == null) return;
+    queueGl(new Runnable() { @Override public void run() { renderer.kbKey(k); } });
+  }
+
+  /** Um campo de texto de uma pagina ganhou o foco: abre o teclado virtual daquela janela. */
+  void pageFocus(final ArPanel p) {
+    queueGl(new Runnable() { @Override public void run() { renderer.pageFocus(p); } });
+  }
+
   String menuState() {
     return "{\"gpu\":" + tracker.wantsGpu() + ",\"hybrid\":" + renderer.hybridOn + "}";
   }
@@ -3762,7 +4366,7 @@ EOF
 cat > app/src/main/java/com/vr/launcher/ArMenuPage.java <<'EOF'
 package com.vr.launcher;
 
-/** Pagina do menu 3D (gerada de menu.html). */
+/** Pagina HTML gerada (menu.html). */
 final class ArMenuPage {
   static final String HTML =
     "<!doctype html>\n" +
@@ -3810,12 +4414,12 @@ final class ArMenuPage {
     "<div id=\"main\">\n" +
     "  <div class=\"pg\" id=\"p-help\"><div class=\"hd\"><div class=\"back\" data-go=\"cfg\">&lsaquo; Voltar</div><h1>AJUDA</h1></div><div class=\"hl\">\n" +
     "    <div class=\"hi\"><b>Pin&ccedil;a</b> (polegar + indicador) &mdash; toca e clica</div>\n" +
-    "    <div class=\"hi\"><b>Pin&ccedil;a na barra</b> e arrastar &mdash; move a janela ou o menu</div>\n" +
-    "    <div class=\"hi\"><b>Pin&ccedil;a no canto</b> e puxar &mdash; muda o tamanho</div>\n" +
-    "    <div class=\"hi\"><b>Bot&atilde;o da tela curva</b> (embaixo, &agrave; esquerda) &mdash; curva ou desencurva a janela</div>\n" +
+    "    <div class=\"hi\"><b>Pin&ccedil;a na barra</b> e arrastar &mdash; move; <b>no canto</b> e puxar &mdash; muda o tamanho</div>\n" +
+    "    <div class=\"hi\"><b>Bot&otilde;es embaixo</b> &mdash; tela curva (esquerda) e teclado virtual (direita)</div>\n" +
+    "    <div class=\"hi\"><b>Arrastar uma janela sobre outra</b> &mdash; agrupa; o bot&atilde;o de corrente (em cima) separa</div>\n" +
+    "    <div class=\"hi\"><b>Toque duplo na barra</b> &mdash; minimiza; toque na bolha restaura</div>\n" +
     "    <div class=\"hi\"><b>Punho fechado por 1 s</b> na janela &mdash; fecha a janela</div>\n" +
-    "    <div class=\"hi\"><b>Dois dedos juntos e esticados, descendo</b> &mdash; abre ou fecha o menu (sem o polegar)</div>\n" +
-    "    <div class=\"hi\"><b>Configura&ccedil;&otilde;es</b> &mdash; desligar o 6DoF volta ao modo original</div>\n" +
+    "    <div class=\"hi\"><b>Dois dedos juntos e esticados, descendo</b> &mdash; abre ou fecha o menu</div>\n" +
     "  </div></div>\n" +
     "  <div class=\"pg\" id=\"p-space\"><h1>ESPACIAL</h1><div class=\"soon\">O modo espacial (360&deg;)<br>chega em uma pr&oacute;xima fase do 6DoF.</div></div>\n" +
     "  <div class=\"pg\" id=\"p-apps\"><h1>APPS</h1><div class=\"grid\" id=\"grid\"></div></div>\n" +
@@ -3852,6 +4456,145 @@ final class ArMenuPage {
     "  else if(a==='gpu'||a==='hybrid'){setTimeout(refresh,350);}};});\n" +
     "var w0='apps';try{w0=A.page()||'apps'}catch(e){}show(w0);\n" +
     "</script></body></html>\n" +
+    "\n";
+}
+EOF
+cat > app/src/main/java/com/vr/launcher/ArKbPage.java <<'EOF'
+package com.vr.launcher;
+
+/** Pagina HTML gerada (kb.html). */
+final class ArKbPage {
+  static final String HTML =
+    "<!doctype html>\n" +
+    "<html><head><meta charset=\"utf-8\">\n" +
+    "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1,user-scalable=no\">\n" +
+    "<style>\n" +
+    "*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;-webkit-user-select:none;user-select:none}\n" +
+    "html,body{margin:0;height:100%;background:#0e1016;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden}\n" +
+    "#kb{position:absolute;left:8px;right:8px;top:8px;bottom:8px;display:flex;flex-direction:column;gap:4px}\n" +
+    ".r{flex:1;display:flex;gap:4px;min-height:0}\n" +
+    ".k{flex:1;display:flex;align-items:center;justify-content:center;border-radius:10px;background:rgba(255,255,255,.11);font-size:22px;font-weight:400;min-width:0}\n" +
+    ".k.u{flex:.8;font-size:18px;opacity:.9;background:rgba(255,255,255,.07)}\n" +
+    ".k.w15{flex:1.5}\n" +
+    ".k.sp{flex:5.2}\n" +
+    ".k.fn{background:rgba(255,255,255,.2);font-size:17px}\n" +
+    ".k.on{background:#5eead4;color:#04201c}\n" +
+    ".k.p{background:#fff;color:#000}\n" +
+    ".k svg{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}\n" +
+    ".k.dead.on{background:#5eead4;color:#04201c}\n" +
+    "</style></head><body>\n" +
+    "<div id=\"kb\"></div>\n" +
+    "<script>\n" +
+    "(function () {\n" +
+    "  var A = window.ArKb;\n" +
+    "  var ICON = {\n" +
+    "    back: '<svg viewBox=\"0 0 24 24\"><path d=\"M9 5h11a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H9l-6-7z\"/><path d=\"M13 9.5l5 5M18 9.5l-5 5\"/></svg>',\n" +
+    "    enter: '<svg viewBox=\"0 0 24 24\"><path d=\"M20 5v8a2 2 0 0 1-2 2H5\"/><path d=\"M9 11l-4 4 4 4\"/></svg>',\n" +
+    "    shift: '<svg viewBox=\"0 0 24 24\"><path d=\"M12 4l8 9h-5v7H9v-7H4z\"/></svg>',\n" +
+    "    caps: '<svg viewBox=\"0 0 24 24\"><path d=\"M12 3l8 8h-5v6H9v-6H4z\"/><path d=\"M9 21h6\"/></svg>',\n" +
+    "    down: '<svg viewBox=\"0 0 24 24\"><path d=\"M6 9l6 6 6-6\"/></svg>'\n" +
+    "  };\n" +
+    "  var ACC = {\n" +
+    "    '\\u00b4': { a: '\\u00e1', e: '\\u00e9', i: '\\u00ed', o: '\\u00f3', u: '\\u00fa', A: '\\u00c1', E: '\\u00c9', I: '\\u00cd', O: '\\u00d3', U: '\\u00da', c: '\\u00e7', C: '\\u00c7' },\n" +
+    "    '`': { a: '\\u00e0', e: '\\u00e8', i: '\\u00ec', o: '\\u00f2', u: '\\u00f9', A: '\\u00c0', E: '\\u00c8', I: '\\u00cc', O: '\\u00d2', U: '\\u00d9' },\n" +
+    "    '^': { a: '\\u00e2', e: '\\u00ea', i: '\\u00ee', o: '\\u00f4', u: '\\u00fb', A: '\\u00c2', E: '\\u00ca', I: '\\u00ce', O: '\\u00d4', U: '\\u00db' },\n" +
+    "    '~': { a: '\\u00e3', o: '\\u00f5', n: '\\u00f1', A: '\\u00c3', O: '\\u00d5', N: '\\u00d1' }\n" +
+    "  };\n" +
+    "  var shift = 0, sym = false, dead = null, last = 0;\n" +
+    "  var el = document.getElementById('kb');\n" +
+    "\n" +
+    "  var LET = ['qwertyuiop', 'asdfghjkl\\u00e7', 'zxcvbnm'];\n" +
+    "  var SYM = ['1234567890', '@#$%&-+()/', '*\"\\':;!?'];\n" +
+    "\n" +
+    "  function send(t) { try { if (A) A.key(t); } catch (e) { } }\n" +
+    "  function out(ch) {\n" +
+    "    var ch0 = dead !== null || shift === 1;\n" +
+    "    if (dead) {\n" +
+    "      var d = dead, m = ACC[d];\n" +
+    "      dead = null;\n" +
+    "      if (m && m[ch]) ch = m[ch];\n" +
+    "      else if (ch !== ' ') ch = d + ch;\n" +
+    "      else ch = d;\n" +
+    "    }\n" +
+    "    send('t:' + ch);\n" +
+    "    if (shift === 1) { shift = 0; }\n" +
+    "    if (ch0) render();\n" +
+    "  }\n" +
+    "  function act(a) {\n" +
+    "    if (a === 'shift') { shift = shift === 0 ? 1 : (shift === 1 ? 2 : 0); render(); return; }\n" +
+    "    if (a === 'sym') { sym = !sym; render(); return; }\n" +
+    "    if (a === 'back') { if (dead) { dead = null; render(); } else send('k:back'); return; }\n" +
+    "    if (a === 'enter') { send('k:enter'); return; }\n" +
+    "    if (a === 'close') { send('k:close'); return; }\n" +
+    "    if (a === 'space') { out(' '); return; }\n" +
+    "    if (a.indexOf('d:') === 0) { dead = dead === a.slice(2) ? null : a.slice(2); render(); return; }\n" +
+    "    if (a.indexOf('x:') === 0) { out(a.slice(2)); return; }\n" +
+    "  }\n" +
+    "\n" +
+    "  function key(row, label, a, cls, html) {\n" +
+    "    var d = document.createElement('div');\n" +
+    "    d.className = 'k' + (cls ? ' ' + cls : '');\n" +
+    "    if (html) d.innerHTML = html; else d.textContent = label;\n" +
+    "    d.setAttribute('data-a', a);\n" +
+    "    row.appendChild(d);\n" +
+    "    return d;\n" +
+    "  }\n" +
+    "  function mk() { var r = document.createElement('div'); r.className = 'r'; el.appendChild(r); return r; }\n" +
+    "\n" +
+    "  function render() {\n" +
+    "    el.innerHTML = '';\n" +
+    "    var r = mk();\n" +
+    "    ['\\u00b4', '`', '^', '~'].forEach(function (c) { key(r, c, 'd:' + c, 'u dead' + (dead === c ? ' on' : '')); });\n" +
+    "    key(r, '/', 'x:/', 'u'); key(r, '.com', 'x:.com', 'u'); key(r, '@', 'x:@', 'u'); key(r, '-', 'x:-', 'u'); key(r, '_', 'x:_', 'u');\n" +
+    "    key(r, '', 'close', 'u fn', ICON.down);\n" +
+    "    var rows = sym ? SYM : LET;\n" +
+    "    for (var i = 0; i < 3; i++) {\n" +
+    "      r = mk();\n" +
+    "      if (i === 2) key(r, '', 'shift', 'w15 fn' + (shift ? ' on' : ''), shift === 2 ? ICON.caps : ICON.shift);\n" +
+    "      if (i === 2 && sym) { /* simbolos: sem shift */ r.firstChild.style.visibility = 'hidden'; }\n" +
+    "      rows[i].split('').forEach(function (c) {\n" +
+    "        var ch = (!sym && shift) ? c.toUpperCase() : c;\n" +
+    "        key(r, ch, 'x:' + ch, '');\n" +
+    "      });\n" +
+    "      if (i === 2) key(r, '', 'back', 'w15 fn', ICON.back);\n" +
+    "    }\n" +
+    "    r = mk();\n" +
+    "    key(r, sym ? 'abc' : '?123', 'sym', 'w15 fn');\n" +
+    "    key(r, '', 'x:,', '', null).textContent = ',';\n" +
+    "    key(r, '', 'space', 'sp').textContent = '';\n" +
+    "    key(r, '.', 'x:.', '');\n" +
+    "    key(r, '', 'enter', 'w15 fn', ICON.enter);\n" +
+    "  }\n" +
+    "\n" +
+    "  function hit(e) {\n" +
+    "    var t = e.target;\n" +
+    "    while (t && t !== el && !(t.getAttribute && t.getAttribute('data-a'))) t = t.parentNode;\n" +
+    "    return (t && t.getAttribute) ? t : null;\n" +
+    "  }\n" +
+    "  var rep = null, repT = null;\n" +
+    "  function stopRep() { if (rep) { clearTimeout(rep); rep = null; } if (repT) { clearInterval(repT); repT = null; } }\n" +
+    "  document.addEventListener('touchstart', function (e) {\n" +
+    "    e.preventDefault();\n" +
+    "    var t = hit(e);\n" +
+    "    if (!t) return;\n" +
+    "    var now = Date.now();\n" +
+    "    if (now - last < 70) return;\n" +
+    "    last = now;\n" +
+    "    var a = t.getAttribute('data-a');\n" +
+    "    t.classList.add('p');\n" +
+    "    setTimeout(function () { t.classList.remove('p'); }, 130);\n" +
+    "    act(a);\n" +
+    "    if (a === 'back') {\n" +
+    "      stopRep();\n" +
+    "      rep = setTimeout(function () { repT = setInterval(function () { send('k:back'); }, 70); }, 450);\n" +
+    "    }\n" +
+    "  }, { passive: false });\n" +
+    "  document.addEventListener('touchend', stopRep, true);\n" +
+    "  document.addEventListener('touchcancel', stopRep, true);\n" +
+    "  render();\n" +
+    "})();\n" +
+    "</script>\n" +
+    "</body></html>\n" +
     "\n";
 }
 EOF
