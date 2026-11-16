@@ -2,7 +2,7 @@
 # Modo AR (6DoF) do VR Launcher: tudo do 6DoF fica neste arquivo.
 # Para atualizar: envie um modo-ar.sh novo para o repositorio, substituindo este.
 set -e
-echo "modo-ar.sh: Fase 6b - mundos, icones de vidro, controles de video por gesto (2026-11-16)"
+echo "modo-ar.sh: Fase 7 - estereo VR Box nos dois modos (2026-11-16)"
 mkdir -p app/src/main/java/com/vr/launcher
 python3 - <<'PY'
 def patch(path, old, new, skip=None):
@@ -47,6 +47,10 @@ soft(UI, "tabApps.style.zIndex = 200; tabHelp.style.zIndex = 200; tabSpace.style
  "(function () { var l = tabCfg.querySelector('.cfl'), r = document.createElement('div'); r.className = 'cfr'; " +
  "r.innerHTML = '<div class=\"cft\"><b>Modo 6DoF (AR)</b><span>Janelas e menu fixos no espaço, usando o ARCore. Para voltar ao modo original: Configurações dentro do modo 6DoF.</span></div><div class=\"cfs\"><i></i></div>'; l.appendChild(r); " +
  "T_cfg.push({ k: 'btn', el: r, fn: function () { if (window.Android && Android.openAr) { r.classList.add('on'); toast('Entrando no modo 6DoF...'); setTimeout(function () { Android.openAr(); r.classList.remove('on'); }, 350); } else toast('Modo 6DoF indisponível'); } }); })(); " +
+ "(function () { var l = tabCfg.querySelector('.cfl'), r = document.createElement('div'); r.className = 'cfr'; " +
+ "r.innerHTML = '<div class=\"cft\"><b>Estéreo (VR Box)</b><span>Divide a tela em duas, uma imagem para cada olho. Desligado: tela inteira.</span></div><div class=\"cfs\"><i></i></div>'; l.appendChild(r); " +
+ "try { if (window.Android && Android.getStereo && Android.getStereo()) r.classList.add('on'); } catch (e) { } " +
+ "T_cfg.push({ k: 'btn', el: r, fn: function () { if (window.Android && Android.setStereo) { var on = !r.classList.contains('on'); r.classList.toggle('on', on); Android.setStereo(on); toast(on ? 'Estéreo ligado' : 'Estéreo desligado'); } else toast('Estéreo indisponível'); } }); })(); " +
  "tabApps.style.zIndex = 200; tabHelp.style.zIndex = 200; tabSpace.style.zIndex = 200;", SK)
 soft(UI, "['space', tabSpace]]", "['space', tabSpace], ['cfg', tabCfg]]", SK)
 soft(UI, "tabSpace.style.display = TAB === 'space' ? 'flex' : 'none';", "tabSpace.style.display = TAB === 'space' ? 'flex' : 'none'; tabCfg.style.display = TAB === 'cfg' ? 'flex' : 'none';", SK)
@@ -73,6 +77,81 @@ soft('app/src/main/java/com/vr/launcher/MainActivity.java', 'class Bridge {',
  '                ait.putStringArrayListExtra("wins", arL);\n'
  '                startActivity(ait); finish();\n'
  '              } catch (Throwable t) { } }); }', 'putStringArrayListExtra')
+
+MA = 'app/src/main/java/com/vr/launcher/MainActivity.java'
+soft(MA, 'class Bridge {',
+ 'class Bridge {\n'
+ '    @JavascriptInterface public boolean getStereo() { return stereoOn; }\n'
+ '    @JavascriptInterface public void setStereo(final boolean v) { ui.post(() -> applyStereo(v, true)); }', 'public boolean getStereo')
+soft(MA, '  static class CursorView extends View {',
+ """  /* ---- estereo (VR Box): a mesma tela desenhada duas vezes, uma em cada metade; cada metade tem o layout de "meia tela" ---- */
+  boolean stereoOn = false;
+  void applyStereo(boolean v, boolean save) {
+    stereoOn = v;
+    if (save) { try { getSharedPreferences("ar", MODE_PRIVATE).edit().putBoolean("stereo", v).apply(); } catch (Throwable t) { } }
+    try {
+      previewView.setImplementationMode(v ? PreviewView.ImplementationMode.COMPATIBLE : PreviewView.ImplementationMode.PERFORMANCE);
+      if (preview != null) preview.setSurfaceProvider(previewView.getSurfaceProvider());
+    } catch (Throwable t) { }
+    if (root instanceof StereoFrame) ((StereoFrame) root).setStereo(v);
+  }
+  static class StereoFrame extends FrameLayout {
+    boolean on = false; int pass = 0;
+    StereoFrame(Context c) { super(c); }
+    void setStereo(boolean v) {
+      on = v;
+      for (int i = 0; i < getChildCount(); i++) layerOf(getChildAt(i));
+      requestLayout(); invalidate();
+    }
+    void layerOf(View c) { if (c instanceof WebView) c.setLayerType(on ? View.LAYER_TYPE_HARDWARE : View.LAYER_TYPE_NONE, null); }
+    @Override public void onViewAdded(View c) { super.onViewAdded(c); layerOf(c); }
+    @Override protected void onMeasure(int ws, int hs) {
+      if (!on) { super.onMeasure(ws, hs); return; }
+      int w = MeasureSpec.getSize(ws), h = MeasureSpec.getSize(hs);
+      super.onMeasure(MeasureSpec.makeMeasureSpec(w / 2, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(h, MeasureSpec.EXACTLY));
+      for (int i = 0; i < getChildCount(); i++) {
+        View c = getChildAt(i);
+        if (c instanceof GLSurfaceView) c.measure(MeasureSpec.makeMeasureSpec(w, MeasureSpec.EXACTLY), MeasureSpec.makeMeasureSpec(h, MeasureSpec.EXACTLY));
+      }
+      setMeasuredDimension(w, h);
+    }
+    @Override protected void dispatchDraw(Canvas cv) {
+      pass = 0;
+      super.dispatchDraw(cv);
+      if (on) { pass = 1; super.dispatchDraw(cv); pass = 0; }
+    }
+    @Override protected boolean drawChild(Canvas cv, View c, long t) {
+      if (!on) return super.drawChild(cv, c, t);
+      if (c instanceof GLSurfaceView) return pass == 0 && super.drawChild(cv, c, t);   // superficie de video: uma so, ocupa a tela toda e desenha os dois olhos
+      int cw = getWidth() / 2, sv = cv.save();
+      cv.clipRect(pass == 0 ? 0 : cw, 0, pass == 0 ? cw : getWidth(), getHeight());
+      if (pass == 1) cv.translate(cw, 0);
+      boolean r = super.drawChild(cv, c, t);
+      cv.restoreToCount(sv);
+      return r;
+    }
+    @Override public boolean dispatchTouchEvent(MotionEvent e) {
+      if (on && e.getX() >= getWidth() / 2f) e.offsetLocation(-getWidth() / 2f, 0f);
+      return super.dispatchTouchEvent(e);
+    }
+  }
+  static class CursorView extends View {""", 'class StereoFrame')
+soft(MA, 'root = new FrameLayout(this);', 'root = new StereoFrame(this);', 'new StereoFrame(this)')
+soft(MA, '    setContentView(root);\n', '    setContentView(root);\n    try { if (getSharedPreferences("ar", MODE_PRIVATE).getBoolean("stereo", false)) applyStereo(true, false); } catch (Throwable t) { }\n', 'applyStereo(true, false)')
+soft(MA, 'volatile float sw = 1f, sh = 1f, fl = 500f;', 'volatile float sw = 1f, sh = 1f, fl = 500f; int surfW = 0, surfH = 0;', 'int surfW')
+soft(MA, 'public void onSurfaceChanged(GL10 g, int w, int h) { GLES20.glViewport(0, 0, w, h); }', 'public void onSurfaceChanged(GL10 g, int w, int h) { surfW = w; surfH = h; GLES20.glViewport(0, 0, w, h); }', 'surfW = w')
+soft(MA, '      GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);\n    }\n    @Override public void onFrameAvailable',
+ """      if (root instanceof StereoFrame && ((StereoFrame) root).on && surfW > 1) {
+        GLES20.glViewport(0, 0, surfW / 2, surfH);
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
+        GLES20.glViewport(surfW / 2, 0, surfW - surfW / 2, surfH);
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
+        GLES20.glViewport(0, 0, surfW, surfH);
+      } else {
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
+      }
+    }
+    @Override public void onFrameAvailable""", 'surfW / 2, surfH')
 PY
 cat > app/src/main/java/com/vr/launcher/ArHand.java <<'EOF'
 package com.vr.launcher;
@@ -1741,6 +1820,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
   volatile String focusText = "";
   volatile ArImu imu;
   volatile boolean hybridOn = true;       // 6DoF -> 3DoF quando o ARCore perde o rastreio
+  volatile boolean stereo = false;        // tela dividida (um desenho por olho) para o oculos VR Box
   volatile int viewMode = 1;              // 0 preenchida (corta), 1 meio-termo, 2 inteira (faixas), 3 esticada (tela cheia)
   private volatile boolean vpDirty = true;
   volatile boolean viewportChanged = true;
@@ -1750,6 +1830,9 @@ final class ArRenderer implements GLSurfaceView.Renderer {
   // area de desenho: com a imagem inteira da camera ela pode ficar menor que a tela (faixas pretas)
   private int sw = 0, sh = 0, vpX = 0, vpY = 0, vpW = 0, vpH = 0;
   private float imgAspect = 0f;
+  private static final float IPD = 0.064f;   // distancia entre os olhos virtuais (m)
+  private final float[] eyeT = new float[16], eyeV = new float[16], vpMono = new float[16];
+  private float cursorDepth = 1.5f, pxShift = 0f;
   private int vw = 0, vh = 0;
   private boolean camTexSet = false;
   private long lastFedTs = 0;
@@ -2006,22 +2089,24 @@ final class ArRenderer implements GLSurfaceView.Renderer {
   private void updateViewport() {
     if (sw <= 0 || sh <= 0) return;
     int mode = viewMode;
+    final int cw = stereo ? sw / 2 : sw;   // largura da area de um olho
+    if (cw <= 0) return;
     if (mode == 0 || imgAspect <= 0f) {
-      vpX = 0; vpY = 0; vpW = sw; vpH = sh; vw = sw; vh = sh;
+      vpX = 0; vpY = 0; vpW = cw; vpH = sh; vw = cw; vh = sh;
     } else {
-      float ia = sw >= sh ? imgAspect : 1f / imgAspect;   // proporcao da imagem da camera na orientacao da tela
-      float sa = (float) sw / sh;
+      float ia = cw >= sh ? imgAspect : 1f / imgAspect;   // proporcao da imagem da camera na orientacao da tela
+      float sa = (float) cw / sh;
       float a = mode == 1 ? (float) Math.sqrt(ia * sa) : ia;
       int fw, fh;
       if (sa > a) { fh = sh; fw = Math.round(sh * a); }
-      else { fw = sw; fh = Math.round(sw / a); }
+      else { fw = cw; fh = Math.round(cw / a); }
       if (mode == 3) {
         // imagem inteira esticada ate encher a tela: o ARCore enxerga a proporcao da camera, so o desenho e esticado
-        vpX = 0; vpY = 0; vpW = sw; vpH = sh;
+        vpX = 0; vpY = 0; vpW = cw; vpH = sh;
         vh = sh; vw = Math.round(sh * ia);
       } else {
         vpW = fw; vpH = fh; vw = fw; vh = fh;
-        vpX = (sw - fw) / 2;
+        vpX = (cw - fw) / 2;
         vpY = (sh - fh) / 2;
       }
     }
@@ -2033,6 +2118,16 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     vpDirty = true;
     say("Imagem: " + VIEW_NAMES[viewMode]);
   }
+
+  /** Liga/desliga a tela dividida (VR Box): a area de desenho passa a ser metade da tela, uma vez por olho. */
+  void setStereo(boolean on) {
+    stereo = on;
+    vpDirty = true;
+    viewportChanged = true;
+    say(on ? "Estereo ligado" : "Estereo desligado");
+  }
+
+  void toggleStereo() { setStereo(!stereo); }
 
   void toggleHybrid() {
     hybridOn = !hybridOn;
@@ -2075,7 +2170,6 @@ final class ArRenderer implements GLSurfaceView.Renderer {
       }
 
       updateSpace(nowMs);
-      if (spKind == 0 || spAlpha < 0.99f) drawBackground();
 
       camera.getProjectionMatrix(proj, 0, 0.1f, 30f);
       trackStats(camera, nowMs);
@@ -2083,7 +2177,6 @@ final class ArRenderer implements GLSurfaceView.Renderer {
       Matrix.multiplyMM(vp, 0, proj, 0, view, 0);
       Matrix.invertM(invVp, 0, vp, 0);
       if (camInfo.length() == 0) readCamInfo(s, camera);
-      drawSpace();
 
       lastCamPose = camPose;
       if (recenterReq) {
@@ -2106,13 +2199,38 @@ final class ArRenderer implements GLSurfaceView.Renderer {
       placeTab();
       placeKb();
 
-      drawWindows();
-      drawHand();
+      drawEyes();
       errorText = "";
     } catch (Throwable e) {
       errorText = e.toString();
     }
     publishOverlay();
+  }
+
+  /** Desenha a cena uma vez (tela normal) ou duas (estereo: olho esquerdo e direito, lado a lado). */
+  private void drawEyes() {
+    final boolean st = stereo;
+    final int cw = st ? sw / 2 : sw;
+    final float[] mono = vpMono;
+    if (st) System.arraycopy(vp, 0, mono, 0, 16);
+    final int eyes = st ? 2 : 1;
+    for (int e = 0; e < eyes; e++) {
+      GLES20.glViewport(vpX + e * cw, vpY, vpW, vpH);
+      if (st) {
+        // olho esquerdo: a camera anda meia distancia interpupilar para a esquerda (o mundo desloca para a direita)
+        Matrix.setIdentityM(eyeT, 0);
+        eyeT[12] = e == 0 ? IPD * 0.5f : -IPD * 0.5f;
+        Matrix.multiplyMM(eyeV, 0, eyeT, 0, view, 0);
+        Matrix.multiplyMM(vp, 0, proj, 0, eyeV, 0);
+      }
+      if (spKind == 0 || spAlpha < 0.99f) drawBackground();
+      drawSpace();
+      pxShift = st ? (e == 0 ? 1f : -1f) * IPD * 0.5f * proj[0] * (vw * 0.5f) / Math.max(0.3f, cursorDepth) : 0f;
+      drawWindows();
+      drawHand();
+      pxShift = 0f;
+    }
+    if (st) System.arraycopy(mono, 0, vp, 0, 16);
   }
 
   private void countFps(long now) {
@@ -3123,6 +3241,8 @@ final class ArRenderer implements GLSurfaceView.Renderer {
       dir = rayDir(cx, cy, camPos);
       hit = raycast(camPos, dir);
       if (hit != null) { hoverWin = hit.win; hoverRegion = hit.region; hoverElem = hit.elem; }
+      float cd = hit != null ? hit.t : 1.5f;
+      cursorDepth += (Math.max(0.3f, Math.min(6f, cd)) - cursorDepth) * 0.35f;
     }
 
     if (pinchOn && !pinchWasOn) {
@@ -3717,7 +3837,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     m[0] = 2f * c * w / vw;   m[1] = -2f * sn * w / vh;
     m[4] = -2f * sn * h / vw; m[5] = -2f * c * h / vh;
     m[10] = 1f;
-    m[12] = 2f * x / vw - 1f; m[13] = 1f - 2f * y / vh; m[15] = 1f;
+    m[12] = 2f * (x + pxShift) / vw - 1f; m[13] = 1f - 2f * y / vh; m[15] = 1f;
     GLES20.glUniformMatrix4fv(flatMvpLoc, 1, false, m, 0);
     GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, tex);
     GLES20.glUniform4f(flatColLoc, r * a, g * a, b * a, a);
@@ -3740,7 +3860,9 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     GLES20.glEnableVertexAttribArray(flatPosLoc);
     GLES20.glEnableVertexAttribArray(flatUvLoc);
 
-    // esqueleto
+    // esqueleto (sem disparidade: fica no plano da tela); so o cursor acompanha a profundidade do que ele toca
+    final float shiftKeep = pxShift;
+    pxShift = 0f;
     for (int[] c : CONN) {
       float x0 = k[2 * c[0]], y0 = k[2 * c[0] + 1], x1 = k[2 * c[1]], y1 = k[2 * c[1] + 1];
       float dx = x1 - x0, dy = y1 - y0;
@@ -3750,6 +3872,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     for (int i = 0; i < 21; i++) sq(discTex, k[2 * i], k[2 * i + 1], 5.5f * dp, 5.5f * dp, 0f, 1f, 1f, 1f, 0.6f);
 
     // cursor
+    pxShift = shiftKeep;
     float r = 1f, g = 1f, b = 1f;
     if (pinchWasOn) { r = 0.37f; g = 0.92f; b = 0.83f; }
     else if (hoverRegion == R_BAR) { r = 1f; g = 0.84f; b = 0f; }
@@ -4360,6 +4483,7 @@ public class ArActivity extends Activity {
     // padrao 0 = imagem preenchida e cortada, igual ao app original (CameraX FILL_CENTER)
     renderer.viewMode = prefs.getInt("view3", 0);
     renderer.hybridOn = prefs.getBoolean("hybrid", true);
+    renderer.stereo = prefs.getBoolean("stereo", false);
     renderer.overlay = overlay;
     // janelas e abas que estavam abertas no modo original: cada item = "indice da aba atual" + "\n" + enderecos
     if (b == null) {
@@ -4379,6 +4503,7 @@ public class ArActivity extends Activity {
     FrameLayout.LayoutParams hud = new FrameLayout.LayoutParams((int) (520f * density), (int) (200f * density));
     hud.gravity = Gravity.TOP | Gravity.START;
     root.addView(overlay, hud);
+    overlay.setVisibility(renderer.stereo ? View.GONE : View.VISIBLE);
     setContentView(root);
 
     DisplayManager dm = (DisplayManager) getSystemService(DISPLAY_SERVICE);
@@ -4514,6 +4639,14 @@ public class ArActivity extends Activity {
     if ("center".equals(a)) { renderer.recenter(); return; }
     if ("gpu".equals(a)) { tracker.toggleDelegate(); savePrefs(); return; }
     if ("hybrid".equals(a)) { renderer.toggleHybrid(); savePrefs(); return; }
+    if ("stereo".equals(a)) {
+      final boolean on = !renderer.stereo;
+      queueGl(new Runnable() { @Override public void run() { renderer.setStereo(on); } });
+      ui.post(new Runnable() { @Override public void run() { overlay.setVisibility(on ? View.GONE : View.VISIBLE); } });
+      renderer.stereo = on;
+      savePrefs();
+      return;
+    }
     if (a.startsWith("sp:")) { space.command(a); return; }
     if (a.startsWith("app:")) {
       try {
@@ -4576,7 +4709,7 @@ public class ArActivity extends Activity {
   }
 
   String menuState() {
-    return "{\"gpu\":" + tracker.wantsGpu() + ",\"hybrid\":" + renderer.hybridOn + "}";
+    return "{\"gpu\":" + tracker.wantsGpu() + ",\"hybrid\":" + renderer.hybridOn + ",\"stereo\":" + renderer.stereo + "}";
   }
 
   // ---- camera: mesma proporcao do app original (16:9, preenchendo a tela) ----
@@ -4655,7 +4788,7 @@ public class ArActivity extends Activity {
   private void savePrefs() {
     try {
       prefs.edit().putBoolean("focusFixed", focusFixed).putBoolean("gpu", tracker.wantsGpu())
-        .putInt("view3", renderer.viewMode).putBoolean("hybrid", renderer.hybridOn).apply();
+        .putInt("view3", renderer.viewMode).putBoolean("hybrid", renderer.hybridOn).putBoolean("stereo", renderer.stereo).apply();
     } catch (Throwable t) { }
   }
 
@@ -4781,6 +4914,7 @@ final class ArMenuPage {
     "    <div class=\"row\" data-act=\"orig\"><div class=\"t\"><b>Modo 6DoF (AR)</b><span id=\"s6\">Ligado. Desligue para voltar ao modo original.</span></div><div class=\"sw on\" id=\"sw6\"><i></i></div></div>\n" +
     "    <div class=\"row\" data-act=\"gpu\"><div class=\"t\"><b>IA da m&atilde;o na GPU</b><span>Mais r&aacute;pido. Se travar, use a CPU.</span></div><div class=\"sw\" id=\"swg\"><i></i></div></div>\n" +
     "    <div class=\"row\" data-go=\"help\"><div class=\"t\"><b>Ajuda e gestos</b><span>Como usar a m&atilde;o no modo 6DoF.</span></div><div class=\"chev\">&rsaquo;</div></div>\n" +
+    "    <div class=\"row\" data-act=\"stereo\"><div class=\"t\"><b>Est&eacute;reo (VR Box)</b><span>Divide a tela em duas, uma imagem para cada olho.</span></div><div class=\"sw\" id=\"sws\"><i></i></div></div>\n" +
     "    <div class=\"row\" data-act=\"hybrid\"><div class=\"t\"><b>Modo h&iacute;brido</b><span>Usa o girosc&oacute;pio quando o ARCore perde o rastreio.</span></div><div class=\"sw\" id=\"swh\"><i></i></div></div>\n" +
     "  </div>\n" +
     "</div></div>\n" +
@@ -4803,12 +4937,13 @@ final class ArMenuPage {
     "  if(n==='cfg')refresh();}\n" +
     "function refresh(){var s={};try{s=JSON.parse(A.state())}catch(e){}\n" +
     "  document.getElementById('swg').className='sw'+(s.gpu?' on':'');\n" +
-    "  document.getElementById('swh').className='sw'+(s.hybrid?' on':'');}\n" +
+    "  document.getElementById('swh').className='sw'+(s.hybrid?' on':'');\n" +
+    "  document.getElementById('sws').className='sw'+(s.stereo?' on':'');}\n" +
     "document.querySelectorAll('[data-go]').forEach(function(e){e.onclick=function(){show(e.getAttribute('data-go'));};});\n" +
     "document.querySelectorAll('[data-act]').forEach(function(e){e.onclick=function(){\n" +
     "  var a=e.getAttribute('data-act');act(a);\n" +
     "  if(a==='orig'){document.getElementById('s6').textContent='Voltando ao modo original...';document.getElementById('sw6').className='sw';}\n" +
-    "  else if(a==='gpu'||a==='hybrid'){setTimeout(refresh,350);}};});\n" +
+    "  else if(a==='gpu'||a==='hybrid'||a==='stereo'){setTimeout(refresh,350);}};});\n" +
     "\n" +
     "/* ---------- Espacial 360 ---------- */\n" +
     "var IC={\n" +
@@ -4837,19 +4972,6 @@ final class ArMenuPage {
     "  return hb('prev','&#8249;')+'<span class=\"pgn\">'+(p+1)+'/'+np+'</span>'+hb('next','&#8250;')}\n" +
     "function sRender(){\n" +
     "  var st=S.st||{},h=document.getElementById('sh'),b=document.getElementById('sb'),x='';\n" +
-    "  if(st.active&&st.video){S.view='video'}\n" +
-    "  else if(S.view==='video'){S.view='lib'}\n" +
-    "  if(S.view==='video'){\n" +
-    "    h.innerHTML='<h1>ESPACIAL</h1>'+hb('exit',IC.out+'<span>Sair</span>');\n" +
-    "    var it=null;S.lib.forEach(function(q){if(q.id===st.active)it=q});\n" +
-    "    var f=st.dur>0?Math.min(1,st.pos/st.dur):0;\n" +
-    "    b.innerHTML='<div class=\"vw\"><div class=\"vn\">'+esc(it?it.name:'')+'</div>'\n" +
-    "      +'<div class=\"vtop\"><span id=\"vt\">'+fmt(st.pos)+' / '+fmt(st.dur)+'</span><span>'+(st.speed||1)+'&times;</span></div>'\n" +
-    "      +'<div class=\"vbar\" id=\"vbar\"><div class=\"vtr\"><div class=\"vf\" id=\"vf\" style=\"width:'+(f*100)+'%\"></div></div><div class=\"vk\" id=\"vk\" style=\"left:calc('+(f*100)+'% - 9px)\"></div></div>'\n" +
-    "      +'<div class=\"vrow\">'+hb('v:seek0',IC.restart)+hb('v:rew',IC.rew+'<span>10</span>')+hb('v:play',st.playing?IC.pause:IC.play)\n" +
-    "      +hb('v:fwd','<span>10</span>'+IC.fwd)+hb('v:speed','<span>'+(st.speed||1)+'&times;</span>')\n" +
-    "      +hb('v:mute',st.muted?IC.mute:IC.vol)+hb('v:loop',IC.loop,st.loop)+'</div></div>';\n" +
-    "    return}\n" +
     "  if(S.view==='choose'){\n" +
     "    h.innerHTML=hb('back',IC.back+'<span>Voltar</span>')+'<h1 style=\"margin-left:10px\">IMPORTAR</h1>';\n" +
     "    b.innerHTML='<div class=\"sgrid\" style=\"grid-template-columns:1fr 1fr;grid-template-rows:1fr\">'\n" +
@@ -4873,12 +4995,12 @@ final class ArMenuPage {
     "    return}\n" +
     "  // biblioteca\n" +
     "  var n2=S.lib.length,np2=Math.max(1,Math.ceil(n2/PER));if(S.page>=np2)S.page=np2-1;\n" +
-    "  h.innerHTML='<h1>ESPACIAL</h1>'+pager(n2,S.page,PER)\n" +
+    "  h.innerHTML='<h1>MUNDOS'+(st.active&&st.video?' <small style=\"opacity:.55;letter-spacing:0;font-size:11px;margin-left:8px\">pin&ccedil;a 1 s no v&iacute;deo = controles</small>':'')+'</h1>'+pager(n2,S.page,PER)\n" +
     "    +(st.active?hb('exit',IC.out+'<span>Sair</span>'):(n2?hb('trash',IC.trash,S.del):''));\n" +
     "  var cells=S.del?'':'<div class=\"tl\" data-c=\"add\">'+IC.plus+'<span>Importar</span></div>';\n" +
     "  cells+=S.lib.slice(S.page*PER,S.page*PER+PER).map(function(it){\n" +
     "    var c='<div class=\"tl'+(it.id===st.active?' on':'')+(S.del?' rm':'')+'\" data-c=\"sel:'+it.id+'\" style=\"background-image:url(/spatial/'+it.id+'_t.jpg)\"><div class=\"nm\">'+(it.type==='video'?'&#9654; ':'')+esc(it.name)+'</div>';\n" +
-    "    if(S.sel===it.id)c+='<div class=\"cf\"><span>'+(S.del?'Deletar item?':'Entrar no modo espacial?')+'</span><div class=\"bs\"><div class=\"cb\" data-c=\"yes\">Sim</div><div class=\"cb\" data-c=\"no\">N&atilde;o</div></div></div>';\n" +
+    "    if(S.sel===it.id&&S.del)c+='<div class=\"cf\"><span>Deletar item?</span><div class=\"bs\"><div class=\"cb\" data-c=\"yes\">Sim</div><div class=\"cb\" data-c=\"no\">N&atilde;o</div></div></div>';\n" +
     "    return c+'</div>'}).join('');\n" +
     "  b.innerHTML='<div class=\"sgrid\">'+cells+'</div>';\n" +
     "}\n" +
@@ -4896,22 +5018,16 @@ final class ArMenuPage {
     "  if(c==='fetch'){act('sp:fetch');return}\n" +
     "  if(c==='exit'){act('sp:exit');return}\n" +
     "  if(c==='no'){S.sel=null;sRender();return}\n" +
-    "  if(c==='yes'){var id=S.sel;S.sel=null;if(id){if(S.del)act('sp:del:'+id);else act('sp:enter:'+id)}sRender();return}\n" +
-    "  if(c.indexOf('sel:')===0){S.sel=S.sel===c.slice(4)?null:c.slice(4);sRender();return}\n" +
+    "  if(c==='yes'){var id=S.sel;S.sel=null;if(id){if(S.del)act('sp:del:'+id)}sRender();return}\n" +
+    "  if(c.indexOf('sel:')===0){var q=c.slice(4);\n" +
+    "    if(S.del){S.sel=S.sel===q?null:q;sRender();return}\n" +
+    "    act('sp:enter:'+q);return}\n" +
     "  if(c.indexOf('dl:')===0){act('sp:'+c);return}\n" +
-    "  if(c.indexOf('v:')===0){\n" +
-    "    var k=c.slice(2);\n" +
-    "    if(k==='seek0')act('sp:v:seek:0');else if(k==='rew')act('sp:v:rel:-10000');else if(k==='fwd')act('sp:v:rel:10000');\n" +
-    "    else act('sp:v:'+k);\n" +
-    "    setTimeout(sTick,250);return}\n" +
     "}\n" +
     "document.getElementById('p-space').addEventListener('click',function(e){\n" +
     "  var t=e.target;while(t&&t!==this&&!(t.getAttribute&&t.getAttribute('data-c')))t=t.parentNode;\n" +
     "  if(t&&t.getAttribute&&t.getAttribute('data-c')){\n" +
     "    if(t.getAttribute('data-c').indexOf('v:')===0||true)sCmd(t.getAttribute('data-c'));return}\n" +
-    "  var bar=document.getElementById('vbar');\n" +
-    "  if(bar&&S.view==='video'&&bar.contains(e.target)&&S.st.dur>0){\n" +
-    "    var r=bar.getBoundingClientRect();act('sp:v:seek:'+Math.round(Math.max(0,Math.min(1,(e.clientX-r.left)/r.width))*S.st.dur));setTimeout(sTick,250)}\n" +
     "});\n" +
     "function toast(m){var d=document.getElementById('toast');d.textContent=m;d.style.display='block';clearTimeout(S.tt);S.tt=setTimeout(function(){d.style.display='none'},3200)}\n" +
     "function sTick(){\n" +
@@ -4929,9 +5045,6 @@ final class ArMenuPage {
     "  Object.keys(dl).forEach(function(k){var p=dl[k];\n" +
     "    document.querySelectorAll('[data-p]').forEach(function(e){if(e.getAttribute('data-p')===k)e.style.width=(p>=0?p:100)+'%'});\n" +
     "    document.querySelectorAll('[data-t]').forEach(function(e){if(e.getAttribute('data-t')===k)e.textContent=p>=0?p+'%':'Baixando\u2026'})});\n" +
-    "  if(S.view==='video'){var f=s.dur>0?Math.min(1,s.pos/s.dur):0;\n" +
-    "    var a=document.getElementById('vt'),b=document.getElementById('vf'),c=document.getElementById('vk');\n" +
-    "    if(a)a.textContent=fmt(s.pos)+' / '+fmt(s.dur);if(b)b.style.width=(f*100)+'%';if(c)c.style.left='calc('+(f*100)+'% - 9px)'}\n" +
     "}\n" +
     "setInterval(sTick,400);\n" +
     "var w0='apps';try{w0=A.page()||'apps'}catch(e){}show(w0);\n" +
