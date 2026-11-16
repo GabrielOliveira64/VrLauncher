@@ -2,7 +2,7 @@
 # Modo AR (6DoF) do VR Launcher: tudo do 6DoF fica neste arquivo.
 # Para atualizar: envie um modo-ar.sh novo para o repositorio, substituindo este.
 set -e
-echo "modo-ar.sh: Fase 6 - espacial 360 (imagem e video), biblioteca e loja (2026-11-15)"
+echo "modo-ar.sh: Fase 6b - mundos, icones de vidro, controles de video por gesto (2026-11-16)"
 mkdir -p app/src/main/java/com/vr/launcher
 python3 - <<'PY'
 def patch(path, old, new, skip=None):
@@ -1043,6 +1043,8 @@ final class ArPanel {
   final boolean menu;
   /** Teclado virtual: pagina propria (ArKbPage) com ponte "ArKb". */
   final boolean kb;
+  /** Controles do video 360: pagina propria (ArVidPage) com a ponte "ArMenu". */
+  final boolean vid;
   private long downTime = 0;
   private Runnable tick, watchdog;
 
@@ -1053,6 +1055,7 @@ final class ArPanel {
   ArPanel(ArActivity act, int pw, int ph, int dpi, String url, boolean menu) {
     this.act = act; this.pw = pw; this.ph = ph; this.dpi = dpi; this.home = url; this.menu = menu;
     this.kb = menu && ArActivity.KB_URL.equals(url);
+    this.vid = menu && ArActivity.VID_URL.equals(url);
     this.id = ++seq;
     tabs.add(new Tab(url));
     android.opengl.Matrix.setIdentityM(stm, 0);
@@ -1309,6 +1312,7 @@ final class ArPanel {
     if (t.web != null && !t.loaded) {
       t.loaded = true;
       if (kb) t.web.loadDataWithBaseURL("https://vrlauncher.local/", ArKbPage.HTML, "text/html", "utf-8", null);
+      else if (vid) t.web.loadDataWithBaseURL("https://vrlauncher.local/", ArVidPage.HTML, "text/html", "utf-8", null);
       else if (menu) t.web.loadDataWithBaseURL("https://vrlauncher.local/", ArMenuPage.HTML, "text/html", "utf-8", null);
       else t.web.loadUrl(t.url);
     }
@@ -1616,6 +1620,7 @@ import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.RectF;
 import android.graphics.SurfaceTexture;
+import android.graphics.Typeface;
 import android.media.Image;
 import android.opengl.GLES11Ext;
 import android.opengl.GLES20;
@@ -1802,6 +1807,11 @@ final class ArRenderer implements GLSurfaceView.Renderer {
   private long lastTapMs = 0;
   private Pose dragInv = null;
   private int winShadeLoc = 0, keyGlyph = 0, linkGlyph = 0;
+  // controles do video 360 (abrem com pinca segurada 1 s no vazio, so dentro de um video)
+  private Win vctlWin = null;
+  private long holdStart = 0;
+  private float holdX = 0f, holdY = 0f, holdProg = 0f;
+  private boolean holdLatch = false;
 
   // espacial 360: panorama (imagem ou video) no lugar da camera, fixo no mundo, com fade
   private int spTex = 0, spProg = 0, spKind = 0;   // spKind: 1 imagem, 2 video
@@ -2349,7 +2359,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     railWin.rail = true;
     float left = k > 0 ? (k - 1) / 2f * ((2f * HW + 0.06f) / 1.2f) + HW / 1.2f + 0.16f : 0.15f;
     placeRailBeside(s, cp, Math.min(0.42f, left));
-    menuOpen = true;
+    menuOpen = false;   // o menu so abre com o gesto
     menuReveal = 0f;
     ensureTab(s);
   }
@@ -2908,15 +2918,17 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     }
   }
 
-  /** Botao redondo minimalista: fundo escuro translucido e icone branco; claro quando sob a mao, verde-agua quando ligado. */
+  /** Botao redondo "de vidro": fundo quase transparente com aro fino e icone branco; claro sob a mao, verde-agua quando ligado. */
   private void iconBtn(int glyph, float x, float y, float size, boolean hot, boolean on, float alpha, float dimV) {
-    float r, g, b, a;
-    if (hot) { r = 1f; g = 1f; b = 1f; a = 0.96f; }
-    else if (on) { r = 0.37f; g = 0.92f; b = 0.83f; a = 0.95f; }
-    else { r = 0.07f; g = 0.08f; b = 0.11f; a = 0.74f; }
-    quad(discTex, x, y, size, size, r, g, b, a * alpha, dimV);
-    boolean dark = hot || on;
-    quad(glyph, x, y, size * 0.62f, size * 0.62f, dark ? 0.07f : 1f, dark ? 0.08f : 1f, dark ? 0.1f : 1f, alpha, dimV);
+    boolean solid = hot || on;
+    if (hot) quad(discTex, x, y, size, size, 1f, 1f, 1f, 0.92f * alpha, dimV);
+    else if (on) quad(discTex, x, y, size, size, 0.37f, 0.92f, 0.83f, 0.92f * alpha, dimV);
+    else {
+      quad(discTex, x, y, size, size, 0.16f, 0.2f, 0.28f, 0.22f * alpha, dimV);
+      quad(ringTex, x, y, size, size, 1f, 1f, 1f, 0.42f * alpha, dimV);
+    }
+    if (!solid) quad(glyph, x + size * 0.025f, y - size * 0.025f, size * 0.62f, size * 0.62f, 0f, 0f, 0f, 0.35f * alpha, dimV);
+    quad(glyph, x, y, size * 0.62f, size * 0.62f, solid ? 0.07f : 1f, solid ? 0.08f : 1f, solid ? 0.1f : 1f, alpha, dimV);
   }
 
   /** model = pose da janela * escala (curva: escala uniforme, a malha ja tem a profundidade). */
@@ -3133,6 +3145,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
       }
     }
     pinchWasOn = pinchOn;
+    updateHold(s, pinchOn, hit, camPos, dir, now);
 
     if (pinchOn && dir != null) {
       if (sizeWin != null) doResize(camPos, dir);
@@ -3141,6 +3154,51 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     }
 
     updateFist(fistOn, hit, now);
+  }
+
+  /** Pinca segurada 1 s no vazio, dentro de um video 360: abre (ou fecha) os controles do video. */
+  private void updateHold(Session s, boolean pinchOn, Hit hit, float[] cam, float[] dir, long now) {
+    boolean can = spKind == 2 && spWant && pinchOn && hit == null && dir != null && !pinchWasOnGrab();
+    if (!can) {
+      holdStart = 0;
+      holdProg = 0f;
+      if (!pinchOn) holdLatch = false;
+      return;
+    }
+    if (holdLatch) return;
+    float lim = Math.max(40f, vw * 0.06f);
+    if (holdStart == 0 || Math.hypot(cx - holdX, cy - holdY) > lim) { holdStart = now; holdX = cx; holdY = cy; }
+    holdProg = Math.min(1f, (now - holdStart) / 1000f);
+    if (holdProg >= 1f) {
+      holdLatch = true;
+      holdStart = 0;
+      holdProg = 0f;
+      toggleVctl(s, cam, dir);
+    }
+  }
+
+  private boolean pinchWasOnGrab() { return dragWin != null || sizeWin != null || touchWin != null; }
+
+  private void ensureVctl(Session s, Pose p) {
+    if (vctlWin != null || s == null) return;
+    vctlWin = addWindowP(s, p, newPanel(ArActivity.VID_URL, true), true, false);
+    vctlWin.s = 0.7f;
+    vctlWin.hidden = true;
+  }
+
+  private void toggleVctl(Session s, float[] cam, float[] dir) {
+    if (vctlWin != null && !vctlWin.hidden) { hideVctl(); return; }
+    Pose p = facing(cam[0] + dir[0] * 0.9f, cam[1] + dir[1] * 0.9f, cam[2] + dir[2] * 0.9f, cam[0], cam[2]);
+    ensureVctl(s, p);
+    if (vctlWin == null) return;
+    if (vctlWin.anchor != null) { try { vctlWin.anchor.detach(); } catch (Throwable e) { } vctlWin.anchor = null; }
+    vctlWin.pose = p;
+    vctlWin.hidden = false;
+    vctlWin.lockUntil = SystemClock.uptimeMillis() + 400;
+  }
+
+  void hideVctl() {
+    if (vctlWin != null) vctlWin.hidden = true;
   }
 
   /** Punho fechado por 1 s sobre uma janela = fechar a janela. */
@@ -3536,12 +3594,13 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     Canvas c = new Canvas(b);
     Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
     p.setStyle(Paint.Style.FILL);
-    p.setColor(Color.argb(190, 18, 20, 28));
-    c.drawRoundRect(new RectF(0f, 0f, 200f, 120f), 40f, 40f, p);
+    p.setTypeface(Typeface.create("sans-serif-light", Typeface.NORMAL));
+    p.setLetterSpacing(0.1f);
+    p.setShadowLayer(7f, 0f, 2f, Color.argb(170, 0, 0, 0));
     p.setColor(Color.WHITE);
-    p.setTextSize(58f);
+    p.setTextSize(64f);
     float wh = p.measureText(hh), wm = p.measureText(mm), wc = p.measureText(":");
-    float x = (200f - (wh + wc + wm)) / 2f, base = 76f;
+    float x = (200f - (wh + wc + wm)) / 2f, base = 78f;
     c.drawText(hh, x, base, p);
     p.setColor(Color.argb((slot & 1L) == 0L ? 255 : 90, 255, 255, 255));
     c.drawText(":", x + wh, base - 3f, p);
@@ -3710,6 +3769,16 @@ final class ArRenderer implements GLSurfaceView.Renderer {
       }
     }
 
+    // pinca segurada no video: anel verde-agua que enche em 1 s
+    if (holdProg > 0.02f) {
+      sq(ringTex, cx, cy, 52f * dp, 52f * dp, 0f, 0.37f, 0.92f, 0.83f, 0.35f);
+      int n = Math.round(holdProg * 28f);
+      for (int i = 0; i < n; i++) {
+        double a = -Math.PI / 2.0 + i * (2.0 * Math.PI / 28.0);
+        sq(discTex, cx + (float) Math.cos(a) * 26f * dp, cy + (float) Math.sin(a) * 26f * dp, 6f * dp, 6f * dp, 0f, 0.37f, 0.92f, 0.83f, 1f);
+      }
+    }
+
     GLES20.glDisableVertexAttribArray(flatPosLoc);
     GLES20.glDisableVertexAttribArray(flatUvLoc);
     GLES20.glDisable(GLES20.GL_BLEND);
@@ -3750,6 +3819,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
   /** Imagem 360 equiretangular (thread do GL). Entra com fade; o centro da imagem fica na frente de quem olha. */
   void startSpaceImage(Bitmap b) {
     boolean had = spKind != 0;
+    hideVctl();
     releaseSpace();
     if (!ensureSpaceProg(false)) {
       b.recycle();
@@ -3809,6 +3879,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
 
   /** Sai do espacial: o panorama some com fade e depois libera a textura. */
   void exitSpace() {
+    hideVctl();
     spWant = false;
     act.space.left();
   }
@@ -3956,13 +4027,11 @@ final class ArRenderer implements GLSurfaceView.Renderer {
         c.drawText("?", 48f, 67f, p);
         break;
       }
-      case 3:   // mundo: circulo, meridiano, equador e dois paralelos
+      case 3:   // mundos: paisagem (sol e montanhas) dentro de uma moldura
         p.setStrokeWidth(6f);
-        c.drawCircle(48f, 48f, 35f, p);
-        c.drawOval(new RectF(31f, 13f, 65f, 83f), p);
-        c.drawLine(13f, 48f, 83f, 48f, p);
-        pa.moveTo(19f, 29f); pa.quadTo(48f, 40f, 77f, 29f);
-        pa.moveTo(19f, 67f); pa.quadTo(48f, 56f, 77f, 67f);
+        c.drawRoundRect(new RectF(12f, 20f, 84f, 76f), 14f, 14f, p);
+        c.drawCircle(63f, 39f, 6f, p);
+        pa.moveTo(18f, 68f); pa.lineTo(38f, 46f); pa.lineTo(52f, 60f); pa.lineTo(62f, 52f); pa.lineTo(78f, 68f);
         c.drawPath(pa, p);
         break;
       case 4:   // apps
@@ -4235,6 +4304,7 @@ public class ArActivity extends Activity {
   };
   static final String MENU_URL = "about:menu";
   static final String KB_URL = "about:kb";
+  static final String VID_URL = "about:vid";
   /** Aba do menu que a pagina deve mostrar (lida pela pagina via ArMenu.page()). */
   volatile String menuPage = "apps";
 
@@ -4461,6 +4531,10 @@ public class ArActivity extends Activity {
 
   void startSpaceVideo(final File f) {
     queueGl(new Runnable() { @Override public void run() { renderer.startSpaceVideo(f); } });
+  }
+
+  void hideVctl() {
+    queueGl(new Runnable() { @Override public void run() { renderer.hideVctl(); } });
   }
 
   void exitSpace() {
@@ -5004,6 +5078,83 @@ final class ArKbPage {
     "\n";
 }
 EOF
+cat > app/src/main/java/com/vr/launcher/ArVidPage.java <<'EOF'
+package com.vr.launcher;
+
+/** Pagina HTML gerada (vid.html). */
+final class ArVidPage {
+  static final String HTML =
+    "<!doctype html>\n" +
+    "<html><head><meta charset=\"utf-8\">\n" +
+    "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1,user-scalable=no\">\n" +
+    "<style>\n" +
+    "*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;-webkit-user-select:none;user-select:none}\n" +
+    "html,body{margin:0;height:100%;background:#0e1016;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden}\n" +
+    "#w{position:absolute;inset:0;padding:16px 22px;display:flex;flex-direction:column;justify-content:space-between}\n" +
+    ".top{display:flex;align-items:center;gap:10px}\n" +
+    ".nm{flex:1;font-size:16px;opacity:.85;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;letter-spacing:.5px}\n" +
+    ".tm{display:flex;justify-content:space-between;font-size:14px;opacity:.8;font-variant-numeric:tabular-nums}\n" +
+    ".bar{position:relative;height:40px}\n" +
+    ".tr{position:absolute;left:0;right:0;top:16px;height:8px;border-radius:4px;background:rgba(255,255,255,.22);overflow:hidden}\n" +
+    ".vf{height:100%;width:0;background:#fff}\n" +
+    ".vk{position:absolute;top:10px;left:-10px;width:20px;height:20px;border-radius:50%;background:#fff}\n" +
+    ".row{display:flex;gap:8px;justify-content:center}\n" +
+    ".b{display:flex;align-items:center;justify-content:center;gap:4px;height:52px;min-width:52px;padding:0 12px;border-radius:26px;background:rgba(255,255,255,.12);font-size:15px}\n" +
+    ".b svg{width:24px;height:24px;fill:none;stroke:currentColor;stroke-width:1.9;stroke-linecap:round;stroke-linejoin:round}\n" +
+    ".b.on{background:#5eead4;color:#04201c}\n" +
+    ".b:active{background:#fff;color:#000}\n" +
+    ".x{height:40px;min-width:40px;border-radius:20px}\n" +
+    "</style></head><body><div id=\"w\">\n" +
+    "<div class=\"top\"><div class=\"nm\" id=\"nm\"></div><div class=\"b x\" data-c=\"close\"><svg viewBox=\"0 0 24 24\"><path d=\"M6 6l12 12M18 6L6 18\"/></svg></div></div>\n" +
+    "<div><div class=\"tm\"><span id=\"tt\">0:00 / 0:00</span><span id=\"sp\">1&times;</span></div>\n" +
+    "<div class=\"bar\" id=\"bar\"><div class=\"tr\"><div class=\"vf\" id=\"vf\"></div></div><div class=\"vk\" id=\"vk\"></div></div></div>\n" +
+    "<div class=\"row\" id=\"row\"></div>\n" +
+    "</div>\n" +
+    "<script>\n" +
+    "var A=window.ArMenu;\n" +
+    "function act(a){try{A.act(a)}catch(e){}}\n" +
+    "var IC={\n" +
+    " restart:'<svg viewBox=\"0 0 24 24\"><path d=\"M6 5v14\"/><path d=\"M18 6l-9 6 9 6z\"/></svg>',\n" +
+    " rew:'<svg viewBox=\"0 0 24 24\"><path d=\"M11 6l-7 6 7 6z\"/><path d=\"M20 6l-7 6 7 6z\"/></svg>',\n" +
+    " play:'<svg viewBox=\"0 0 24 24\"><path d=\"M8 5l11 7-11 7z\"/></svg>',\n" +
+    " pause:'<svg viewBox=\"0 0 24 24\"><path d=\"M9 5v14\"/><path d=\"M15 5v14\"/></svg>',\n" +
+    " fwd:'<svg viewBox=\"0 0 24 24\"><path d=\"M13 6l7 6-7 6z\"/><path d=\"M4 6l7 6-7 6z\"/></svg>',\n" +
+    " vol:'<svg viewBox=\"0 0 24 24\"><path d=\"M4 9h4l5-4v14l-5-4H4z\"/><path d=\"M16.5 9a4 4 0 0 1 0 6\"/><path d=\"M19 6.5a8 8 0 0 1 0 11\"/></svg>',\n" +
+    " mute:'<svg viewBox=\"0 0 24 24\"><path d=\"M4 9h4l5-4v14l-5-4H4z\"/><path d=\"M17 9.5l4.5 5M21.5 9.5l-4.5 5\"/></svg>',\n" +
+    " loop:'<svg viewBox=\"0 0 24 24\"><path d=\"M17 3l3 3-3 3\"/><path d=\"M4 12V9a3 3 0 0 1 3-3h13\"/><path d=\"M7 21l-3-3 3-3\"/><path d=\"M20 12v3a3 3 0 0 1-3 3H4\"/></svg>'\n" +
+    "};\n" +
+    "function fmt(ms){var s=Math.floor((ms||0)/1000),m=Math.floor(s/60),r=s%60;return m+':'+(r<10?'0':'')+r}\n" +
+    "function bt(c,h,on){return'<div class=\"b'+(on?' on':'')+'\" data-c=\"'+c+'\">'+h+'</div>'}\n" +
+    "var S={},sig='',dur=0;\n" +
+    "function render(){\n" +
+    "  document.getElementById('row').innerHTML=bt('seek:0',IC.restart)+bt('rel:-10000',IC.rew+'<span>10</span>')+bt('play',S.playing?IC.pause:IC.play)\n" +
+    "   +bt('rel:10000','<span>10</span>'+IC.fwd)+bt('speed','<span>'+(S.speed||1)+'&times;</span>')+bt('mute',S.muted?IC.mute:IC.vol)+bt('loop',IC.loop,S.loop);\n" +
+    "}\n" +
+    "function tick(){\n" +
+    "  var s;try{s=JSON.parse(A.spState())}catch(e){return}\n" +
+    "  S=s;dur=s.dur||0;\n" +
+    "  var g=[s.playing,s.muted,s.loop,s.speed].join('|');\n" +
+    "  if(g!==sig){sig=g;render()}\n" +
+    "  document.getElementById('nm').textContent=s.name||'';\n" +
+    "  document.getElementById('tt').textContent=fmt(s.pos)+' / '+fmt(s.dur);\n" +
+    "  document.getElementById('sp').innerHTML=(s.speed||1)+'&times;';\n" +
+    "  var f=dur>0?Math.min(1,s.pos/dur):0;\n" +
+    "  document.getElementById('vf').style.width=(f*100)+'%';\n" +
+    "  document.getElementById('vk').style.left='calc('+(f*100)+'% - 10px)';\n" +
+    "}\n" +
+    "document.addEventListener('click',function(e){\n" +
+    "  var t=e.target;while(t&&t!==document&&!(t.getAttribute&&t.getAttribute('data-c')))t=t.parentNode;\n" +
+    "  if(t&&t.getAttribute&&t.getAttribute('data-c')){var c=t.getAttribute('data-c');\n" +
+    "    if(c==='close')act('sp:vclose');else act('sp:v:'+c);setTimeout(tick,250);return}\n" +
+    "  var bar=document.getElementById('bar');\n" +
+    "  if(bar.contains(e.target)&&dur>0){var r=bar.getBoundingClientRect();\n" +
+    "    act('sp:v:seek:'+Math.round(Math.max(0,Math.min(1,(e.clientX-r.left)/r.width))*dur));setTimeout(tick,250)}\n" +
+    "});\n" +
+    "render();tick();setInterval(tick,400);\n" +
+    "</script></body></html>\n" +
+    "\n";
+}
+EOF
 cat > app/src/main/java/com/vr/launcher/ArSpace.java <<'EOF'
 package com.vr.launcher;
 
@@ -5054,6 +5205,7 @@ final class ArSpace {
   volatile String err = "", msg = "", catJson = "[]";
   volatile String active = "";
   volatile boolean activeVideo = false;
+  volatile String activeName = "";
   private final ConcurrentHashMap<String, Integer> dl = new ConcurrentHashMap<String, Integer>();
   private final HashMap<String, String[]> catItems = new HashMap<String, String[]>();   // id -> {url, tipo, nome}
   private final AtomicBoolean busy = new AtomicBoolean(false);
@@ -5105,6 +5257,7 @@ final class ArSpace {
     String c = a.substring(3);
     if (c.startsWith("enter:")) enter(c.substring(6));
     else if (c.equals("exit")) act.exitSpace();
+    else if (c.equals("vclose")) act.hideVctl();
     else if (c.startsWith("del:")) delete(c.substring(4));
     else if (c.equals("import")) act.pickMedia();
     else if (c.equals("fetch")) fetchCatalog();
@@ -5181,7 +5334,10 @@ final class ArSpace {
   /** Entra no item: imagem 360 (decodifica e manda ao GL) ou video 360 (MediaPlayer no Surface do GL). */
   void enter(final String id) {
     if (id == null || !id.matches("[0-9]+")) return;
+    // tocar no mundo que ja esta aberto = sair dele
+    if (id.equals(active)) { act.exitSpace(); return; }
     final File v = videoFile(id), j = imageFile(id);
+    activeName = readText(new File(dir, id + ".txt"), "");
     if (v.exists()) {
       active = id;
       activeVideo = true;
@@ -5189,6 +5345,7 @@ final class ArSpace {
     } else if (j.exists()) {
       active = id;
       activeVideo = false;
+      closeVideo();
       new Thread(new Runnable() {
         @Override public void run() {
           try {
@@ -5604,7 +5761,7 @@ final class ArSpace {
     b.append("\"libVer\":").append(libVer).append(",\"catVer\":").append(catVer)
       .append(",\"loading\":").append(loading).append(",\"err\":").append(q(err))
       .append(",\"msg\":").append(q(msg)).append(",\"msgSeq\":").append(msgSeq)
-      .append(",\"active\":").append(q(active)).append(",\"video\":").append(activeVideo)
+      .append(",\"name\":").append(q(activeName)).append(",\"active\":").append(q(active)).append(",\"video\":").append(activeVideo)
       .append(",\"pos\":").append(pos).append(",\"dur\":").append(dur).append(",\"playing\":").append(playing)
       .append(",\"muted\":").append(muted).append(",\"loop\":").append(loop)
       .append(",\"speed\":").append(SPEEDS[spd]).append(",\"dl\":{");
