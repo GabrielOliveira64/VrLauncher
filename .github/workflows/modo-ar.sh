@@ -2,7 +2,7 @@
 # Modo AR (6DoF) do VR Launcher: tudo do 6DoF fica neste arquivo.
 # Para atualizar: envie um modo-ar.sh novo para o repositorio, substituindo este.
 set -e
-echo "modo-ar.sh: Fase 5 - teclado virtual, editar endereco, agrupar e minimizar (2026-11-15)"
+echo "modo-ar.sh: Fase 6 - espacial 360 (imagem e video), biblioteca e loja (2026-11-15)"
 mkdir -p app/src/main/java/com/vr/launcher
 python3 - <<'PY'
 def patch(path, old, new, skip=None):
@@ -972,10 +972,12 @@ import android.webkit.CookieManager;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
+import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -1502,6 +1504,9 @@ final class ArPanel {
         @JavascriptInterface public void act(String a) { ArPanel.this.act.menuAction(a); }
         @JavascriptInterface public String state() { return ArPanel.this.act.menuState(); }
         @JavascriptInterface public String page() { return ArPanel.this.act.menuPage; }
+        @JavascriptInterface public String spState() { return ArPanel.this.act.space.stateJson(); }
+        @JavascriptInterface public String spLib() { return ArPanel.this.act.space.libJson(); }
+        @JavascriptInterface public String spCat() { return ArPanel.this.act.space.catJson; }
       }, "ArMenu");
     } else {
       // avisa quando um campo de texto da pagina ganha o foco, para abrir o teclado virtual
@@ -1517,6 +1522,18 @@ final class ArPanel {
     s.setMediaPlaybackRequiresUserGesture(false);
     CookieManager.getInstance().setAcceptThirdPartyCookies(v, true);
     v.setWebViewClient(new WebViewClient() {
+      /** Miniaturas da biblioteca (/spatial/ID_t.jpg) para a pagina do menu. */
+      @Override public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest r) {
+        if (menu) {
+          android.net.Uri u = r.getUrl();
+          String path = u == null ? null : u.getPath();
+          if (u != null && "vrlauncher.local".equals(u.getHost()) && path != null && path.startsWith("/spatial/")) {
+            InputStream in = ArPanel.this.act.space.thumb(path.substring(9));
+            if (in != null) return new WebResourceResponse("image/jpeg", null, in);
+          }
+        }
+        return null;
+      }
       @Override public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest r) {
         String u = r.getUrl().toString();
         return !(u.startsWith("http:") || u.startsWith("https:") || u.startsWith("about:") || u.startsWith("blob:") || u.startsWith("data:"));
@@ -1598,6 +1615,7 @@ import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.RectF;
+import android.graphics.SurfaceTexture;
 import android.media.Image;
 import android.opengl.GLES11Ext;
 import android.opengl.GLES20;
@@ -1607,6 +1625,7 @@ import android.opengl.Matrix;
 import android.os.SystemClock;
 import android.util.Size;
 import android.view.MotionEvent;
+import android.view.Surface;
 import com.google.ar.core.Anchor;
 import com.google.ar.core.Camera;
 import com.google.ar.core.CameraConfig;
@@ -1618,7 +1637,9 @@ import com.google.ar.core.TrackingState;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
+import java.io.File;
 import java.util.ArrayList;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.CopyOnWriteArrayList;
 import javax.microedition.khronos.egl.EGLConfig;
 import javax.microedition.khronos.opengles.GL10;
@@ -1782,6 +1803,18 @@ final class ArRenderer implements GLSurfaceView.Renderer {
   private Pose dragInv = null;
   private int winShadeLoc = 0, keyGlyph = 0, linkGlyph = 0;
 
+  // espacial 360: panorama (imagem ou video) no lugar da camera, fixo no mundo, com fade
+  private int spTex = 0, spProg = 0, spKind = 0;   // spKind: 1 imagem, 2 video
+  private boolean spOes = false, spWant = false;
+  private int spPosLoc = 0, spProjLoc = 0, spRotLoc = 0, spYawLoc = 0, spTexLoc = 0, spStmLoc = 0, spAlphaLoc = 0;
+  private float spAlpha = 0f, spYaw = 0f;
+  private SurfaceTexture spSt = null;
+  private Surface spSurf = null;
+  private final AtomicBoolean spAvail = new AtomicBoolean(false);
+  private final float[] spStm = new float[16], invProj = new float[16], rot3 = new float[9];
+  private final FloatBuffer spQuad = floatBuf(new float[]{-1f, -1f, 1f, -1f, -1f, 1f, 1f, 1f});
+  private long spLastMs = 0;
+
   // menu 3D
   private Win railWin = null, tabWin = null;
   private boolean menuOpen = false;
@@ -1898,6 +1931,12 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR);
     GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
     camTexSet = false;
+
+    // contexto GL novo: o panorama antigo se perdeu
+    spTex = 0; spProg = 0; spKind = 0; spWant = false; spAlpha = 0f;
+    if (spSurf != null) { try { spSurf.release(); } catch (Throwable e) { } spSurf = null; }
+    if (spSt != null) { try { spSt.release(); } catch (Throwable e) { } spSt = null; }
+    act.space.left();
 
     glError = "";
     bgProg = program(BG_VS, BG_FS);
@@ -2025,7 +2064,8 @@ final class ArRenderer implements GLSurfaceView.Renderer {
         probeRotation(frame);
       }
 
-      drawBackground();
+      updateSpace(nowMs);
+      if (spKind == 0 || spAlpha < 0.99f) drawBackground();
 
       camera.getProjectionMatrix(proj, 0, 0.1f, 30f);
       trackStats(camera, nowMs);
@@ -2033,10 +2073,12 @@ final class ArRenderer implements GLSurfaceView.Renderer {
       Matrix.multiplyMM(vp, 0, proj, 0, view, 0);
       Matrix.invertM(invVp, 0, vp, 0);
       if (camInfo.length() == 0) readCamInfo(s, camera);
+      drawSpace();
 
       lastCamPose = camPose;
       if (recenterReq) {
         recenterReq = false;
+        if (spKind != 0) spYaw = heading(camPose) - (float) Math.PI;
         if (!needSpawn && tracking) centerAll(s, camPose);
       }
       float[] ct = camPose.getTranslation();
@@ -3697,6 +3739,167 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     GLES20.glDepthMask(true);
   }
 
+  // =============================================================
+  // Espacial 360
+  // =============================================================
+
+  private float yawNow() {
+    return lastCamPose != null ? heading(lastCamPose) - (float) Math.PI : 0f;
+  }
+
+  /** Imagem 360 equiretangular (thread do GL). Entra com fade; o centro da imagem fica na frente de quem olha. */
+  void startSpaceImage(Bitmap b) {
+    boolean had = spKind != 0;
+    releaseSpace();
+    if (!ensureSpaceProg(false)) {
+      b.recycle();
+      act.space.say("Espacial indisponivel neste aparelho");
+      act.space.left();
+      return;
+    }
+    int[] t = new int[1];
+    GLES20.glGenTextures(1, t, 0);
+    GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, t[0]);
+    int w = b.getWidth(), h = b.getHeight();
+    boolean pot = (w & (w - 1)) == 0 && (h & (h - 1)) == 0;
+    GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR);
+    GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
+    GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, pot ? GLES20.GL_REPEAT : GLES20.GL_CLAMP_TO_EDGE);
+    GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
+    GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, b, 0);
+    b.recycle();
+    spTex = t[0];
+    spKind = 1;
+    spWant = true;
+    spYaw = yawNow();
+    if (!had) spAlpha = 0f;
+  }
+
+  /** Video 360: o MediaPlayer desenha no Surface de uma textura externa que este renderer le a cada quadro. */
+  void startSpaceVideo(File f) {
+    boolean had = spKind != 0;
+    releaseSpace();
+    if (!ensureSpaceProg(true)) {
+      act.space.say("Espacial indisponivel neste aparelho");
+      act.space.left();
+      return;
+    }
+    int[] t = new int[1];
+    GLES20.glGenTextures(1, t, 0);
+    GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, t[0]);
+    GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE);
+    GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
+    GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR);
+    GLES20.glTexParameteri(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
+    spTex = t[0];
+    SurfaceTexture st = new SurfaceTexture(spTex);
+    spAvail.set(false);
+    st.setOnFrameAvailableListener(new SurfaceTexture.OnFrameAvailableListener() {
+      @Override public void onFrameAvailable(SurfaceTexture x) { spAvail.set(true); }
+    });
+    spSt = st;
+    spSurf = new Surface(st);
+    android.opengl.Matrix.setIdentityM(spStm, 0);
+    spKind = 2;
+    spWant = true;
+    spYaw = yawNow();
+    if (!had) spAlpha = 0f;
+    act.space.openVideo(f, spSurf);
+  }
+
+  /** Sai do espacial: o panorama some com fade e depois libera a textura. */
+  void exitSpace() {
+    spWant = false;
+    act.space.left();
+  }
+
+  private void releaseSpace() {
+    if (spSurf != null) { try { spSurf.release(); } catch (Throwable e) { } spSurf = null; }
+    if (spSt != null) { try { spSt.release(); } catch (Throwable e) { } spSt = null; }
+    if (spTex != 0) { GLES20.glDeleteTextures(1, new int[]{spTex}, 0); spTex = 0; }
+    spKind = 0;
+  }
+
+  /** Fade do panorama e, no video, o quadro novo. */
+  private void updateSpace(long now) {
+    float dt = spLastMs == 0 ? 0.016f : Math.min(0.1f, (now - spLastMs) / 1000f);
+    spLastMs = now;
+    if (spKind == 0) { spAlpha = 0f; return; }
+    float tgt = spWant ? 1f : 0f, step = dt / 0.7f;
+    spAlpha += Math.max(-step, Math.min(step, tgt - spAlpha));
+    if (spKind == 2 && spSt != null && spAvail.getAndSet(false)) {
+      try { spSt.updateTexImage(); spSt.getTransformMatrix(spStm); } catch (Throwable e) { }
+    }
+    if (!spWant && spAlpha <= 0.005f) releaseSpace();
+  }
+
+  private boolean ensureSpaceProg(boolean oes) {
+    if (spProg != 0 && spOes == oes) return true;
+    if (spProg != 0) { GLES20.glDeleteProgram(spProg); spProg = 0; }
+    String head = oes ? "#extension GL_OES_EGL_image_external : require\n#define OES 1\n" : "";
+    String fs = head
+      + "#ifdef GL_FRAGMENT_PRECISION_HIGH\nprecision highp float;\n#else\nprecision mediump float;\n#endif\n"
+      + "varying vec2 v_Ndc;\n"
+      + "uniform mat4 u_InvProj;\nuniform mat3 u_Rot;\nuniform float u_Yaw;\nuniform float u_A;\n"
+      + "#ifdef OES\nuniform samplerExternalOES u_Tex;\nuniform mat4 u_Stm;\n#else\nuniform sampler2D u_Tex;\n#endif\n"
+      + "void main() {\n"
+      + "  vec4 p = u_InvProj * vec4(v_Ndc, 1.0, 1.0);\n"
+      + "  vec3 w = u_Rot * normalize(p.xyz / p.w);\n"
+      + "  float c = cos(u_Yaw), s = sin(u_Yaw);\n"
+      + "  vec3 r = vec3(c * w.x - s * w.z, w.y, s * w.x + c * w.z);\n"
+      + "  float az = atan(r.x, -r.z);\n"
+      + "  float el = asin(clamp(r.y, -1.0, 1.0));\n"
+      + "#ifdef OES\n"
+      + "  vec2 uv = (u_Stm * vec4(az * 0.15915494 + 0.5, 0.5 + el * 0.31830989, 0.0, 1.0)).xy;\n"
+      + "#else\n"
+      + "  vec2 uv = vec2(az * 0.15915494 + 0.5, 0.5 - el * 0.31830989);\n"
+      + "#endif\n"
+      + "  vec3 col = texture2D(u_Tex, uv).rgb;\n"
+      + "  gl_FragColor = vec4(col * u_A, u_A);\n"
+      + "}\n";
+    String vs = "attribute vec2 a_Pos;\nvarying vec2 v_Ndc;\nvoid main() { v_Ndc = a_Pos; gl_Position = vec4(a_Pos, 0.0, 1.0); }\n";
+    int pr = program(vs, fs);
+    if (pr == 0) return false;
+    spProg = pr;
+    spOes = oes;
+    spPosLoc = GLES20.glGetAttribLocation(pr, "a_Pos");
+    spProjLoc = GLES20.glGetUniformLocation(pr, "u_InvProj");
+    spRotLoc = GLES20.glGetUniformLocation(pr, "u_Rot");
+    spYawLoc = GLES20.glGetUniformLocation(pr, "u_Yaw");
+    spAlphaLoc = GLES20.glGetUniformLocation(pr, "u_A");
+    spTexLoc = GLES20.glGetUniformLocation(pr, "u_Tex");
+    spStmLoc = GLES20.glGetUniformLocation(pr, "u_Stm");
+    return true;
+  }
+
+  /** Desenha o panorama em volta da camera (so a rotacao conta, como se estivesse no infinito). */
+  private void drawSpace() {
+    if (spKind == 0 || spProg == 0 || spTex == 0 || spAlpha <= 0.005f) return;
+    float e = spAlpha * spAlpha * (3f - 2f * spAlpha);
+    Matrix.invertM(invProj, 0, proj, 0);
+    for (int j = 0; j < 3; j++) for (int i = 0; i < 3; i++) rot3[j * 3 + i] = view[i * 4 + j];
+    GLES20.glDisable(GLES20.GL_DEPTH_TEST);
+    GLES20.glDepthMask(false);
+    GLES20.glEnable(GLES20.GL_BLEND);
+    GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE_MINUS_SRC_ALPHA);
+    GLES20.glUseProgram(spProg);
+    GLES20.glUniformMatrix4fv(spProjLoc, 1, false, invProj, 0);
+    GLES20.glUniformMatrix3fv(spRotLoc, 1, false, rot3, 0);
+    GLES20.glUniform1f(spYawLoc, spYaw);
+    GLES20.glUniform1f(spAlphaLoc, e);
+    if (spOes) GLES20.glUniformMatrix4fv(spStmLoc, 1, false, spStm, 0);
+    GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
+    GLES20.glBindTexture(spOes ? GLES11Ext.GL_TEXTURE_EXTERNAL_OES : GLES20.GL_TEXTURE_2D, spTex);
+    GLES20.glUniform1i(spTexLoc, 0);
+    spQuad.position(0);
+    GLES20.glVertexAttribPointer(spPosLoc, 2, GLES20.GL_FLOAT, false, 0, spQuad);
+    GLES20.glEnableVertexAttribArray(spPosLoc);
+    GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
+    GLES20.glDisableVertexAttribArray(spPosLoc);
+    GLES20.glDepthMask(true);
+    GLES20.glDisable(GLES20.GL_BLEND);
+  }
+
   private static Bitmap makeBar() {
     Bitmap b = Bitmap.createBitmap(256, 32, Bitmap.Config.ARGB_8888);
     Canvas c = new Canvas(b);
@@ -3993,6 +4196,7 @@ import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.hardware.display.DisplayManager;
 import android.opengl.GLSurfaceView;
+import android.graphics.Bitmap;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -4010,6 +4214,7 @@ import com.google.ar.core.CameraConfig;
 import com.google.ar.core.CameraConfigFilter;
 import com.google.ar.core.Config;
 import com.google.ar.core.Session;
+import java.io.File;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.List;
@@ -4038,6 +4243,8 @@ public class ArActivity extends Activity {
   private ArRenderer renderer;
   private ArOverlay overlay;
   private ArHand tracker;
+  /** Espacial 360: biblioteca, loja e video. */
+  ArSpace space;
   private Session session;
   private boolean installRequested = false;
   private final Handler ui = new Handler(Looper.getMainLooper());
@@ -4077,6 +4284,7 @@ public class ArActivity extends Activity {
     tracker = new ArHand(getApplicationContext(), prefs.getBoolean("gpu", true));
     imu = new ArImu(getApplicationContext());
     overlay = new ArOverlay(this);
+    space = new ArSpace(this);
     renderer = new ArRenderer(this, tracker);
     renderer.imu = imu;
     // padrao 0 = imagem preenchida e cortada, igual ao app original (CameraX FILL_CENTER)
@@ -4153,11 +4361,13 @@ public class ArActivity extends Activity {
     }
     gl.onResume();
     imu.start();
+    space.resume();
   }
 
   @Override protected void onPause() {
     super.onPause();
     imu.stop();
+    space.pause();
     if (session != null) {
       gl.onPause();
       session.pause();
@@ -4170,6 +4380,7 @@ public class ArActivity extends Activity {
     tracker.close();
     imu.close();
     renderer.shutdown();
+    space.left();
     if (session != null) { session.close(); session = null; }
     super.onDestroy();
   }
@@ -4233,12 +4444,50 @@ public class ArActivity extends Activity {
     if ("center".equals(a)) { renderer.recenter(); return; }
     if ("gpu".equals(a)) { tracker.toggleDelegate(); savePrefs(); return; }
     if ("hybrid".equals(a)) { renderer.toggleHybrid(); savePrefs(); return; }
+    if (a.startsWith("sp:")) { space.command(a); return; }
     if (a.startsWith("app:")) {
       try {
         final int i = Integer.parseInt(a.substring(4));
         if (i >= 0 && i < APP_URLS.length) queueGl(new Runnable() { @Override public void run() { renderer.openApp(APP_URLS[i]); } });
       } catch (Throwable t) { }
     }
+  }
+
+  // ---- espacial 360: do ArSpace (qualquer thread) para o GL ----
+
+  void startSpaceImage(final Bitmap b) {
+    queueGl(new Runnable() { @Override public void run() { renderer.startSpaceImage(b); } });
+  }
+
+  void startSpaceVideo(final File f) {
+    queueGl(new Runnable() { @Override public void run() { renderer.startSpaceVideo(f); } });
+  }
+
+  void exitSpace() {
+    queueGl(new Runnable() { @Override public void run() { renderer.exitSpace(); } });
+  }
+
+  /** Importar do aparelho: abre o seletor de arquivos (imagens e MP4). */
+  void pickMedia() {
+    runOnUiThread(new Runnable() {
+      @Override public void run() {
+        try {
+          Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+          i.addCategory(Intent.CATEGORY_OPENABLE);
+          i.setType("*/*");
+          i.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"image/*", "video/mp4"});
+          i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+          startActivityForResult(i, ArSpace.REQ_PICK);
+        } catch (Throwable t) {
+          space.say("Nao consegui abrir o seletor");
+        }
+      }
+    });
+  }
+
+  @Override protected void onActivityResult(int req, int res, Intent data) {
+    super.onActivityResult(req, res, data);
+    if (req == ArSpace.REQ_PICK) space.onPicked(res, data);
   }
 
   /** Tecla do teclado virtual (thread da ponte JS): vai para a thread do GL. */
@@ -4409,6 +4658,37 @@ final class ArMenuPage {
     ".bts{display:flex;gap:10px;margin-top:18px}\n" +
     ".bt{flex:1;height:58px;border-radius:14px;background:rgba(255,255,255,.12);display:flex;align-items:center;justify-content:center;font-size:16px}\n" +
     ".soon{margin:auto;text-align:center;font-size:15px;opacity:.7;line-height:1.5}\n" +
+    "#p-space .hd{margin:-2px 0 6px;min-height:34px}\n" +
+    "#p-space .hd h1{margin:0;flex:1}\n" +
+    ".hb{display:flex;align-items:center;justify-content:center;gap:5px;height:32px;min-width:32px;padding:0 10px;border-radius:16px;background:rgba(255,255,255,.12);font-size:13px;margin-left:6px}\n" +
+    ".hb svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}\n" +
+    ".hb.on{background:#5eead4;color:#04201c}\n" +
+    ".hb:active,.tl:active,.cb:active{background:#fff;color:#000}\n" +
+    ".pgn{font-size:13px;opacity:.7;min-width:34px;text-align:center}\n" +
+    ".sgrid{flex:1;min-height:0;display:grid;grid-template-columns:repeat(3,1fr);grid-template-rows:repeat(2,1fr);gap:8px}\n" +
+    ".tl{position:relative;border-radius:14px;overflow:hidden;background:rgba(255,255,255,.09) center/cover no-repeat;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:4px;font-size:13px}\n" +
+    ".tl svg{width:30px;height:30px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}\n" +
+    ".tl .nm{position:absolute;left:0;right:0;top:0;padding:5px 9px 14px;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;background:linear-gradient(rgba(0,0,0,.75),transparent);text-align:left}\n" +
+    ".tl.on{box-shadow:inset 0 0 0 3px #5eead4}\n" +
+    ".tl.rm{box-shadow:inset 0 0 0 2px rgba(255,130,130,.8)}\n" +
+    ".tl .cf{position:absolute;inset:0;background:rgba(8,10,14,.9);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;font-size:12px;text-align:center;padding:4px}\n" +
+    ".cf .bs{display:flex;gap:8px}\n" +
+    ".cb{min-width:54px;height:30px;border-radius:15px;background:rgba(255,255,255,.18);display:flex;align-items:center;justify-content:center;font-size:13px;padding:0 10px}\n" +
+    ".dlb{position:absolute;left:6px;right:6px;bottom:6px;height:26px;border-radius:13px;background:rgba(14,16,22,.9);border:1px solid rgba(255,255,255,.3);display:flex;align-items:center;justify-content:center;font-size:12px;overflow:hidden}\n" +
+    ".dlb i{position:absolute;left:0;top:0;bottom:0;width:0;background:rgba(94,234,212,.85)}\n" +
+    ".dlb span{position:relative;text-shadow:0 1px 3px #000}\n" +
+    ".dlb.ok{background:rgba(94,234,212,.92);color:#04201c;border-color:transparent}\n" +
+    ".smsg{margin:auto;text-align:center;font-size:14px;opacity:.8;line-height:1.5;display:flex;flex-direction:column;gap:12px;align-items:center}\n" +
+    ".vw{flex:1;display:flex;flex-direction:column;justify-content:center;gap:14px}\n" +
+    ".vn{font-size:15px;opacity:.85;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}\n" +
+    ".vtop{display:flex;justify-content:space-between;font-size:13px;opacity:.8}\n" +
+    ".vbar{position:relative;height:34px}\n" +
+    ".vtr{position:absolute;left:0;right:0;top:13px;height:8px;border-radius:4px;background:rgba(255,255,255,.22);overflow:hidden}\n" +
+    ".vf{height:100%;width:0;background:#fff}\n" +
+    ".vk{position:absolute;top:8px;left:-9px;width:18px;height:18px;border-radius:50%;background:#fff}\n" +
+    ".vrow{display:flex;gap:6px;justify-content:center;flex-wrap:wrap}\n" +
+    ".vrow .hb{height:40px;min-width:40px;margin:0}\n" +
+    "#toast{position:absolute;left:50%;bottom:8px;transform:translateX(-50%);background:rgba(0,0,0,.78);padding:6px 14px;border-radius:14px;font-size:12px;display:none;max-width:90%;text-align:center}\n" +
     "</style></head>\n" +
     "<body><div id=\"app\">\n" +
     "<div id=\"main\">\n" +
@@ -4421,7 +4701,7 @@ final class ArMenuPage {
     "    <div class=\"hi\"><b>Punho fechado por 1 s</b> na janela &mdash; fecha a janela</div>\n" +
     "    <div class=\"hi\"><b>Dois dedos juntos e esticados, descendo</b> &mdash; abre ou fecha o menu</div>\n" +
     "  </div></div>\n" +
-    "  <div class=\"pg\" id=\"p-space\"><h1>ESPACIAL</h1><div class=\"soon\">O modo espacial (360&deg;)<br>chega em uma pr&oacute;xima fase do 6DoF.</div></div>\n" +
+    "  <div class=\"pg\" id=\"p-space\"><div class=\"hd\" id=\"sh\"></div><div id=\"sb\" style=\"flex:1;min-height:0;display:flex;flex-direction:column\"></div></div>\n" +
     "  <div class=\"pg\" id=\"p-apps\"><h1>APPS</h1><div class=\"grid\" id=\"grid\"></div></div>\n" +
     "  <div class=\"pg\" id=\"p-cfg\"><h1>CONFIGURA&Ccedil;&Otilde;ES</h1>\n" +
     "    <div class=\"row\" data-act=\"orig\"><div class=\"t\"><b>Modo 6DoF (AR)</b><span id=\"s6\">Ligado. Desligue para voltar ao modo original.</span></div><div class=\"sw on\" id=\"sw6\"><i></i></div></div>\n" +
@@ -4430,6 +4710,7 @@ final class ArMenuPage {
     "    <div class=\"row\" data-act=\"hybrid\"><div class=\"t\"><b>Modo h&iacute;brido</b><span>Usa o girosc&oacute;pio quando o ARCore perde o rastreio.</span></div><div class=\"sw\" id=\"swh\"><i></i></div></div>\n" +
     "  </div>\n" +
     "</div></div>\n" +
+    "<div id=\"toast\"></div>\n" +
     "<script>\n" +
     "var A=window.ArMenu,cur='home';\n" +
     "function act(a){try{A.act(a)}catch(e){}}\n" +
@@ -4442,7 +4723,7 @@ final class ArMenuPage {
     "  im.src='https://www.google.com/s2/favicons?domain='+DOM[i]+'&sz=128';lg.appendChild(im);\n" +
     "  var sp=document.createElement('span');sp.textContent=n;d.appendChild(lg);d.appendChild(sp);\n" +
     "  d.onclick=function(){act('app:'+i);};grid.appendChild(d);});\n" +
-    "function show(n){cur=n;\n" +
+    "function show(n){cur=n;if(n==='space'){S.sel=null;S.sig='';setTimeout(sTick,0);sRender();}\n" +
     "  ['help','space','apps','cfg'].forEach(function(k){\n" +
     "    document.getElementById('p-'+k).className='pg'+(k===n?' on':'');});\n" +
     "  if(n==='cfg')refresh();}\n" +
@@ -4454,6 +4735,131 @@ final class ArMenuPage {
     "  var a=e.getAttribute('data-act');act(a);\n" +
     "  if(a==='orig'){document.getElementById('s6').textContent='Voltando ao modo original...';document.getElementById('sw6').className='sw';}\n" +
     "  else if(a==='gpu'||a==='hybrid'){setTimeout(refresh,350);}};});\n" +
+    "\n" +
+    "/* ---------- Espacial 360 ---------- */\n" +
+    "var IC={\n" +
+    " plus:'<svg viewBox=\"0 0 24 24\"><path d=\"M12 5v14M5 12h14\"/></svg>',\n" +
+    " trash:'<svg viewBox=\"0 0 24 24\"><path d=\"M4 7h16\"/><path d=\"M9 7V4h6v3\"/><path d=\"M6 7l1 13h10l1-13\"/><path d=\"M10 11v6M14 11v6\"/></svg>',\n" +
+    " out:'<svg viewBox=\"0 0 24 24\"><path d=\"M14 4h5a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-5\"/><path d=\"M10 16l-4-4 4-4M6 12h10\"/></svg>',\n" +
+    " back:'<svg viewBox=\"0 0 24 24\"><path d=\"M15 5l-7 7 7 7\"/></svg>',\n" +
+    " phone:'<svg viewBox=\"0 0 24 24\"><rect x=\"7\" y=\"2.5\" width=\"10\" height=\"19\" rx=\"2.5\"/><path d=\"M11 18.5h2\"/></svg>',\n" +
+    " cloud:'<svg viewBox=\"0 0 24 24\"><path d=\"M7 18a4.5 4.5 0 0 1-.6-8.96A6 6 0 0 1 18 8.5a4 4 0 0 1-.5 9.5z\"/><path d=\"M12 10v6M9.5 13.5L12 16l2.5-2.5\"/></svg>',\n" +
+    " restart:'<svg viewBox=\"0 0 24 24\"><path d=\"M6 5v14\"/><path d=\"M18 6l-9 6 9 6z\"/></svg>',\n" +
+    " rew:'<svg viewBox=\"0 0 24 24\"><path d=\"M11 6l-7 6 7 6z\"/><path d=\"M20 6l-7 6 7 6z\"/></svg>',\n" +
+    " play:'<svg viewBox=\"0 0 24 24\"><path d=\"M8 5l11 7-11 7z\"/></svg>',\n" +
+    " pause:'<svg viewBox=\"0 0 24 24\"><path d=\"M9 5v14\"/><path d=\"M15 5v14\"/></svg>',\n" +
+    " fwd:'<svg viewBox=\"0 0 24 24\"><path d=\"M13 6l7 6-7 6z\"/><path d=\"M4 6l7 6-7 6z\"/></svg>',\n" +
+    " vol:'<svg viewBox=\"0 0 24 24\"><path d=\"M4 9h4l5-4v14l-5-4H4z\"/><path d=\"M16.5 9a4 4 0 0 1 0 6\"/><path d=\"M19 6.5a8 8 0 0 1 0 11\"/></svg>',\n" +
+    " mute:'<svg viewBox=\"0 0 24 24\"><path d=\"M4 9h4l5-4v14l-5-4H4z\"/><path d=\"M17 9.5l4.5 5M21.5 9.5l-4.5 5\"/></svg>',\n" +
+    " loop:'<svg viewBox=\"0 0 24 24\"><path d=\"M17 3l3 3-3 3\"/><path d=\"M4 12V9a3 3 0 0 1 3-3h13\"/><path d=\"M7 21l-3-3 3-3\"/><path d=\"M20 12v3a3 3 0 0 1-3 3H4\"/></svg>'\n" +
+    "};\n" +
+    "var S={view:'lib',page:0,sel:null,del:false,lib:[],cat:[],cp:0,st:{},libVer:-1,catVer:-1,msgSeq:-1,sig:'',tt:0};\n" +
+    "var PER=5,PERS=6;\n" +
+    "function esc(t){return String(t).replace(/[&<>\"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[c]})}\n" +
+    "function fmt(ms){var s=Math.floor((ms||0)/1000),m=Math.floor(s/60),r=s%60;return m+':'+(r<10?'0':'')+r}\n" +
+    "function fsz(b){if(!b)return'';if(b>=1e9)return(b/1e9).toFixed(1)+' GB';if(b>=1e6)return Math.round(b/1e6)+' MB';return Math.max(1,Math.round(b/1e3))+' KB'}\n" +
+    "function hb(c,html,on){return'<div class=\"hb'+(on?' on':'')+'\" data-c=\"'+c+'\">'+html+'</div>'}\n" +
+    "function pager(n,p,per){var np=Math.max(1,Math.ceil(n/per));if(np<2)return'';\n" +
+    "  return hb('prev','&#8249;')+'<span class=\"pgn\">'+(p+1)+'/'+np+'</span>'+hb('next','&#8250;')}\n" +
+    "function sRender(){\n" +
+    "  var st=S.st||{},h=document.getElementById('sh'),b=document.getElementById('sb'),x='';\n" +
+    "  if(st.active&&st.video){S.view='video'}\n" +
+    "  else if(S.view==='video'){S.view='lib'}\n" +
+    "  if(S.view==='video'){\n" +
+    "    h.innerHTML='<h1>ESPACIAL</h1>'+hb('exit',IC.out+'<span>Sair</span>');\n" +
+    "    var it=null;S.lib.forEach(function(q){if(q.id===st.active)it=q});\n" +
+    "    var f=st.dur>0?Math.min(1,st.pos/st.dur):0;\n" +
+    "    b.innerHTML='<div class=\"vw\"><div class=\"vn\">'+esc(it?it.name:'')+'</div>'\n" +
+    "      +'<div class=\"vtop\"><span id=\"vt\">'+fmt(st.pos)+' / '+fmt(st.dur)+'</span><span>'+(st.speed||1)+'&times;</span></div>'\n" +
+    "      +'<div class=\"vbar\" id=\"vbar\"><div class=\"vtr\"><div class=\"vf\" id=\"vf\" style=\"width:'+(f*100)+'%\"></div></div><div class=\"vk\" id=\"vk\" style=\"left:calc('+(f*100)+'% - 9px)\"></div></div>'\n" +
+    "      +'<div class=\"vrow\">'+hb('v:seek0',IC.restart)+hb('v:rew',IC.rew+'<span>10</span>')+hb('v:play',st.playing?IC.pause:IC.play)\n" +
+    "      +hb('v:fwd','<span>10</span>'+IC.fwd)+hb('v:speed','<span>'+(st.speed||1)+'&times;</span>')\n" +
+    "      +hb('v:mute',st.muted?IC.mute:IC.vol)+hb('v:loop',IC.loop,st.loop)+'</div></div>';\n" +
+    "    return}\n" +
+    "  if(S.view==='choose'){\n" +
+    "    h.innerHTML=hb('back',IC.back+'<span>Voltar</span>')+'<h1 style=\"margin-left:10px\">IMPORTAR</h1>';\n" +
+    "    b.innerHTML='<div class=\"sgrid\" style=\"grid-template-columns:1fr 1fr;grid-template-rows:1fr\">'\n" +
+    "      +'<div class=\"tl\" data-c=\"dev\">'+IC.phone+'<span>Do dispositivo</span></div>'\n" +
+    "      +'<div class=\"tl\" data-c=\"store\">'+IC.cloud+'<span>Da loja</span></div></div>';\n" +
+    "    return}\n" +
+    "  if(S.view==='store'){\n" +
+    "    h.innerHTML=hb('back',IC.back+'<span>Voltar</span>')+'<h1 style=\"margin-left:10px\">LOJA</h1>'+pager(S.cat.length,S.cp,PERS);\n" +
+    "    var n=S.cat.length;\n" +
+    "    if(!n){\n" +
+    "      b.innerHTML='<div class=\"smsg\">'+(st.loading?'Carregando cat&aacute;logo&hellip;':(st.err?esc(st.err)+'<div class=\"hb\" data-c=\"fetch\">Tentar de novo</div>':'A loja est&aacute; vazia'))+'</div>';\n" +
+    "      return}\n" +
+    "    var np=Math.max(1,Math.ceil(n/PERS));if(S.cp>=np)S.cp=np-1;\n" +
+    "    var have=st.have||[],dl=st.dl||{},busy=Object.keys(dl).length>0;\n" +
+    "    b.innerHTML='<div class=\"sgrid\">'+S.cat.slice(S.cp*PERS,S.cp*PERS+PERS).map(function(it){\n" +
+    "      var bt;\n" +
+    "      if(dl.hasOwnProperty(it.id)){var p=dl[it.id];bt='<div class=\"dlb\"><i data-p=\"'+esc(it.id)+'\" style=\"width:'+(p>=0?p:100)+'%\"></i><span data-t=\"'+esc(it.id)+'\">'+(p>=0?p+'%':'Baixando\u2026')+'</span></div>'}\n" +
+    "      else if(have.indexOf(it.id)>=0)bt='<div class=\"dlb ok\">&#10003; Baixado</div>';\n" +
+    "      else bt='<div class=\"dlb\" data-c=\"dl:'+esc(it.id)+'\"><span>Baixar'+(it.tamanho?' &middot; '+fsz(it.tamanho):'')+'</span></div>';\n" +
+    "      return'<div class=\"tl\" style=\"'+(it.miniatura?'background-image:url('+JSON.stringify(it.miniatura).replace(/\"/g,\"'\")+')':'')+'\"><div class=\"nm\">'+(it.tipo==='video'?'&#9654; ':'')+esc(it.nome)+'</div>'+bt+'</div>'}).join('')+'</div>';\n" +
+    "    return}\n" +
+    "  // biblioteca\n" +
+    "  var n2=S.lib.length,np2=Math.max(1,Math.ceil(n2/PER));if(S.page>=np2)S.page=np2-1;\n" +
+    "  h.innerHTML='<h1>ESPACIAL</h1>'+pager(n2,S.page,PER)\n" +
+    "    +(st.active?hb('exit',IC.out+'<span>Sair</span>'):(n2?hb('trash',IC.trash,S.del):''));\n" +
+    "  var cells=S.del?'':'<div class=\"tl\" data-c=\"add\">'+IC.plus+'<span>Importar</span></div>';\n" +
+    "  cells+=S.lib.slice(S.page*PER,S.page*PER+PER).map(function(it){\n" +
+    "    var c='<div class=\"tl'+(it.id===st.active?' on':'')+(S.del?' rm':'')+'\" data-c=\"sel:'+it.id+'\" style=\"background-image:url(/spatial/'+it.id+'_t.jpg)\"><div class=\"nm\">'+(it.type==='video'?'&#9654; ':'')+esc(it.name)+'</div>';\n" +
+    "    if(S.sel===it.id)c+='<div class=\"cf\"><span>'+(S.del?'Deletar item?':'Entrar no modo espacial?')+'</span><div class=\"bs\"><div class=\"cb\" data-c=\"yes\">Sim</div><div class=\"cb\" data-c=\"no\">N&atilde;o</div></div></div>';\n" +
+    "    return c+'</div>'}).join('');\n" +
+    "  b.innerHTML='<div class=\"sgrid\">'+cells+'</div>';\n" +
+    "}\n" +
+    "function sCmd(c){\n" +
+    "  var st=S.st||{};\n" +
+    "  if(c==='prev'||c==='next'){var d=c==='prev'?-1:1;\n" +
+    "    if(S.view==='store'){var np=Math.max(1,Math.ceil(S.cat.length/PERS));S.cp=(S.cp+d+np)%np}\n" +
+    "    else{var np2=Math.max(1,Math.ceil(S.lib.length/PER));S.page=(S.page+d+np2)%np2;S.sel=null}\n" +
+    "    sRender();return}\n" +
+    "  if(c==='trash'){S.del=!S.del;S.sel=null;sRender();return}\n" +
+    "  if(c==='add'){S.view='choose';sRender();return}\n" +
+    "  if(c==='back'){S.view=S.view==='store'?'choose':'lib';sRender();return}\n" +
+    "  if(c==='dev'){S.view='lib';sRender();act('sp:import');return}\n" +
+    "  if(c==='store'){S.view='store';S.cp=0;sRender();act('sp:fetch');return}\n" +
+    "  if(c==='fetch'){act('sp:fetch');return}\n" +
+    "  if(c==='exit'){act('sp:exit');return}\n" +
+    "  if(c==='no'){S.sel=null;sRender();return}\n" +
+    "  if(c==='yes'){var id=S.sel;S.sel=null;if(id){if(S.del)act('sp:del:'+id);else act('sp:enter:'+id)}sRender();return}\n" +
+    "  if(c.indexOf('sel:')===0){S.sel=S.sel===c.slice(4)?null:c.slice(4);sRender();return}\n" +
+    "  if(c.indexOf('dl:')===0){act('sp:'+c);return}\n" +
+    "  if(c.indexOf('v:')===0){\n" +
+    "    var k=c.slice(2);\n" +
+    "    if(k==='seek0')act('sp:v:seek:0');else if(k==='rew')act('sp:v:rel:-10000');else if(k==='fwd')act('sp:v:rel:10000');\n" +
+    "    else act('sp:v:'+k);\n" +
+    "    setTimeout(sTick,250);return}\n" +
+    "}\n" +
+    "document.getElementById('p-space').addEventListener('click',function(e){\n" +
+    "  var t=e.target;while(t&&t!==this&&!(t.getAttribute&&t.getAttribute('data-c')))t=t.parentNode;\n" +
+    "  if(t&&t.getAttribute&&t.getAttribute('data-c')){\n" +
+    "    if(t.getAttribute('data-c').indexOf('v:')===0||true)sCmd(t.getAttribute('data-c'));return}\n" +
+    "  var bar=document.getElementById('vbar');\n" +
+    "  if(bar&&S.view==='video'&&bar.contains(e.target)&&S.st.dur>0){\n" +
+    "    var r=bar.getBoundingClientRect();act('sp:v:seek:'+Math.round(Math.max(0,Math.min(1,(e.clientX-r.left)/r.width))*S.st.dur));setTimeout(sTick,250)}\n" +
+    "});\n" +
+    "function toast(m){var d=document.getElementById('toast');d.textContent=m;d.style.display='block';clearTimeout(S.tt);S.tt=setTimeout(function(){d.style.display='none'},3200)}\n" +
+    "function sTick(){\n" +
+    "  if(cur!=='space')return;\n" +
+    "  var s={};try{s=JSON.parse(A.spState())}catch(e){return}\n" +
+    "  var old=S.st||{};S.st=s;\n" +
+    "  var re=false;\n" +
+    "  if(s.libVer!==S.libVer){S.libVer=s.libVer;try{S.lib=JSON.parse(A.spLib())}catch(e){S.lib=[]}re=true}\n" +
+    "  if(s.catVer!==S.catVer){S.catVer=s.catVer;try{S.cat=JSON.parse(A.spCat())}catch(e){S.cat=[]}re=true}\n" +
+    "  if(s.msgSeq!==S.msgSeq){if(S.msgSeq>=0&&s.msg)toast(s.msg);S.msgSeq=s.msgSeq}\n" +
+    "  var sig=[s.loading,s.err,s.active,s.video,s.playing,s.muted,s.loop,s.speed,(s.have||[]).length,Object.keys(s.dl||{}).join(',')].join('|');\n" +
+    "  if(sig!==S.sig){S.sig=sig;re=true}\n" +
+    "  if(re){sRender();return}\n" +
+    "  var dl=s.dl||{};\n" +
+    "  Object.keys(dl).forEach(function(k){var p=dl[k];\n" +
+    "    document.querySelectorAll('[data-p]').forEach(function(e){if(e.getAttribute('data-p')===k)e.style.width=(p>=0?p:100)+'%'});\n" +
+    "    document.querySelectorAll('[data-t]').forEach(function(e){if(e.getAttribute('data-t')===k)e.textContent=p>=0?p+'%':'Baixando\u2026'})});\n" +
+    "  if(S.view==='video'){var f=s.dur>0?Math.min(1,s.pos/s.dur):0;\n" +
+    "    var a=document.getElementById('vt'),b=document.getElementById('vf'),c=document.getElementById('vk');\n" +
+    "    if(a)a.textContent=fmt(s.pos)+' / '+fmt(s.dur);if(b)b.style.width=(f*100)+'%';if(c)c.style.left='calc('+(f*100)+'% - 9px)'}\n" +
+    "}\n" +
+    "setInterval(sTick,400);\n" +
     "var w0='apps';try{w0=A.page()||'apps'}catch(e){}show(w0);\n" +
     "</script></body></html>\n" +
     "\n";
@@ -4596,5 +5002,620 @@ final class ArKbPage {
     "</script>\n" +
     "</body></html>\n" +
     "\n";
+}
+EOF
+cat > app/src/main/java/com/vr/launcher/ArSpace.java <<'EOF'
+package com.vr.launcher;
+
+import android.content.ClipData;
+import android.content.Intent;
+import android.database.Cursor;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.media.MediaMetadataRetriever;
+import android.media.MediaPlayer;
+import android.media.PlaybackParams;
+import android.net.Uri;
+import android.os.Handler;
+import android.os.Looper;
+import android.provider.OpenableColumns;
+import android.view.Surface;
+import java.io.ByteArrayOutputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+/**
+ * Espacial 360 do modo 6DoF: biblioteca (a mesma pasta "spatial" do modo original), loja do GitHub,
+ * importacao do aparelho e player de video 360. A tela fica na pagina do menu (ArMenuPage); aqui so tem logica.
+ */
+final class ArSpace {
+
+  static final int REQ_PICK = 7001;
+  static final String STORE_URL = "https://raw.githubusercontent.com/GabrielOliveira64/VrLauncher/main/loja/catalogo.json";
+  static final float[] SPEEDS = {0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f};
+
+  private final ArActivity act;
+  private final File dir;
+  private final Handler ui = new Handler(Looper.getMainLooper());
+
+  // estado lido pela pagina (por polling)
+  volatile int libVer = 0, catVer = 0, msgSeq = 0;
+  volatile boolean loading = false;
+  volatile String err = "", msg = "", catJson = "[]";
+  volatile String active = "";
+  volatile boolean activeVideo = false;
+  private final ConcurrentHashMap<String, Integer> dl = new ConcurrentHashMap<String, Integer>();
+  private final HashMap<String, String[]> catItems = new HashMap<String, String[]>();   // id -> {url, tipo, nome}
+  private final AtomicBoolean busy = new AtomicBoolean(false);
+  private int cnt = 0;
+  private String lastId = null, note = "";
+
+  // player de video 360
+  private MediaPlayer mp = null;
+  private volatile boolean ready = false;
+  private boolean wantPlay = true, muted = false, loop = true, resumeAfter = false;
+  private int spd = 2;
+  private volatile int pos = 0, dur = 0;
+  private volatile boolean playing = false;
+  private Runnable tick;
+
+  ArSpace(ArActivity act) {
+    this.act = act;
+    this.dir = new File(act.getFilesDir(), "spatial");
+    this.dir.mkdirs();
+  }
+
+  void say(String m) {
+    msg = m == null ? "" : m;
+    msgSeq++;
+  }
+
+  static String q(String s) {
+    if (s == null) s = "";
+    StringBuilder b = new StringBuilder("\"");
+    for (int i = 0; i < s.length(); i++) {
+      char c = s.charAt(i);
+      if (c == '"') b.append("\\\"");
+      else if (c == '\\') b.append("\\\\");
+      else if (c == '\n') b.append("\\n");
+      else if (c == '\r') b.append("\\r");
+      else if (c == '\t') b.append("\\t");
+      else if (c < 32 || c == ' ' || c == ' ') b.append(String.format("\\u%04x", (int) c));
+      else b.append(c);
+    }
+    return b.append('"').toString();
+  }
+
+  // =============================================================
+  // Comandos vindos da pagina do menu ("sp:...")
+  // =============================================================
+
+  void command(String a) {
+    if (a == null || !a.startsWith("sp:")) return;
+    String c = a.substring(3);
+    if (c.startsWith("enter:")) enter(c.substring(6));
+    else if (c.equals("exit")) act.exitSpace();
+    else if (c.startsWith("del:")) delete(c.substring(4));
+    else if (c.equals("import")) act.pickMedia();
+    else if (c.equals("fetch")) fetchCatalog();
+    else if (c.startsWith("dl:")) download(c.substring(3));
+    else if (c.startsWith("v:")) videoCmd(c.substring(2));
+  }
+
+  // =============================================================
+  // Biblioteca
+  // =============================================================
+
+  /** Lista da biblioteca em JSON: [{"id","name","type"}], mais novos primeiro. */
+  String libJson() {
+    JSONArray arr = new JSONArray();
+    try {
+      File[] fs = dir.listFiles();
+      if (fs != null) {
+        ArrayList<String> ids = new ArrayList<String>();
+        for (File f : fs) { String n = f.getName(); if (n.endsWith(".txt")) ids.add(n.substring(0, n.length() - 4)); }
+        Collections.sort(ids, Collections.reverseOrder());
+        for (String id : ids) {
+          boolean isV = new File(dir, id + ".mp4").exists();
+          if (!isV && !new File(dir, id + ".jpg").exists()) continue;
+          JSONObject jo = new JSONObject();
+          jo.put("id", id);
+          jo.put("name", readText(new File(dir, id + ".txt"), id));
+          jo.put("type", isV ? "video" : "image");
+          arr.put(jo);
+        }
+      }
+    } catch (Throwable e) { }
+    return arr.toString();
+  }
+
+  private static String readText(File f, String def) {
+    try {
+      FileInputStream fi = new FileInputStream(f);
+      try {
+        byte[] bb = new byte[(int) Math.min(f.length(), 400L)];
+        int rd = fi.read(bb);
+        return new String(bb, 0, Math.max(rd, 0), "UTF-8");
+      } finally { fi.close(); }
+    } catch (Throwable e) { return def; }
+  }
+
+  private static void writeText(File f, String t) throws Exception {
+    FileOutputStream fo = new FileOutputStream(f);
+    try { fo.write(t.getBytes("UTF-8")); } finally { fo.close(); }
+  }
+
+  boolean delete(String id) {
+    if (id == null || !id.matches("[0-9]+")) return false;
+    if (id.equals(active)) act.exitSpace();
+    boolean ok = false;
+    String[] sf = {".jpg", ".mp4", "_t.jpg", ".txt", ".src"};
+    for (String s : sf) { File f = new File(dir, id + s); if (f.exists() && f.delete()) ok = true; }
+    libVer++;
+    if (!ok) say("Nao consegui deletar");
+    return ok;
+  }
+
+  /** Miniatura da biblioteca para a pagina do menu: /spatial/ID_t.jpg. */
+  InputStream thumb(String name) {
+    try {
+      if (name == null || !name.matches("[0-9]+_t\\.jpg")) return null;
+      File f = new File(dir, name);
+      return f.exists() ? new FileInputStream(f) : null;
+    } catch (Throwable e) { return null; }
+  }
+
+  File imageFile(String id) { return new File(dir, id + ".jpg"); }
+  File videoFile(String id) { return new File(dir, id + ".mp4"); }
+
+  /** Entra no item: imagem 360 (decodifica e manda ao GL) ou video 360 (MediaPlayer no Surface do GL). */
+  void enter(final String id) {
+    if (id == null || !id.matches("[0-9]+")) return;
+    final File v = videoFile(id), j = imageFile(id);
+    if (v.exists()) {
+      active = id;
+      activeVideo = true;
+      act.startSpaceVideo(v);
+    } else if (j.exists()) {
+      active = id;
+      activeVideo = false;
+      new Thread(new Runnable() {
+        @Override public void run() {
+          try {
+            BitmapFactory.Options o = new BitmapFactory.Options();
+            Bitmap b = BitmapFactory.decodeFile(j.getAbsolutePath(), o);
+            if (b == null) throw new Exception("imagem invalida");
+            act.startSpaceImage(b);
+          } catch (Throwable t) {
+            say("Nao consegui abrir a imagem");
+            active = "";
+          }
+        }
+      }).start();
+    }
+  }
+
+  /** O renderer saiu do modo espacial. */
+  void left() {
+    active = "";
+    activeVideo = false;
+    closeVideo();
+  }
+
+  // =============================================================
+  // Loja (catalogo no GitHub)
+  // =============================================================
+
+  private static boolean storeUrlOk(String u) {
+    if (u == null) return false;
+    String l = u.toLowerCase();
+    return l.startsWith("https://github.com/gabrieloliveira64/") || l.startsWith("https://raw.githubusercontent.com/gabrieloliveira64/");
+  }
+
+  void fetchCatalog() {
+    if (loading) return;
+    loading = true;
+    err = "";
+    new Thread(new Runnable() {
+      @Override public void run() {
+        String res = "[]", e = "";
+        try {
+          java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL(STORE_URL + "?t=" + System.currentTimeMillis()).openConnection();
+          c.setConnectTimeout(15000);
+          c.setReadTimeout(15000);
+          c.setRequestProperty("Cache-Control", "no-cache");
+          int code = c.getResponseCode();
+          if (code != 200) throw new Exception(code == 404 ? "Catalogo nao encontrado (404)" : "Erro HTTP " + code);
+          InputStream in = c.getInputStream();
+          ByteArrayOutputStream bo = new ByteArrayOutputStream();
+          byte[] b = new byte[8192];
+          int n;
+          while ((n = in.read(b)) > 0) { bo.write(b, 0, n); if (bo.size() > 1000000) throw new Exception("Catalogo grande demais"); }
+          in.close();
+          JSONArray src = new JSONArray(bo.toString("UTF-8")), out = new JSONArray();
+          HashMap<String, String[]> items = new HashMap<String, String[]>();
+          for (int i = 0; i < src.length(); i++) {
+            JSONObject o = src.optJSONObject(i);
+            if (o == null) continue;
+            String id = o.optString("id", ""), tp = o.optString("tipo", ""), url = o.optString("url", ""), th = o.optString("miniatura", "");
+            if (!id.matches("[A-Za-z0-9_-]{1,60}") || !(tp.equals("imagem") || tp.equals("video")) || !storeUrlOk(url)) continue;
+            String nome = o.optString("nome", id);
+            JSONObject r = new JSONObject();
+            r.put("id", id);
+            r.put("nome", nome);
+            r.put("tipo", tp);
+            r.put("tamanho", o.optLong("tamanho", 0));
+            r.put("miniatura", storeUrlOk(th) ? th : "");
+            out.put(r);
+            items.put(id, new String[]{url, tp, nome});
+          }
+          res = out.toString();
+          synchronized (catItems) { catItems.clear(); catItems.putAll(items); }
+        } catch (Throwable t) {
+          e = String.valueOf(t.getMessage());
+          if (t instanceof java.net.UnknownHostException) e = "Sem conexao com a internet";
+        }
+        catJson = res;
+        err = e;
+        loading = false;
+        catVer++;
+      }
+    }).start();
+  }
+
+  /** Ids da loja que ja estao na biblioteca (arquivo .src guarda o id da loja). */
+  String haveJson() {
+    StringBuilder b = new StringBuilder("[");
+    boolean first = true;
+    try {
+      File[] fs = dir.listFiles();
+      if (fs != null) for (File f : fs) {
+        String n = f.getName();
+        if (!n.endsWith(".src")) continue;
+        String id = n.substring(0, n.length() - 4);
+        if (!new File(dir, id + ".mp4").exists() && !new File(dir, id + ".jpg").exists()) continue;
+        if (!first) b.append(',');
+        first = false;
+        b.append(q(readText(f, "")));
+      }
+    } catch (Throwable e) { }
+    return b.append(']').toString();
+  }
+
+  void download(final String sid) {
+    final String[] it;
+    synchronized (catItems) { it = catItems.get(sid); }
+    if (it == null) { say("Item invalido"); return; }
+    if (!busy.compareAndSet(false, true)) { say("Aguarde o download atual"); return; }
+    dl.put(sid, 0);
+    final String url = it[0], tipo = it[1], nome = it[2];
+    new Thread(new Runnable() {
+      @Override public void run() {
+        boolean isV = "video".equals(tipo);
+        String id = String.valueOf(System.currentTimeMillis() * 10 + (cnt++ % 10));
+        File tmp = new File(dir, id + ".part"), mp4 = new File(dir, id + ".mp4");
+        boolean ok = false;
+        String e = "";
+        try {
+          java.net.HttpURLConnection c = (java.net.HttpURLConnection) new java.net.URL(url).openConnection();
+          c.setConnectTimeout(15000);
+          c.setReadTimeout(30000);
+          int code = c.getResponseCode();
+          if (code != 200) throw new Exception("Erro HTTP " + code);
+          long len = c.getContentLength();
+          InputStream in = c.getInputStream();
+          FileOutputStream fo = new FileOutputStream(isV ? mp4 : tmp);
+          long got = 0, lastMs = 0;
+          int lastP = -2;
+          try {
+            byte[] buf = new byte[65536];
+            int n;
+            while ((n = in.read(buf)) > 0) {
+              fo.write(buf, 0, n);
+              got += n;
+              long now = android.os.SystemClock.elapsedRealtime();
+              int p = len > 0 ? (int) (got * 100 / len) : -1;
+              if (p != lastP && now - lastMs > 200) { lastP = p; lastMs = now; dl.put(sid, p); }
+            }
+          } finally { fo.close(); in.close(); }
+          if (len > 0 && got != len) throw new Exception("Download incompleto");
+          if (isV) {
+            finishVideo(id, mp4, nome);
+            writeText(new File(dir, id + ".src"), sid);
+          } else {
+            lastId = null;
+            importImageFile(tmp, nome);
+            if (lastId == null) throw new Exception("Nao consegui processar a imagem");
+            writeText(new File(dir, lastId + ".src"), sid);
+          }
+          ok = true;
+        } catch (Throwable t) {
+          e = String.valueOf(t.getMessage());
+          if (t instanceof java.net.UnknownHostException) e = "Sem conexao com a internet";
+        } finally {
+          tmp.delete();
+          if (!ok) { mp4.delete(); new File(dir, id + "_t.jpg").delete(); new File(dir, id + ".txt").delete(); }
+          busy.set(false);
+          dl.remove(sid);
+        }
+        libVer++;
+        say(ok ? "Baixado e adicionado a biblioteca" : (e.length() == 0 ? "Falha no download" : e));
+      }
+    }).start();
+  }
+
+  // =============================================================
+  // Importar do aparelho
+  // =============================================================
+
+  void onPicked(int res, Intent data) {
+    final ArrayList<Uri> uris = new ArrayList<Uri>();
+    if (res == android.app.Activity.RESULT_OK && data != null) {
+      ClipData cd = data.getClipData();
+      if (cd != null) { for (int i = 0; i < cd.getItemCount(); i++) uris.add(cd.getItemAt(i).getUri()); }
+      else if (data.getData() != null) uris.add(data.getData());
+    }
+    if (uris.isEmpty()) return;
+    new Thread(new Runnable() {
+      @Override public void run() {
+        say("Importando...");
+        int ok = 0;
+        String e = "";
+        for (Uri u : uris) {
+          try { importUri(u); ok++; } catch (Throwable t) { e = String.valueOf(t.getMessage()); }
+        }
+        String m = ok > 0 ? (ok == 1 ? "Item importado" : ok + " itens importados") : ("Nao consegui importar: " + e);
+        if (ok > 0 && note.length() > 0) m += " - " + note;
+        note = "";
+        libVer++;
+        say(m);
+      }
+    }).start();
+  }
+
+  private void importUri(Uri u) throws Exception {
+    String name = "imagem";
+    Cursor c = act.getContentResolver().query(u, new String[]{OpenableColumns.DISPLAY_NAME}, null, null, null);
+    if (c != null) { try { if (c.moveToFirst() && c.getString(0) != null) name = c.getString(0); } finally { c.close(); } }
+    String low = name.toLowerCase();
+    String mt = act.getContentResolver().getType(u);
+    boolean vid = (mt != null && mt.startsWith("video/")) || low.endsWith(".mp4") || low.endsWith(".m4v");
+    int dot = name.lastIndexOf('.');
+    if (dot > 0) name = name.substring(0, dot);
+    String id = String.valueOf(System.currentTimeMillis() * 10 + (cnt++ % 10));
+    File out = new File(dir, id + (vid ? ".mp4" : ".part"));
+    boolean ok = false;
+    try {
+      InputStream in = act.getContentResolver().openInputStream(u);
+      if (in == null) throw new Exception("nao consegui abrir o arquivo");
+      FileOutputStream fo = new FileOutputStream(out);
+      try { byte[] buf = new byte[65536]; int n; while ((n = in.read(buf)) > 0) fo.write(buf, 0, n); }
+      finally { fo.close(); in.close(); }
+      if (vid) finishVideo(id, out, name); else importImageFile(out, name);
+      ok = true;
+    } finally {
+      if (!vid) out.delete();
+      else if (!ok) out.delete();
+    }
+  }
+
+  /** Imagem equiretangular (2:1) reduzida para 1024, 2048 ou 4096 de largura, com miniatura. */
+  private void importImageFile(File f, String name) throws Exception {
+    BitmapFactory.Options o = new BitmapFactory.Options();
+    o.inJustDecodeBounds = true;
+    BitmapFactory.decodeFile(f.getAbsolutePath(), o);
+    if (o.outWidth <= 0 || o.outHeight <= 0) throw new Exception("formato nao suportado (use JPG ou PNG)");
+    int tw = o.outWidth >= 3072 ? 4096 : (o.outWidth >= 1536 ? 2048 : 1024), th = tw / 2;
+    int ss = 1;
+    while (o.outWidth / (ss * 2) >= tw) ss *= 2;
+    BitmapFactory.Options o2 = new BitmapFactory.Options();
+    o2.inSampleSize = ss;
+    Bitmap b = BitmapFactory.decodeFile(f.getAbsolutePath(), o2);
+    if (b == null) throw new Exception("nao consegui ler a imagem");
+    Bitmap s = (b.getWidth() == tw && b.getHeight() == th) ? b : Bitmap.createScaledBitmap(b, tw, th, true);
+    if (s != b) b.recycle();
+    String id = String.valueOf(System.currentTimeMillis() * 10 + (cnt++ % 10));
+    FileOutputStream fo = new FileOutputStream(new File(dir, id + ".jpg"));
+    try { s.compress(Bitmap.CompressFormat.JPEG, 90, fo); } finally { fo.close(); }
+    Bitmap t = Bitmap.createScaledBitmap(s, 320, 160, true);
+    fo = new FileOutputStream(new File(dir, id + "_t.jpg"));
+    try { t.compress(Bitmap.CompressFormat.JPEG, 80, fo); } finally { fo.close(); }
+    writeText(new File(dir, id + ".txt"), name);
+    lastId = id;
+    t.recycle();
+    s.recycle();
+  }
+
+  /** Confere que o MP4 e um video, gera a miniatura e o nome. */
+  private void finishVideo(String id, File mp4, String name) throws Exception {
+    MediaMetadataRetriever mr = new MediaMetadataRetriever();
+    Bitmap fr = null;
+    int vw = 0;
+    try {
+      mr.setDataSource(mp4.getAbsolutePath());
+      String ws = mr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH);
+      if (ws != null) vw = Integer.parseInt(ws);
+      fr = mr.getFrameAtTime(1000000L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC);
+      if (fr == null) fr = mr.getFrameAtTime();
+    } finally { mr.release(); }
+    if (vw <= 0) throw new Exception("nao parece um video MP4 valido");
+    Bitmap t = fr != null ? Bitmap.createScaledBitmap(fr, 320, 160, true) : Bitmap.createBitmap(320, 160, Bitmap.Config.ARGB_8888);
+    FileOutputStream fo = new FileOutputStream(new File(dir, id + "_t.jpg"));
+    try { t.compress(Bitmap.CompressFormat.JPEG, 80, fo); } finally { fo.close(); }
+    writeText(new File(dir, id + ".txt"), name);
+    if (vw > 3840) note = "video acima de 4K pode travar neste celular";
+  }
+
+  // =============================================================
+  // Player de video 360 (MediaPlayer desenhando no Surface do GL)
+  // =============================================================
+
+  void openVideo(final File f, final Surface sf) {
+    ui.post(new Runnable() {
+      @Override public void run() {
+        closeVideoNow();
+        wantPlay = true;
+        try {
+          final MediaPlayer m = new MediaPlayer();
+          mp = m;
+          ready = false;
+          pos = 0;
+          dur = 0;
+          m.setDataSource(f.getAbsolutePath());
+          m.setSurface(sf);
+          m.setLooping(loop);
+          m.setVolume(muted ? 0f : 1f, muted ? 0f : 1f);
+          m.setOnPreparedListener(new MediaPlayer.OnPreparedListener() {
+            @Override public void onPrepared(MediaPlayer p) {
+              if (mp != p) return;
+              ready = true;
+              dur = p.getDuration();
+              applySpeed();
+              if (wantPlay) p.start();
+            }
+          });
+          m.setOnErrorListener(new MediaPlayer.OnErrorListener() {
+            @Override public boolean onError(MediaPlayer p, int what, int extra) {
+              if (mp != p) return true;
+              say("Falha no video (erro " + what + "/" + extra + ")");
+              act.exitSpace();
+              return true;
+            }
+          });
+          m.prepareAsync();
+          startTick();
+          ui.postDelayed(new Runnable() {
+            @Override public void run() {
+              if (mp == m && !ready) { say("O video demorou demais para carregar"); act.exitSpace(); }
+            }
+          }, 25000);
+        } catch (Throwable t) {
+          say("Nao consegui abrir o video");
+          act.exitSpace();
+        }
+      }
+    });
+  }
+
+  private void startTick() {
+    if (tick != null) ui.removeCallbacks(tick);
+    tick = new Runnable() {
+      @Override public void run() {
+        MediaPlayer m = mp;
+        if (m == null) return;
+        try { if (ready) { pos = m.getCurrentPosition(); dur = m.getDuration(); playing = m.isPlaying(); } } catch (Throwable t) { }
+        ui.postDelayed(this, 250);
+      }
+    };
+    ui.post(tick);
+  }
+
+  private void applySpeed() {
+    MediaPlayer m = mp;
+    if (m == null || android.os.Build.VERSION.SDK_INT < 23) return;
+    try {
+      boolean was = m.isPlaying();
+      m.setPlaybackParams(new PlaybackParams().setSpeed(SPEEDS[spd]));
+      if (!was && ready && !wantPlay) m.pause();
+    } catch (Throwable t) { }
+  }
+
+  private void closeVideoNow() {
+    if (tick != null) { ui.removeCallbacks(tick); tick = null; }
+    MediaPlayer m = mp;
+    mp = null;
+    ready = false;
+    playing = false;
+    pos = 0;
+    dur = 0;
+    if (m != null) {
+      try { m.setOnPreparedListener(null); m.setOnErrorListener(null); m.stop(); } catch (Throwable t) { }
+      try { m.release(); } catch (Throwable t) { }
+    }
+  }
+
+  void closeVideo() {
+    ui.post(new Runnable() { @Override public void run() { closeVideoNow(); } });
+  }
+
+  void pause() {
+    ui.post(new Runnable() {
+      @Override public void run() {
+        MediaPlayer m = mp;
+        resumeAfter = playing;
+        if (m != null && ready) { try { if (m.isPlaying()) m.pause(); } catch (Throwable t) { } }
+      }
+    });
+  }
+
+  void resume() {
+    ui.post(new Runnable() {
+      @Override public void run() {
+        MediaPlayer m = mp;
+        if (m != null && ready && resumeAfter) { try { m.start(); } catch (Throwable t) { } }
+        resumeAfter = false;
+      }
+    });
+  }
+
+  private void videoCmd(final String c) {
+    ui.post(new Runnable() {
+      @Override public void run() {
+        MediaPlayer m = mp;
+        if (m == null) return;
+        try {
+          if (c.equals("play")) {
+            if (ready) { if (m.isPlaying()) { m.pause(); wantPlay = false; playing = false; } else { m.start(); wantPlay = true; playing = true; } }
+          } else if (c.startsWith("seek:")) {
+            if (ready) { int t = Math.max(0, Math.min(m.getDuration(), Integer.parseInt(c.substring(5)))); m.seekTo(t); pos = t; }
+          } else if (c.startsWith("rel:")) {
+            if (ready) { int t = Math.max(0, Math.min(m.getDuration(), m.getCurrentPosition() + Integer.parseInt(c.substring(4)))); m.seekTo(t); pos = t; }
+          } else if (c.equals("mute")) {
+            muted = !muted;
+            m.setVolume(muted ? 0f : 1f, muted ? 0f : 1f);
+          } else if (c.equals("loop")) {
+            loop = !loop;
+            m.setLooping(loop);
+          } else if (c.equals("speed")) {
+            spd = (spd + 1) % SPEEDS.length;
+            applySpeed();
+          }
+        } catch (Throwable t) { }
+      }
+    });
+  }
+
+  // =============================================================
+  // Estado para a pagina
+  // =============================================================
+
+  String stateJson() {
+    StringBuilder b = new StringBuilder("{");
+    b.append("\"libVer\":").append(libVer).append(",\"catVer\":").append(catVer)
+      .append(",\"loading\":").append(loading).append(",\"err\":").append(q(err))
+      .append(",\"msg\":").append(q(msg)).append(",\"msgSeq\":").append(msgSeq)
+      .append(",\"active\":").append(q(active)).append(",\"video\":").append(activeVideo)
+      .append(",\"pos\":").append(pos).append(",\"dur\":").append(dur).append(",\"playing\":").append(playing)
+      .append(",\"muted\":").append(muted).append(",\"loop\":").append(loop)
+      .append(",\"speed\":").append(SPEEDS[spd]).append(",\"dl\":{");
+    boolean first = true;
+    for (Map.Entry<String, Integer> e : dl.entrySet()) {
+      if (!first) b.append(',');
+      first = false;
+      b.append(q(e.getKey())).append(':').append(e.getValue().intValue());
+    }
+    b.append("},\"have\":").append(haveJson()).append('}');
+    return b.toString();
+  }
 }
 EOF
