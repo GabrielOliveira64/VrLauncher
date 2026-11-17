@@ -2,7 +2,7 @@
 # Modo AR (6DoF) do VR Launcher: tudo do 6DoF fica neste arquivo.
 # Para atualizar: envie um modo-ar.sh novo para o repositorio, substituindo este.
 set -e
-echo "modo-ar.sh: Fase 8b - abas de vidro, sliders verticais, apps redondos (2026-11-17)"
+echo "modo-ar.sh: Fase 9 - gesto do menu, 3 pontinhos, proporcao, tela cheia, fonte local (2026-11-17)"
 mkdir -p app/src/main/java/com/vr/launcher
 cat > /tmp/vr_orig_ui.js <<'JSEOF'
 var tabAju = mk2('tab', '<div class="tt">AJUSTES</div><div class="cfl"></div>'); tabAju.style.zIndex = 200;
@@ -1214,7 +1214,14 @@ final class ArPanel {
   }
 
   final ArActivity act;
-  final int pw, ph, dpi;
+  volatile int pw, ph;
+  final int dpi;
+  /** Opcoes do navegador, globais (valem para todas as janelas): zoom das paginas (%) e modo computador. */
+  static volatile int zoomPct = 100;
+  static volatile boolean desktop = false;
+  static final String UA_DESKTOP = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+  private android.view.View fsView = null;
+  private WebChromeClient.CustomViewCallback fsCb = null;
   final int id;
   final Handler ui = new Handler(Looper.getMainLooper());
 
@@ -1247,6 +1254,8 @@ final class ArPanel {
   final boolean kb;
   /** Controles do video 360: pagina propria (ArVidPage) com a ponte "ArMenu". */
   final boolean vid;
+  /** Menu dos tres pontinhos da janela: pagina propria (ArMorePage). */
+  final boolean more;
   private long downTime = 0;
   private Runnable tick, watchdog;
 
@@ -1258,6 +1267,7 @@ final class ArPanel {
     this.act = act; this.pw = pw; this.ph = ph; this.dpi = dpi; this.home = url; this.menu = menu;
     this.kb = menu && ArActivity.KB_URL.equals(url);
     this.vid = menu && ArActivity.VID_URL.equals(url);
+    this.more = menu && ArActivity.MORE_URL.equals(url);
     this.id = ++seq;
     tabs.add(new Tab(url));
     android.opengl.Matrix.setIdentityM(stm, 0);
@@ -1515,6 +1525,7 @@ final class ArPanel {
       t.loaded = true;
       if (kb) t.web.loadDataWithBaseURL("https://vrlauncher.local/", ArKbPage.HTML, "text/html", "utf-8", null);
       else if (vid) t.web.loadDataWithBaseURL("https://vrlauncher.local/", ArVidPage.HTML, "text/html", "utf-8", null);
+      else if (more) t.web.loadDataWithBaseURL("https://vrlauncher.local/", ArMorePage.HTML, "text/html", "utf-8", null);
       else if (menu) t.web.loadDataWithBaseURL("https://vrlauncher.local/", ArMenuPage.HTML, "text/html", "utf-8", null);
       else t.web.loadUrl(t.url);
     }
@@ -1593,6 +1604,39 @@ final class ArPanel {
   }
 
   private void publish() { snap = makeSnap(); }
+
+  static String zoomJs() {
+    return "(function(){try{document.documentElement.style.zoom='" + (zoomPct / 100f) + "';}catch(e){}})()";
+  }
+
+  /** Aplica as opcoes globais do navegador (modo computador, zoom) nas abas desta janela. */
+  void applyBrowser() {
+    if (menu) return;
+    ui.post(new Runnable() {
+      @Override public void run() {
+        for (Tab t : tabs) {
+          if (t.web == null) continue;
+          WebSettings ws = t.web.getSettings();
+          boolean changed = desktop != (ws.getUserAgentString() != null && ws.getUserAgentString().contains("X11; Linux x86_64"));
+          if (changed) {
+            ws.setUserAgentString(desktop ? UA_DESKTOP : null);
+            ws.setUseWideViewPort(desktop);
+            ws.setLoadWithOverviewMode(desktop);
+            t.web.reload();
+          } else {
+            t.web.evaluateJavascript(zoomJs(), null);
+          }
+        }
+      }
+    });
+  }
+
+  /** Muda a resolucao da pagina (proporcao da janela): refaz a superficie; as paginas recarregam. Thread do GL. */
+  void resize(int w, int h) {
+    if (w == pw && h == ph) return;
+    pw = w; ph = h;
+    newSurface();
+  }
 
   void newTab(final String u) {
     ui.post(new Runnable() {
@@ -1733,6 +1777,10 @@ final class ArPanel {
         if (menu) {
           android.net.Uri u = r.getUrl();
           String path = u == null ? null : u.getPath();
+          if (u != null && "vrlauncher.local".equals(u.getHost()) && path != null && path.startsWith("/font/")) {
+            InputStream fin = ArFont.open(path);
+            if (fin != null) return new WebResourceResponse("font/woff2", null, fin);
+          }
           if (u != null && "vrlauncher.local".equals(u.getHost()) && path != null && path.startsWith("/spatial/")) {
             InputStream in = ArPanel.this.act.space.thumb(path.substring(9));
             if (in != null) return new WebResourceResponse("image/jpeg", null, in);
@@ -1745,7 +1793,7 @@ final class ArPanel {
         return !(u.startsWith("http:") || u.startsWith("https:") || u.startsWith("about:") || u.startsWith("blob:") || u.startsWith("data:"));
       }
       @Override public void onPageFinished(WebView view, String u) {
-        if (!menu) view.evaluateJavascript(FOCUS_JS, null);
+        if (!menu) { view.evaluateJavascript(FOCUS_JS, null); view.evaluateJavascript(zoomJs(), null); }
         if (u != null && u.startsWith("http")) tab.url = u;
         publish();
       }
@@ -1754,7 +1802,29 @@ final class ArPanel {
         publish();
       }
     });
+    if (!menu) {
+      s.setUserAgentString(desktop ? UA_DESKTOP : null);
+      s.setUseWideViewPort(desktop);
+      s.setLoadWithOverviewMode(desktop);
+    }
     v.setWebChromeClient(new WebChromeClient() {
+      /** Tela cheia de video (YouTube etc.): o video enche so esta janela. */
+      @Override public void onShowCustomView(android.view.View view, CustomViewCallback cb) {
+        if (menu || holder == null) { if (cb != null) cb.onCustomViewHidden(); return; }
+        if (fsView != null) { onHideCustomView(); }
+        fsView = view; fsCb = cb;
+        holder.addView(view, new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        for (Tab t : tabs) if (t.web != null) t.web.setVisibility(View.GONE);
+      }
+      @Override public void onHideCustomView() {
+        android.view.View fv = fsView;
+        if (fv == null) return;
+        fsView = null;
+        if (holder != null) holder.removeView(fv);
+        WebChromeClient.CustomViewCallback c = fsCb; fsCb = null;
+        if (c != null) { try { c.onCustomViewHidden(); } catch (Throwable e) { } }
+        for (int i = 0; i < tabs.size(); i++) if (tabs.get(i).web != null) tabs.get(i).web.setVisibility(i == cur ? View.VISIBLE : View.GONE);
+      }
       @Override public void onReceivedTitle(WebView view, String title) {
         tab.title = title == null ? "" : title;
         publish();
@@ -1877,6 +1947,9 @@ final class ArRenderer implements GLSurfaceView.Renderer {
   static final float CURVE_TH = 0.30f, RN = HW / CURVE_TH;
   static final int CN = 28;
   // menu 3D: trilho vertical de icones (so icones) com a aba ao lado direito
+  // proporcao das janelas do navegador: 16:9, 21:9, 32:9, 9:16 (meia largura, meia altura, pixels da pagina)
+  static final float[] AR_HW = {0.32f, 0.36f, 0.40f, 0.18f}, AR_HH = {0.18f, 0.1543f, 0.1125f, 0.32f};
+  static final int[] AR_PW = {960, 1260, 1920, 540}, AR_PH = {540, 540, 540, 960};
   static final int RAIL_N = 6;
   // RAIL_TOP: espaco do relogio no topo; o relogio tem a mesma largura dos icones
   static final float RAIL_P = 0.064f, RAIL_IC = 0.05f, RAIL_HALF = 0.04f, RAIL_DIST = 0.9f, RAIL_TOP = 0.05f, RAIL_H = RAIL_TOP + RAIL_N * RAIL_P;
@@ -1914,6 +1987,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     long lockUntil = 0;        // bloqueada para interacao (alvo de agrupamento)
     int chromeSig = 0, bubTex = 0;
     boolean curved = false;   // tela curva (so as laterais, na horizontal)
+    float hw = HW, hh = HH;   // meia largura/altura (m, escala 1): muda com a proporcao das janelas do navegador
     boolean hidden = false;   // aba do menu fechada
     boolean linked = false;   // aba do menu: segue o trilho
     boolean rail = false;     // o proprio trilho de icones (sem painel)
@@ -1948,6 +2022,10 @@ final class ArRenderer implements GLSurfaceView.Renderer {
   volatile int zoom = 1;                  // distancia das janelas: 1x a 5x
   private float zoomApplied = 1f;
   private int bgDimLoc = -1;
+  volatile int aspectIdx = 0;
+  private final FloatBuffer[] winVA = new FloatBuffer[4], curVA = new FloatBuffer[4];
+  private Win drawW = null, moreWin = null, moreOwner = null;
+  volatile boolean moreCurved = false;
   volatile boolean stereo = false;        // tela dividida (um desenho por olho) para o oculos VR Box
   volatile int viewMode = 1;              // 0 preenchida (corta), 1 meio-termo, 2 inteira (faixas), 3 esticada (tela cheia)
   private volatile boolean vpDirty = true;
@@ -2194,7 +2272,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     discTex = bitmapTex(makeDisc());
     ringTex = bitmapTex(makeRing());
     thinTex = bitmapTex(makeThinRing());
-    curveGlyph = bitmapTex(makeGlyph(7));
+    curveGlyph = bitmapTex(makeGlyph(12));
     keyGlyph = bitmapTex(makeGlyph(8));
     linkGlyph = bitmapTex(makeGlyph(9));
     for (int k = 0; k < RAIL_N; k++) icoTex[k] = bitmapTex(makeGlyph(RAIL_GLYPH[k]));
@@ -2334,6 +2412,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
       animateMenu(frameDt);
       placeTab();
       placeKb();
+      placeMore();
 
       drawEyes();
       errorText = "";
@@ -2529,14 +2608,14 @@ final class ArRenderer implements GLSurfaceView.Renderer {
   // =============================================================
 
   private ArPanel newPanel(String url, boolean menu) {
-    ArPanel p = new ArPanel(act, ArActivity.PW, ArActivity.PH, ArActivity.DPI, url, menu);
+    ArPanel p = new ArPanel(act, menu ? ArActivity.PW : AR_PW[aspectIdx], menu ? ArActivity.PH : AR_PH[aspectIdx], ArActivity.DPI, url, menu);
     p.glInit();
     panels.add(p);
     return p;
   }
 
   private ArPanel newPanelTabs(String[] urls, int cur) {
-    ArPanel p = new ArPanel(act, ArActivity.PW, ArActivity.PH, ArActivity.DPI, urls, cur);
+    ArPanel p = new ArPanel(act, AR_PW[aspectIdx], AR_PH[aspectIdx], ArActivity.DPI, urls, cur);
     p.glInit();
     panels.add(p);
     return p;
@@ -2549,6 +2628,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
   private Win addWindowP(Session s, Pose pose, ArPanel panel, boolean menu, boolean anchored) {
     Win w = new Win(pose, anchored ? anchorOf(s, pose) : null, panel, menu);
     if (!menu) {
+      w.hw = AR_HW[aspectIdx]; w.hh = AR_HH[aspectIdx];
       w.chromeBmp = Bitmap.createBitmap(ArChrome.BW, ArChrome.BH, Bitmap.Config.ARGB_8888);
       w.chromeTex = emptyTex2d();
     }
@@ -2588,7 +2668,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
   /** Posicao da janela i de k, num arco a 1,2 m a frente, todas viradas para a camera. */
   private Pose arcPose(Pose cp, int i, int k) {
     float[] t = cp.getTranslation();
-    float dist = 1.2f * zoom, step = (2f * HW + 0.06f) / dist;
+    float dist = 1.2f * zoom, step = (2f * AR_HW[aspectIdx] + 0.06f) / dist;
     float a = heading(cp) - (i - (k - 1) / 2f) * step;
     return facing(t[0] + dist * (float) Math.sin(a), t[1], t[2] + dist * (float) Math.cos(a), t[0], t[2]);
   }
@@ -2612,7 +2692,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     zoomApplied = zoom;
     railWin = new Win(cp, null, null, true);
     railWin.rail = true;
-    float left = k > 0 ? (k - 1) / 2f * ((2f * HW + 0.06f) / (1.2f * zoom)) + HW / (1.2f * zoom) + 0.16f : 0.15f;
+    float left = k > 0 ? (k - 1) / 2f * ((2f * AR_HW[aspectIdx] + 0.06f) / (1.2f * zoom)) + AR_HW[aspectIdx] / (1.2f * zoom) + 0.16f : 0.15f;
     placeRailBeside(s, cp, Math.min(0.42f, left));
     menuOpen = false;   // o menu so abre com o gesto
     menuReveal = 0f;
@@ -2690,7 +2770,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     for (int i = 0; i < units.size(); i++) {
       ArrayList<Win> u = units.get(i);
       float sp = 0f;
-      for (Win w : u) sp += 2f * (float) Math.atan(HW * w.s / RZ);
+      for (Win w : u) sp += 2f * (float) Math.atan(w.hw * w.s / RZ);
       sp += (u.size() - 1) * GGAP / RZ;
       span[i] = sp;
       total += sp;
@@ -2737,7 +2817,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     int n = g.m.size();
     float[] a = new float[n], hw = new float[n];
     float tot = 0f;
-    for (int i = 0; i < n; i++) { hw[i] = (float) Math.atan(HW * g.m.get(i).s / GRP_R); tot += 2f * hw[i]; }
+    for (int i = 0; i < n; i++) { hw[i] = (float) Math.atan(g.m.get(i).hw * g.m.get(i).s / GRP_R); tot += 2f * hw[i]; }
     tot += (n - 1) * GGAP / GRP_R;
     float x = -tot / 2f;
     for (int i = 0; i < n; i++) { a[i] = x + hw[i]; x += 2f * hw[i] + GGAP / GRP_R; }
@@ -2803,7 +2883,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
       if (b == a || b.menu || b.hidden || b.min) continue;
       if (!planeHit(b, camPos, d, pl)) continue;
       float lx = pl[0] / b.s, ly = pl[1] / b.s;
-      if (Math.abs(lx) > HW || Math.abs(ly) > HH) continue;
+      if (Math.abs(lx) > b.hw || Math.abs(ly) > b.hh) continue;
       int sd = lx >= 0f ? 1 : -1;
       if (b == dropT && Math.abs(lx) < 0.08f && dropSide != 0) sd = dropSide;   // histerese perto do meio
       if (!canJoin(a, b, sd)) continue;
@@ -2877,6 +2957,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     if (w.menu || w.min) return;
     leaveGroup(w);
     if (kbOwner == w) hideKb();
+    if (moreOwner == w) hideMore();
     w.editing = false;
     w.tabsOpen = false;
     String letter = "\u2022";
@@ -2924,6 +3005,69 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     placeKb();
   }
 
+  // ---- menu dos tres pontinhos: curva, modo computador, zoom do navegador, proporcao ----
+
+  private void toggleMore(Win w) {
+    if (moreWin != null && !moreWin.hidden && moreOwner == w) { hideMore(); return; }
+    Session s = session;
+    if (moreWin == null && s != null) {
+      moreWin = addWindowP(s, w.current(), newPanel(ArActivity.MORE_URL, true), true, false);
+      moreWin.s = 0.62f;
+          }
+    if (moreWin == null) return;
+    moreOwner = w;
+    moreCurved = w.curved;
+    moreWin.hidden = false;
+    moreWin.lockUntil = SystemClock.uptimeMillis() + 300;
+    placeMore();
+  }
+
+  private void hideMore() {
+    moreOwner = null;
+    if (moreWin != null) moreWin.hidden = true;
+  }
+
+  private void placeMore() {
+    if (moreWin == null || moreWin.hidden) return;
+    Win o = moreOwner;
+    if (o == null || !wins.contains(o) || o.min) { hideMore(); return; }
+    moreCurved = o.curved;
+    float dx = o.hw * o.s + 0.03f + HW * moreWin.s;
+    moreWin.pose = o.current().compose(Pose.makeTranslation(dx, 0f, 0.012f));
+  }
+
+  /** "more:..." vindo da pagina das opcoes (thread do GL). */
+  void moreAction(String a) {
+    try {
+      if ("more:curve".equals(a)) {
+        Win o = moreOwner;
+        if (o != null) { o.curved = !o.curved; moreCurved = o.curved; say(o.curved ? "Tela curva" : "Tela plana"); }
+      } else if ("more:desktop".equals(a)) {
+        ArPanel.desktop = !ArPanel.desktop;
+        for (Win w : wins) if (!w.menu) w.panel.applyBrowser();
+        say(ArPanel.desktop ? "Modo computador" : "Modo celular");
+      } else if (a.startsWith("more:zoom:")) {
+        ArPanel.zoomPct = Math.max(50, Math.min(100, Integer.parseInt(a.substring(10))));
+        for (Win w : wins) if (!w.menu) w.panel.applyBrowser();
+      } else if (a.startsWith("more:ar:")) {
+        setAspect(Integer.parseInt(a.substring(8)));
+      }
+    } catch (Throwable t) { }
+  }
+
+  /** Proporcao global das janelas do navegador: refaz o tamanho da pagina de cada uma (elas recarregam). */
+  private void setAspect(int i) {
+    i = Math.max(0, Math.min(3, i));
+    if (i == aspectIdx) return;
+    aspectIdx = i;
+    for (Win w : wins) {
+      if (w.menu) continue;
+      w.hw = AR_HW[i]; w.hh = AR_HH[i];
+      w.panel.resize(AR_PW[i], AR_PH[i]);
+    }
+    say("Proporcao: " + new String[]{"16:9", "21:9", "32:9", "9:16"}[i]);
+  }
+
   private void hideKb() {
     if (kbOwner != null) kbOwner.editing = false;
     kbOwner = null;
@@ -2940,7 +3084,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     if (kbWin == null || kbWin.hidden) return;
     Win o = kbOwner;
     if (o == null || !wins.contains(o) || o.min) { hideKb(); return; }
-    float y = -(HH * o.s + 0.09f * o.s + HH * kbWin.s);
+    float y = -(o.hh * o.s + 0.09f * o.s + HH * kbWin.s);
     kbWin.pose = o.current().compose(Pose.makeTranslation(0f, y, 0f));
   }
 
@@ -2998,7 +3142,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
   /** Nova janela logo ao lado direito de outra, com a mesma orientacao. */
   private void newWindowNear(Session s, Win src, String url) {
     if (webCount() >= MAX_WINS) { say("Maximo de " + MAX_WINS + " janelas"); return; }
-    float dx = HW * src.s + 0.06f + HW;
+    float dx = src.hw * src.s + 0.06f + src.hw;
     Pose p = src.current().compose(Pose.makeTranslation(dx, 0f, 0f));
     Win w = addWindow(s, p, url == null ? ArActivity.HOME : url, false);
     lastActive = w;
@@ -3029,6 +3173,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     if (dropT == w) clearDrop();
     if (lastTapWin == w) lastTapWin = null;
     if (kbOwner == w) hideKb();
+    if (moreOwner == w) hideMore();
     leaveGroup(w);
     if (w.bubTex != 0) { GLES20.glDeleteTextures(1, new int[]{w.bubTex}, 0); w.bubTex = 0; }
     wins.remove(w);
@@ -3047,7 +3192,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
 
   /** Mantem cada janela presa a uma ancora valida; se o ARCore derrubar a ancora, recria na ultima posicao boa. */
   private void maintainAnchors(Session s) {
-    for (Win w : wins) { if (!w.linked && !w.kb) maintain1(s, w); }
+    for (Win w : wins) { if (!w.linked && !w.kb && w != moreWin) maintain1(s, w); }
     if (railWin != null) maintain1(s, railWin);
   }
 
@@ -3096,7 +3241,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     for (Win w : wins) {
       if (w.hidden || w.min) continue;
       GLES20.glUniform2f(winShadeLoc, w == dropT ? (float) dropSide : 0f, w == dropT ? 1f : 0f);
-      FloatBuffer vb = w.curved ? curveVerts : winVerts, ub = w.curved ? curveUvs : winUvs;
+      FloatBuffer vb = w.curved ? curveVertsOf(w) : winVertsOf(w), ub = w.curved ? curveUvs : winUvs;
       vb.position(0);
       ub.position(0);
       GLES20.glVertexAttribPointer(winPosLoc, 3, GLES20.GL_FLOAT, false, 0, vb);
@@ -3104,11 +3249,11 @@ final class ArRenderer implements GLSurfaceView.Renderer {
       GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, w.panel.tex);
       GLES20.glUniformMatrix4fv(winStmLoc, 1, false, w.panel.stm, 0);
       GLES20.glUniform1f(winFlatLoc, w.panel.got ? 0f : 1f);
-      GLES20.glUniform2f(winHalfLoc, HW * w.s, HH * w.s);
-      GLES20.glUniform2f(winHalfVLoc, HW * w.s, HH * w.s);
+      GLES20.glUniform2f(winHalfLoc, w.hw * w.s, w.hh * w.s);
+      GLES20.glUniform2f(winHalfVLoc, w.hw * w.s, w.hh * w.s);
       GLES20.glUniform1f(winRadLoc, CORNER_R * w.s);
       GLES20.glUniform1f(winSLoc, w.s);
-      GLES20.glUniform1f(winGlassLoc, w == tabWin ? 1f : 0f);
+      GLES20.glUniform1f(winGlassLoc, (w == tabWin || w == moreWin) ? 1f : 0f);
       modelOf(w);
       Matrix.multiplyMM(mvp, 0, vp, 0, model, 0);
       GLES20.glUniformMatrix4fv(winMvpLoc, 1, false, mvp, 0);
@@ -3135,20 +3280,20 @@ final class ArRenderer implements GLSurfaceView.Renderer {
       boolean cornOn = (sizeWin == w) || (hov && hoverRegion == R_CORNER);
       boolean barAct = dragWin == w, cornAct = sizeWin == w;
       float ba = barOn ? 0.95f : 0.55f, ca = cornOn ? 0.95f : 0.5f;
-      if (!w.kb) quad(barTex, 0f, BAR_CY, BAR_W * (barOn ? 1.15f : 0.62f), BAR_H * (barOn ? 1.2f : 0.7f), barAct ? 0.37f : 1f, barAct ? 0.92f : 1f, barAct ? 0.83f : 1f, ba, dimV);
-      if (!w.kb) quad(cornerTex, CSX, CSY, CS * (cornOn ? 1.2f : 0.8f), CS * (cornOn ? 1.2f : 0.8f), cornAct ? 0.37f : 1f, cornAct ? 0.92f : 1f, cornAct ? 0.83f : 1f, ca, dimV);
+      if (!w.kb) quad(barTex, 0f, barCy(w), BAR_W * (barOn ? 1.15f : 0.62f), BAR_H * (barOn ? 1.2f : 0.7f), barAct ? 0.37f : 1f, barAct ? 0.92f : 1f, barAct ? 0.83f : 1f, ba, dimV);
+      if (!w.kb) quad(cornerTex, w.hw - 0.013f, -w.hh + 0.013f, CS * (cornOn ? 1.2f : 0.8f), CS * (cornOn ? 1.2f : 0.8f), cornAct ? 0.37f : 1f, cornAct ? 0.92f : 1f, cornAct ? 0.83f : 1f, ca, dimV);
       if (!w.menu) {
         boolean curveOn = hov && hoverRegion == R_CURVE;
-        iconBtn(curveGlyph, -PLUS_X, BAR_CY, PLUS_S * (curveOn ? 1.2f : 0.9f), curveOn, w.curved, 1f, dimV);
+        iconBtn(curveGlyph, -PLUS_X, barCy(w), PLUS_S * (curveOn ? 1.2f : 0.9f), curveOn, moreWin != null && !moreWin.hidden && moreOwner == w, 1f, dimV);
         boolean keyOn = hov && hoverRegion == R_KEY, kbShown = kbWin != null && !kbWin.hidden && kbOwner == w;
-        iconBtn(keyGlyph, PLUS_X, BAR_CY, PLUS_S * (keyOn ? 1.2f : 0.9f), keyOn, kbShown, 1f, dimV);
+        iconBtn(keyGlyph, PLUS_X, barCy(w), PLUS_S * (keyOn ? 1.2f : 0.9f), keyOn, kbShown, 1f, dimV);
         if (w.group != null && w.group.m.indexOf(w) > 0) {
           boolean lh = hov && hoverRegion == R_LINK;
-          iconBtn(linkGlyph, chainX(w), chainY(), 0.05f * (lh ? 1.2f : 0.95f), lh, false, 1f, dimV);
+          iconBtn(linkGlyph, chainX(w), chainY(w), 0.05f * (lh ? 1.2f : 0.95f), lh, false, 1f, dimV);
         }
       }
-      if (w == dropT && dropSide != 0) iconBtn(linkGlyph, dropSide * HW / 2f, 0f, 0.1f, false, true, 1f, dimV);
-      if (w.chromeVer >= 0) quad(w.chromeTex, 0f, HH + CH_GAP + CH_H / 2f, CH_W, CH_H, 1f, 1f, 1f, 1f, dimV);
+      if (w == dropT && dropSide != 0) iconBtn(linkGlyph, dropSide * w.hw / 2f, 0f, 0.1f, false, true, 1f, dimV);
+      if (w.chromeVer >= 0) quad(w.chromeTex, 0f, chainY(w), chW(w), chH(w), 1f, 1f, 1f, 1f, dimV);
       if (hov && hoverRegion == R_CHROME) highlight(w, hoverElem, dimV);
     }
     drawRail(dimV, idle);
@@ -3168,8 +3313,26 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     quad(w.bubTex, 0f, 0f, sz, sz, 1f, 1f, 1f, 1f, dimV);
   }
 
-  private static float chainX(Win w) { return -(HW + 0.006f / w.s); }
-  private static float chainY() { return HH + CH_GAP + CH_H / 2f; }
+  private static float chainX(Win w) { return -(w.hw + 0.006f / w.s); }
+  private static float chW(Win w) { return 2f * w.hw * 0.8f; }
+  private static float chH(Win w) { return chW(w) * ArChrome.DH / ArChrome.DW; }
+  private static float chainY(Win w) { return w.hh + CH_GAP + chH(w) / 2f; }
+  private static float barCy(Win w) { return -(w.hh + 0.028f); }
+  private static float rnOf(Win w) { return w.hw / CURVE_TH; }
+
+  private FloatBuffer winVertsOf(Win w) {
+    int a = w.menu ? 0 : aspectIdx;
+    if (a == 0) return winVerts;
+    if (winVA[a] == null) winVA[a] = floatBuf(new float[]{-w.hw, -w.hh, 0f, w.hw, -w.hh, 0f, -w.hw, w.hh, 0f, w.hw, w.hh, 0f});
+    return winVA[a];
+  }
+
+  private FloatBuffer curveVertsOf(Win w) {
+    int a = w.menu ? 0 : aspectIdx;
+    if (a == 0) return curveVerts;
+    if (curVA[a] == null) curVA[a] = floatBuf(curveMesh(true, w.hw, w.hh));
+    return curVA[a];
+  }
 
   /** Trilho do menu: so icones, um abaixo do outro; aparecem descendo. */
   private void drawRail(float dimV, boolean idle) {
@@ -3216,6 +3379,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
 
   /** model = pose da janela * escala (curva: escala uniforme, a malha ja tem a profundidade). */
   private void modelOf(Win w) {
+    drawW = w;
     w.current().toMatrix(model, 0);
     Matrix.scaleM(model, 0, w.s, w.s, w.curved ? w.s : 1f);
     bend = w.curved;
@@ -3248,8 +3412,8 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     int m = Math.max(1, Math.min(24, Math.round(sx / 0.04f)));
     int k = 0, ku = 0;
     for (int i = 0; i <= m; i++) {
-      float u = i / (float) m, ph = (x - sx / 2f + sx * u) / RN;
-      float px = (float) (RN * Math.sin(ph)), pz = (float) (RN * (1.0 - Math.cos(ph))) + CHROME_Z;
+      float u = i / (float) m, ph = (x - sx / 2f + sx * u) / rnOf(drawW);
+      float px = (float) (rnOf(drawW) * Math.sin(ph)), pz = (float) (rnOf(drawW) * (1.0 - Math.cos(ph))) + CHROME_Z;
       dynV[k++] = px; dynV[k++] = y - sy / 2f; dynV[k++] = pz;
       dynV[k++] = px; dynV[k++] = y + sy / 2f; dynV[k++] = pz;
       dynU[ku++] = u; dynU[ku++] = 1f; dynU[ku++] = u; dynU[ku++] = 0f;
@@ -3274,9 +3438,9 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     if (sn == null) return;
     float[] r = new float[4];
     ArChrome.rect(code, idx, sn.n, r);
-    float x = ((r[0] + r[2]) / 2f / ArChrome.DW - 0.5f) * CH_W;
-    float y = HH + CH_GAP + (1f - (r[1] + r[3]) / 2f / ArChrome.DH) * CH_H;
-    float sx = (r[2] - r[0]) / ArChrome.DW * CH_W, sy = (r[3] - r[1]) / ArChrome.DH * CH_H;
+    float x = ((r[0] + r[2]) / 2f / ArChrome.DW - 0.5f) * chW(w);
+    float y = w.hh + CH_GAP + (1f - (r[1] + r[3]) / 2f / ArChrome.DH) * chH(w);
+    float sx = (r[2] - r[0]) / ArChrome.DW * chW(w), sy = (r[3] - r[1]) / ArChrome.DH * chH(w);
     float a = 0.38f;
     quad(roundTex, x, y, sx, sy, 0.37f, 0.92f, 0.83f, a, dimV);
   }
@@ -3390,7 +3554,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     }
 
     if (peace) lastPeaceMs = now;
-    boolean peaceEff = has && skel != null && !handFist && ((peace && peaceN >= 2) || (swActive && now - lastPeaceMs < 250));
+    boolean peaceEff = has && skel != null && !handFist && ((peace && peaceN >= 5) || (swActive && now - lastPeaceMs < 250));
     updateMenuGesture(s, peaceEff, camPos, now);
 
     boolean fistOn = has && handFist && fistN >= 3;
@@ -3560,7 +3724,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
       lastPy = toPx(w, h.ly / w.s, false);
       sendTouch(w, MotionEvent.ACTION_DOWN, lastPx, lastPy);
     } else if (h.region == R_CURVE) {
-      if (now - lastClick > 400) { lastClick = now; w.curved = !w.curved; say(w.curved ? "Tela curva" : "Tela plana"); }
+      if (now - lastClick > 400) { lastClick = now; toggleMore(w); }
     } else if (h.region == R_KEY) {
       if (now - lastClick > 400) { lastClick = now; toggleKb(w); }
     } else if (h.region == R_LINK) {
@@ -3683,7 +3847,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
   /** Coordenada local da janela (em metros, escala 1) para pixel da pagina. */
   private static float toPx(Win w, float local, boolean horizontal) {
     int pw = w.panel.pw, ph = w.panel.ph;
-    float p = horizontal ? (local + HW) / (2f * HW) * pw : (HH - local) / (2f * HH) * ph;
+    float p = horizontal ? (local + w.hw) / (2f * w.hw) * pw : (w.hh - local) / (2f * w.hh) * ph;
     float max = (horizontal ? pw : ph) - 1f;
     return Math.max(0f, Math.min(max, p));
   }
@@ -3736,7 +3900,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
 
   /** Tela curva: cruza o raio com o cilindro (eixo vertical). out[0] = comprimento de arco, como se fosse plana. */
   private boolean cylHit(Win w, float[] lo, float[] ld, float[] out) {
-    float r = RN * w.s;
+    float r = rnOf(w) * w.s;
     float ox = lo[0], oz = lo[2] - r;
     float a = ld[0] * ld[0] + ld[2] * ld[2];
     if (a < 1e-8f) return false;
@@ -3772,20 +3936,20 @@ final class ArRenderer implements GLSurfaceView.Renderer {
       }
       return R_NONE;
     }
-    if (w.kb) return (Math.abs(x) <= HW && Math.abs(y) <= HH) ? R_BODY : R_NONE;
+    if (w.kb) return (Math.abs(x) <= w.hw && Math.abs(y) <= w.hh) ? R_BODY : R_NONE;
     if (!w.menu && w.group != null && w.group.m.indexOf(w) > 0
-      && Math.abs(x - chainX(w)) <= 0.03f && Math.abs(y - chainY()) <= 0.03f) return R_LINK;
-    if (Math.abs(x - CSX) <= CS_HIT && Math.abs(y - CSY) <= CS_HIT) return R_CORNER;
-    if (!w.menu && Math.abs(x - PLUS_X) <= PLUS_HIT && Math.abs(y - BAR_CY) <= PLUS_HIT) return R_KEY;
-    if (!w.menu && Math.abs(x + PLUS_X) <= PLUS_HIT && Math.abs(y - BAR_CY) <= PLUS_HIT) return R_CURVE;
-    if (Math.abs(x) <= BAR_HIT_X && Math.abs(y - BAR_CY) <= BAR_HIT_Y) return R_BAR;
-    if (Math.abs(x) <= HW && Math.abs(y) <= HH) return R_BODY;
-    float y0 = HH + CH_GAP;
-    if (!w.menu && y >= y0 - 0.006f && y <= y0 + CH_H + 0.006f && Math.abs(x) <= CH_W / 2f + 0.006f) {
+      && Math.abs(x - chainX(w)) <= 0.03f && Math.abs(y - chainY(w)) <= 0.03f) return R_LINK;
+    if (Math.abs(x - (w.hw - 0.013f)) <= CS_HIT && Math.abs(y - (-w.hh + 0.013f)) <= CS_HIT) return R_CORNER;
+    if (!w.menu && Math.abs(x - PLUS_X) <= PLUS_HIT && Math.abs(y - barCy(w)) <= PLUS_HIT) return R_KEY;
+    if (!w.menu && Math.abs(x + PLUS_X) <= PLUS_HIT && Math.abs(y - barCy(w)) <= PLUS_HIT) return R_CURVE;
+    if (Math.abs(x) <= BAR_HIT_X && Math.abs(y - barCy(w)) <= BAR_HIT_Y) return R_BAR;
+    if (Math.abs(x) <= w.hw && Math.abs(y) <= w.hh) return R_BODY;
+    float y0 = w.hh + CH_GAP, CHW = chW(w), CHH = chH(w);
+    if (!w.menu && y >= y0 - 0.006f && y <= y0 + CHH + 0.006f && Math.abs(x) <= CHW / 2f + 0.006f) {
       ArPanel.Snap sn = w.panel.snap;
       if (sn != null) {
-        float dx = Math.max(0f, Math.min(ArChrome.DW, (x / CH_W + 0.5f) * ArChrome.DW));
-        float dy = Math.max(0f, Math.min(ArChrome.DH, (1f - (y - y0) / CH_H) * ArChrome.DH));
+        float dx = Math.max(0f, Math.min(ArChrome.DW, (x / CHW + 0.5f) * ArChrome.DW));
+        float dy = Math.max(0f, Math.min(ArChrome.DH, (1f - (y - y0) / CHH) * ArChrome.DH));
         int e = ArChrome.hit(dx, dy, sn.n, sn.cur, w.tabsOpen);
         if (e != ArChrome.NONE) { regElem = e; return R_CHROME; }
       }
@@ -3824,10 +3988,19 @@ final class ArRenderer implements GLSurfaceView.Renderer {
    * Dois dedos descendo: com o menu fechado, abre (os icones surgem descendo atras da mao); com o menu aberto, fecha.
    * Soltar no meio do caminho termina o que passou da metade. Depois de concluir, so um gesto novo (mao solta) age.
    */
+  private boolean swBlock = false;
+  static final long SW_MIN_MS = 500;     // o gesto do menu precisa durar pelo menos isso
+
   private void updateMenuGesture(Session s, boolean on, float[] cam, long now) {
-    if (on && railWin != null) {
+    if (!on) swBlock = false;
+    if (on && railWin != null && !swBlock) {
       float px = (skel[16] + skel[24]) * 0.5f, py = (skel[17] + skel[25]) * 0.5f;
       if (!swActive || (!swDone && now - swT > 1200)) {
+        if (!menuOpen) {
+          // com a mao em cima de uma janela o menu nao abre
+          Hit hh = raycast(cam, rayDir(px, py, cam));
+          if (hh != null && hh.win != railWin && hh.win != tabWin) { swBlock = true; swActive = false; swMode = 0; return; }
+        }
         swActive = true; swDone = false; swY0 = py; swT = now; swProg = 0f;
         if (!menuOpen) {
           swMode = 1;
@@ -3839,7 +4012,10 @@ final class ArRenderer implements GLSurfaceView.Renderer {
       } else if (py < swY0) {
         swY0 = py; swT = now;
       }
-      swProg = Math.max(0f, Math.min(1f, (py - swY0) / (0.25f * Math.max(1f, vh))));
+      // descer uns 40% da tela, e durante pelo menos 0,5 s; os primeiros 15% sao ignorados (tremida)
+      float raw = Math.max(0f, Math.min(1f, (py - swY0) / (0.40f * Math.max(1f, vh))));
+      float tf = Math.min(1f, (now - swT) / (float) SW_MIN_MS);
+      swProg = Math.min(Math.max(0f, (raw - 0.15f) / 0.85f), tf);
       if (!swDone) {
         if (swMode == 1) {
           menuReveal = swProg;
@@ -3851,8 +4027,8 @@ final class ArRenderer implements GLSurfaceView.Renderer {
       }
     } else if (swActive) {
       if (!swDone) {
-        if (swMode == 1) menuOpen = swProg >= 0.5f;
-        else if (swMode == 2) { if (swProg >= 0.5f) hideMenu(); }
+        // gesto interrompido: o menu volta ao estado de antes (nao abre nem fecha pela metade)
+        if (swMode == 1) menuOpen = false;
       }
       swActive = false; swMode = 0; swDone = false;
     }
@@ -3931,14 +4107,17 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     if (tabWin != null) tabWin.hidden = true;
   }
 
-  private static float[] curveMesh(boolean pos) {
+  private static float[] curveMesh(boolean pos) { return curveMesh(pos, HW, HH); }
+
+  private static float[] curveMesh(boolean pos, float hw, float hh) {
+    final float rn = hw / CURVE_TH;
     float[] a = new float[(CN + 1) * 2 * (pos ? 3 : 2)];
     int k = 0;
     for (int i = 0; i <= CN; i++) {
-      float u = i / (float) CN, ph = (u * 2f - 1f) * HW / RN;
-      float px = (float) (RN * Math.sin(ph)), pz = (float) (RN * (1.0 - Math.cos(ph)));
+      float u = i / (float) CN, ph = (u * 2f - 1f) * hw / rn;
+      float px = (float) (rn * Math.sin(ph)), pz = (float) (rn * (1.0 - Math.cos(ph)));
       for (int r = 0; r < 2; r++) {
-        float y = r == 0 ? -HH : HH;
+        float y = r == 0 ? -hh : hh;
         if (pos) { a[k++] = px; a[k++] = y; a[k++] = pz; } else { a[k++] = u; a[k++] = r; }
       }
     }
@@ -3963,7 +4142,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
       + "  ia(" + tracker.delegateName + "): " + Math.round(tracker.detFps) + " fps / " + Math.round(tracker.detMs) + " ms"
       + "  atraso: " + Math.round(handAgeMs) + " ms";
     int noAnchor = 0;
-    for (Win w : wins) if (w.anchor == null && !w.linked && !w.kb) noAnchor++;
+    for (Win w : wins) if (w.anchor == null && !w.linked && !w.kb && w != moreWin) noAnchor++;
     String st = dragWin != null ? "mover" : sizeWin != null ? "redimensionar" : touchWin != null ? "toque" : dropT != null ? "agrupar" : fistProg > 0f ? "punho" : pend != null ? "segurando..." : "-";
     String l4 = "janelas: " + webCount() + " (+menu)" + "  sem ancora: " + noAnchor + "  acao: " + st;
     String l5 = "cam: " + fmt(camP[0]) + " " + fmt(camP[1]) + " " + fmt(camP[2]) + " m";
@@ -4345,6 +4524,10 @@ final class ArRenderer implements GLSurfaceView.Renderer {
         }
         break;
       }
+      case 12:  // tres pontinhos
+        p.setStyle(Paint.Style.FILL);
+        c.drawCircle(48f, 22f, 7f, p); c.drawCircle(48f, 48f, 7f, p); c.drawCircle(48f, 74f, 7f, p);
+        break;
       case 6:   // +
         p.setStrokeWidth(9f);
         c.drawLine(22f, 48f, 74f, 48f, p);
@@ -4621,6 +4804,7 @@ public class ArActivity extends Activity {
   static final String MENU_URL = "about:menu";
   static final String KB_URL = "about:kb";
   static final String VID_URL = "about:vid";
+  static final String MORE_URL = "about:more";
   /** Aba do menu que a pagina deve mostrar (lida pela pagina via ArMenu.page()). */
   volatile String menuPage = "apps";
 
@@ -4846,6 +5030,7 @@ public class ArActivity extends Activity {
       return;
     }
     if (a.startsWith("set:")) { setValue(a); return; }
+    if (a.startsWith("more:")) { final String ma = a; queueGl(new Runnable() { @Override public void run() { renderer.moreAction(ma); } }); return; }
     if (a.startsWith("sp:")) { space.command(a); return; }
     if (a.startsWith("app:")) {
       try {
@@ -4910,6 +5095,7 @@ public class ArActivity extends Activity {
   String menuState() {
     return "{\"gpu\":" + tracker.wantsGpu() + ",\"hybrid\":" + renderer.hybridOn + ",\"stereo\":" + renderer.stereo
       + ",\"vol\":" + volumeNow() + ",\"bri\":" + brightnessNow() + ",\"room\":" + Math.round(renderer.roomDim * 100f)
+      + ",\"curved\":" + renderer.moreCurved + ",\"desktop\":" + ArPanel.desktop + ",\"bz\":" + ArPanel.zoomPct + ",\"ar\":" + renderer.aspectIdx
       + ",\"zoom\":" + renderer.zoom + ",\"pOn\":" + Math.round(renderer.pinchOn * 100f) + ",\"pOff\":" + Math.round(renderer.pinchOff * 100f) + "}";
   }
 
@@ -5084,8 +5270,10 @@ final class ArMenuPage {
     "<!doctype html>\n" +
     "<html><head><meta charset=\"utf-8\">\n" +
     "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1,user-scalable=no\">\n" +
-    "<link href=\"https://fonts.googleapis.com/css2?family=Exo+2:wght@300;400;500&display=swap\" rel=\"stylesheet\">\n" +
+    "\n" +
     "<style>\n" +
+    "@font-face{font-family:'Exo 2';font-weight:300;src:url(/font/exo2-300.woff2) format('woff2')}\n" +
+    "@font-face{font-family:'Exo 2';font-weight:400;src:url(/font/exo2-400.woff2) format('woff2')}\n" +
     "*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;-webkit-user-select:none;user-select:none}\n" +
     "html,body{margin:0;height:100%;background:#000;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden}\n" +
     "#app{display:flex;height:100%}\n" +
@@ -6203,6 +6391,77 @@ final class ArSpace {
     }
     b.append("},\"have\":").append(haveJson()).append('}');
     return b.toString();
+  }
+}
+EOF
+cat > app/src/main/java/com/vr/launcher/ArMorePage.java <<'EOF'
+package com.vr.launcher;
+
+/** Pagina HTML gerada (more.html). */
+final class ArMorePage {
+  static final String HTML =
+    "<!doctype html>\n" +
+    "<html><head><meta charset=\"utf-8\">\n" +
+    "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1,user-scalable=no\">\n" +
+    "<style>\n" +
+    "@font-face{font-family:'Exo 2';font-weight:300;src:url(/font/exo2-300.woff2) format('woff2')}\n" +
+    "@font-face{font-family:'Exo 2';font-weight:400;src:url(/font/exo2-400.woff2) format('woff2')}\n" +
+    "*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;-webkit-user-select:none;user-select:none}\n" +
+    "html,body{margin:0;height:100%;background:#000;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden}\n" +
+    "#main{height:100%;padding:16px 20px;display:flex;flex-direction:column;overflow-y:auto}\n" +
+    "#main::-webkit-scrollbar{display:none}\n" +
+    "h1{font-family:'Exo 2',system-ui,sans-serif;font-size:14px;font-weight:300;letter-spacing:3px;opacity:.8;margin:0 0 12px;padding-bottom:9px;border-bottom:1px solid;border-image:linear-gradient(90deg,rgba(255,255,255,.38),rgba(255,255,255,.12) 55%,rgba(255,255,255,0)) 1;flex:none}\n" +
+    ".row{display:flex;align-items:center;gap:12px;padding:8px 14px;border-radius:16px;background:rgba(255,255,255,.07);margin-bottom:8px;min-height:62px;flex:none}\n" +
+    ".row:active{background:#fff;color:#000}\n" +
+    ".t{flex:1;min-width:0}\n" +
+    ".t b{font-family:'Exo 2',system-ui,sans-serif;font-weight:400;font-size:18px;display:block}\n" +
+    ".t span{font-size:12px;opacity:.75;display:block;margin-top:2px}\n" +
+    ".sw{width:58px;height:32px;border-radius:16px;background:rgba(255,255,255,.28);position:relative;flex:none}\n" +
+    ".sw i{position:absolute;left:3px;top:3px;width:26px;height:26px;border-radius:50%;background:#fff;transition:left .15s}\n" +
+    ".sw.on{background:#3ddc84}\n" +
+    ".sw.on i{left:29px}\n" +
+    ".seg{display:flex;gap:6px;flex:none}\n" +
+    ".sb{min-width:54px;height:40px;padding:0 12px;border-radius:12px;background:rgba(255,255,255,.12);display:flex;align-items:center;justify-content:center;font-family:'Exo 2',system-ui,sans-serif;font-size:16px}\n" +
+    ".sb.on{background:#5eead4;color:#04201c}\n" +
+    ".sb:active{background:#fff;color:#000}\n" +
+    "</style></head><body>\n" +
+    "<div id=\"main\">\n" +
+    "<h1>OP&Ccedil;&Otilde;ES DA JANELA</h1>\n" +
+    "<div class=\"row\" data-a=\"curve\"><div class=\"t\"><b>Tela curva</b><span>Curva s&oacute; as laterais desta janela.</span></div><div class=\"sw\" id=\"s-curve\"><i></i></div></div>\n" +
+    "<div class=\"row\" data-a=\"desktop\"><div class=\"t\"><b>Modo computador</b><span>Sites em vers&atilde;o de PC (todas as janelas).</span></div><div class=\"sw\" id=\"s-desktop\"><i></i></div></div>\n" +
+    "<div class=\"row\"><div class=\"t\"><b>Zoom do navegador</b><span>Menor = letras menores (todas as janelas).</span></div><div class=\"seg\" id=\"g-zoom\"><div class=\"sb\" data-z=\"100\">100%</div><div class=\"sb\" data-z=\"90\">90%</div><div class=\"sb\" data-z=\"80\">80%</div><div class=\"sb\" data-z=\"70\">70%</div><div class=\"sb\" data-z=\"60\">60%</div></div></div>\n" +
+    "<div class=\"row\"><div class=\"t\"><b>Propor&ccedil;&atilde;o</b><span>Formato das janelas (todas).</span></div><div class=\"seg\" id=\"g-ar\"><div class=\"sb\" data-r=\"0\">16:9</div><div class=\"sb\" data-r=\"1\">21:9</div><div class=\"sb\" data-r=\"2\">32:9</div><div class=\"sb\" data-r=\"3\">9:16</div></div></div>\n" +
+    "</div>\n" +
+    "<script>\n" +
+    "var A=window.ArMenu;\n" +
+    "function act(a){try{A.act(a)}catch(e){}}\n" +
+    "function refresh(){var s={};try{s=JSON.parse(A.state())}catch(e){}\n" +
+    "  document.getElementById('s-curve').className='sw'+(s.curved?' on':'');\n" +
+    "  document.getElementById('s-desktop').className='sw'+(s.desktop?' on':'');\n" +
+    "  document.querySelectorAll('[data-z]').forEach(function(b){b.className='sb'+(+b.getAttribute('data-z')===s.bz?' on':'')});\n" +
+    "  document.querySelectorAll('[data-r]').forEach(function(b){b.className='sb'+(+b.getAttribute('data-r')===s.ar?' on':'')});}\n" +
+    "document.querySelectorAll('[data-a]').forEach(function(e){e.onclick=function(){act('more:'+e.getAttribute('data-a'));setTimeout(refresh,250);};});\n" +
+    "document.querySelectorAll('[data-z]').forEach(function(e){e.onclick=function(){act('more:zoom:'+e.getAttribute('data-z'));setTimeout(refresh,200);};});\n" +
+    "document.querySelectorAll('[data-r]').forEach(function(e){e.onclick=function(){act('more:ar:'+e.getAttribute('data-r'));setTimeout(refresh,200);};});\n" +
+    "refresh();setInterval(refresh,1000);\n" +
+    "</script></body></html>\n" +
+    "\n";
+}
+EOF
+cat > app/src/main/java/com/vr/launcher/ArFont.java <<'EOF'
+package com.vr.launcher;
+
+import java.io.ByteArrayInputStream;
+import java.io.InputStream;
+
+/** Fonte Exo 2 (OFL), latin 300 e 400, embutida: nao precisa de internet. Gerado, nao editar. */
+final class ArFont {
+  private static final String F300 = "d09GMgABAAAAAEHQABAAAAAAqrQAAEFsAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGoFWG4GMHByGRgZgP1NUQVREAIUkEQgKgZs093ALhDoAATYCJAOIcAQgBYQ4B4l/DAcbn5U1bJv2MbtbpTRBIBM0MpDHAVbxvBGpRj/K/v+vyY0hgjVQa7UfigRFItlOk6kyKSl7FdXaq6iw8SYyaPtxR2ObfCkPeo6CnLjiim9/SAhpetnhliqQFXaoFS+0CkY9+Av93Isr/EgjV4PJZuEPzz7x0vgx9YwMz8C2kT/Jycs//8kBed+flR2aVVyBFeB60+WkKOHKmB/4ufX+ItmAFQzGGCxgIxbJNsYKWDJiDCQlShHaQFRE+wqxzjivvLJBz1M8sQI9T+XM0zuj707MuzN/Xq96/8r8NqMFmMkchCQLuD7WVy/gEZD0hwdscIBvhhSTu7SFkjh9AAy6lR22qcPYZXvxmtkZf2rgEUQTICTA/+XU/khO8t6XlFPLothtl4gGJCvxxFHzlM0cFwokXTXXANDRsIAwOKetff1RODO92wLjiDKiNPnPALCoW4DMK5kgPkXcj58EFADo6uto6v7/60pb3Xnzz0rmZ5rZsEyahBXod9dtCDpuGo1GC3/ekYFlhUgmnt0QjB2G2mWASss85okDTCVwF+5SN/lrrV7753dtzQfqH9iKYy5/E0ByEWr3ve59O9vb1yGEuema2cE/B3MbYkVQPhV1FRthUCj0FlCuDZDSEdpFuPy8bWX7B8JKlL0qYnQRL6qzKkWVOmmaP+8NN1+Y3cFumWGNITLsOhsBziHCEnMbOGNjKp1Y7VWdLnV7ZepLiraJL/tc8RLAVrKYnUOcwRi59tl3w6qNcp37BtyndL9SREQkiBckiEgQ6d7zX/7mxwZ4btQjiqQQa0OZ+zpFdcoD9tQPEJ4jLb/JglIEHAX8ABWWnUY8nnAoiG49QDCQ0rc0IRQSHGQWNg02jAuT3Cj68oZCECHI6BBM8RBJVBAaGggdG0S6TAgnL4RPAcQ4tRATTISYpA2iQwfEZNMgppuekhsVEQkGNGR2cAgUZMZUgLcXHMakBOae9/b4QfSMaW2NIHpOW81EiHhhRUcTiGAAewu8YDoH9YJntTUB64tYomTqQEFvJb8uh785YNOsRQr4M4UAmZ6uQ8YqSF2nbvlo+52hdrTF+b6vWuteUV+Lm9vMhqm6jRdurLbxFQH7y9KO7uJWYGOanCzJ8QniFm7TCkJwzWAN8G/P/eO+mzf9fndhxb8GkNeTAAm/0po+kZPUycqZCwkOY/wOjV0ePnNGLAnQ5+Ak53XOs26m5LXPwbEFOyRcyWFFVDoZhij8yey5wpfmD8kC4WmKJCm5yUcTMgOnmTm30Ec4R8c4/zLWDEfknXvMmXOHNfNE7DYxQ8Zy2qjnAeZWze9QQjhMQESikYiSSUoGMsHWdRyPYrW8TKZxVEwVVOlZCQ64RXAdrsBFOGd5p0H2xFFCtprE/I6bxMYdOYLy/us5mz9JnK8GNvZBIeutXt5ZZf23+FDP55E94HTVUZO7vspKCpTd3LW0PVO6vVZAJ2JxEYCXi4hxaFSEsHMUvPHSWPOHe77tukvO0Sl9tJsgod6/KPR1htHoyWby/8vkzv2KKSVFwszu7vbwKyDCptkkDiiI+e+fE5twzAWgMIqWSCANeahSBoESM/zucEamA3klHYETAMhKGVpJMQooZQo4RQQKnVsIOrBCEptIxwbIhjmuAQePKF8KGESlXAELYh8E2Z+Uq7D/EkAhQB30EAnqQAEMOOi2Aydgi2CcNYShDYBzC3LFun4mnbDLrnZUaXSaP8aFCzKTPOCPEkkwgFRO0eElOtrFGWDY/wW7mwHMDg0NVkfir0Ahx12qpZKfA+UWToT+5yVaIn3EoODiXlUf18yS/s2xyHjTu/bYusgUsfQcHl4hza7v/Tn/PQbPF6LDRjIVI6jsxZyO66h2lUtR+HkniFqMVI5CUc/QU2NxabNh1NTZHb40y3/M2MsuLP8dUMjm+BDARluQbDOIarchoYYdRXfcKRxnXBfjhrvk/vYPrSdeSvEmXRqUWHPNRbDAAiiLLYb1sY8RfOITwfr0oVpiCZR+/fCWWQZrs81YWLFATtsHsd8BRAcvjBhxhzvjLJxRDnOBQ1xyh7rsCsRVDvI7U1zjINeZ4gbT3XQz3HIbxn0hJQ6MB6Z5xiQvGO1lH/ZoLkwokeYJPhfCRDgfgFE+FGyyTYkRwWEw3VEOcyKkJq5PQULSj9DOg1l+41AXq2lAZAoiMgURg5gRyR1wsLvvNwWCBQMAZ7wABxMZEQTOiPNG/eaCi1DOB3+LoI3mX4heitjgE8USPkEsywH1b1p3iAgw3zdetj6kQqAAEKD2VxhAvisv0Xir3v7WA/JKyOcJvNWFGTi27V9wkLK3tF+BbXAGIQN0/aQP+tE5PPPMOml7YFe/DER+QCEXAkoUMwWb9fvyxL7QDEJ89lMj+NnP9JwAB2MTAhk8+ayszRAhEHKJXEHU3vE42n5mDis6assGJXqOLJbzfC5512DyLE17u0r0n2jQM8QS4+2Z5jOOHjhAGBKvP/+G0cgA4Z7x7OAAXW3z61Mln58hZsr0s9AXhL0sPcZl0uhpGuNa1S+KRodmsAKv62G4mv+ttnjQmVnA21cpEIPLcYDVt9CHSXLLJaRjML3bCGSaQhmtzgUuV+xhxbWdv/xF5heWmbpEU+eyzn8LbdZS7aM/nPyPRQmruu7X8iiJwtGWMj2i6gYUrcGuZ6wIRkiijpdZsmC03QxgIna+5zDRk//BVqIVVa3i0VqrMIcgbSnvgPfJBVw8SbG0ONQfbuAIGjuHRu06zXDYUcecMOKU835z0Q033YESyn7hKA6O08iJ2nmITh5qhhgOGP4cKuljUBRgwWIsYEEMo7DCn5EUWfInEOHNY/bDJgSe2CKHRPdd0cAEL8a+NLPqmplIlOdQEH0yxHMaDrTQdmvOypcI4ci8M/WZeAbAx+JJv7hjHb/VVdXf533YSJAZZMaRpL9CjL8hG1ntvYwlYDXDvBUl4XzqKqnfEeI1E6p2eIqQnKy4cSOb//IocRoxppmpuAjScHlJHSYXkjyUVqaM/+yiJ0K83LmcH5P9E2wJMgVcQpuBwuirLMzsolCqFR42x1wAoacPMx/yCp1XAJFk/u/ZTiOMIiJlYD/k4OnUXJBtTwTb0sWMNeQiFNK0n/TNyPEa0o44aAab2Qkdk6iK3vmOWmFOXMrl/vSS0uSg4ShaIb0aXtFOzw4oEu64zAbMZEqyITt2CX8nFguMSTTlOvNhaLenMnRT6iznKbA+wl4vl1T+cgSGAeN0HqECn3hPbIjIZTxB6FZlBLBhfGZs4CeOEWXlC8abEV/07YDBzAUwyxO2OBTVXZnr6z9KYPLfkus6zlUbtEElEXVeGi6w6Lr89Fev0xDSzKJfa+nqPxjwJ+KYhUDjQLzW/gKg17xY7vw5L19r5heGMvZCFsBMAm0ddZHG7p0B7n2nOfZzWkinGPqu8JRcV3oOFAcd6unLOs+qlmzzMQ4pGaKlvfdbLwGXVKae+/feYQomR5cS+XHTpSW67IOirxOyiMfkyDRMOIPFzS9bJsaCCJKVCaVnBuMx1z49AIe8aNzc2p3TUCJ1UI3obrO6ae+7e8CUOPaTwhAyTvOZHdBkvTprZOB8aUzlNbTlIl1O2FzamG4L0z83QV1hSv8MyrFuOsXwVz6FRFmUIK+7ccVY5Oxg1VarYE6FbvtF7eAJStsZ/GaVLCZyatkPnAhKSJjReUtPg24Y3kEu0qfZk4/6hlzlt1xLniXOxz6ovPTBvEZ9JC9zKuAu80LdRgpI07azTKLc1rLxza9C9oOjYDLKBv6u4ky7snO4U9jewLmZsmUGYy50FprV/DjArK88V3bDV/RMreTkBJedD5qz3DKypsv+Wi4cgncs3uVKh48tdorGKKP9GCdKw/BmjFfgjIri/CiYdJ/GCl2E+0xkwl5DggJasiBTT0XkKFmfpXLAHgXRUpGSNZAecQLX2SAcU5/8IL/CuPGdRSl8OCYJbadushgpBTUHqWcmCiKmHxc0kNEi2Ry3KsFfp7Q3C7C+hc0ZyCmAEY1UcNAw5tuHlD0xGxp0Gg866omiGzPnn8DxTH0JuHrRF4KkBJxDnaUgU7nn4yqZsiQNBCgEC7V1+LYzvwfYdvMwyb7mcvCY0WHWKudelsNinRxYcxdjDNVNqgqXLS3DlPo0BhmgV5mbMZwGnAbOgcSwomxUk6NVb1LUrGIxg8cMUlWZ1EsGxrM9pzc+L5FI81epdNN/ZycrWOFl/GkiefnIgDPbZdEv1MtMh3/FV+NwrMiPxkoSvLJOHinLT3a816zZULvCeao/OMNo7CxM+z8Jywrkr+eoI/y66idVWtQZDNZRkPRbORtnLduZRCf7HUlVSyknXgyXBqvqNV1ehTfgkeICrL3LD4cTYTcxdgb7HCd/WVSes7xklSfUAa4Vvu5wgBfjABjl6xDGe/C17+uAuZYNvppFeUIQmDjBVx2KISiUoKFB7R7wJE4Zejrl+HgJ6+aMNVNuI6NRg/axt//qGKFmfjqX+F/nX3/z31fQgw2hB+7IRi9dJiunidJN0qZehw5NJpumWbdu7Wb6UIeNtqjqHNsMWmC3IYsNO+RDRxzR77jjljrppGXOOGe5UaNWueCC1S65bo1bbvvKXXet97d/fOOJl77zJt1mywp5qbxbJy6DctAuTscfOrBNcSZYwrxQDhrWmyhMDTapLMzohIoAGE5PbRS2T510Kss116N7hhdyDZGajruSqaE6bNYV+aXxCrjUenNbrKIEVsQFiA2qcOTJWMW32sDsD7NOIgJEoMslWF8GgB1AA+DQKeEDoKsNIAVAHxAPR/fPBwDAdPT95Rwgcfd0gp4KAGC4rA8g+odyIAQccYIh8vMZZwUxOTVS0pHhTbLZfK6c4lRa1Wq7VrPr9Y4fUNhKi9so6UxzmnvW66Wz1Q4nAy697LMwmhlqLLi6dC9Wa6l3V3YXfLTZLoyVLgNb5ndRR1hZ4EQ+jpDtJskxDqKI+Ypr0ZUoQ1KuBlptcGPVqZesgQkmMMNEpprkDtKkDUGHm2uyqcimMUs3J5rJdLMYoZker/Js6NXzwCJYwLGwmIXwAfPgQxHUrCR93whFS8J3hkjM94FQNMlITjKRa5KO1H4NGCOwKR0gB/8P/mf8Bvx6/LqL/rAJwM7FO/D6RIXn4hllxTjcc9w/uFHcUdx+3E6/NuV1JnXjXHkVODNOgSNgX2Gfq9m3YD/FVmIdU5oeC3gH5iCmA9OkOxHQX6E7CtB6NAZ1fVHUYdQwqg/VhNRgRYrG2ll3bVXf60BekSM9lDBEejbbdgqZlUpZfNRy4NbKk0+nkA0a2aidU3WKieAozW6w2WG2OMpWJ9y2LhIjTrE7zxl+40wX53a46jonbeSNfB6jVjY0NgA/gALQgDhYna2d6oeRbxcKKAKHQr16eAWwqIi5jDBbGE4oOk8bc2T5i/MlKagq3Fc2tGpP7+TikAUQJkwRsUHEmgAumMEsCBgAvD5RiJUDGeEgAOmmGoA27mgJA1vFzxbXN22o0V6nMwVL3U9HYSHoIirsEXHSLcC5f/Z8WAWi9liCzx0QEPvm5TnggwpojXEaALKZbBh1KBpE6+zqfmkbuqNGIYI00Oc+EiU4v21SgfZmGnu1sCOH2MSVg7hnmx+JnSoYTblQdCnrUYiC2HgsWmjhOUHT+e6cEwBG6g2AowMPen0+lbqgPbMTwOySXvEQRUc0OlEKxFhKiBM9jAxNomTTBCawYIHBvk70dwDXAdwCcBvAIwBsdgDZAHIAFAIoAlAMoB7AbAC9AA4BOILghCCnQLT4KkJEfU2DqMAy1t3wYfQlP0a4qjyUQCEUUB2ass4ZABJgeCQiCRJxOh0xqVSGZSGvP3dk+lHkoymgv8y/O/8IXAmMvinIBCasCbdCAMGIFZwcHsTaIi4l7QA6e0EZdDkYegVUKyCkHlAhgdyRDlkJZJARIMASTQCsZVPRgq3tVdfHcHKT8kDVg6CFXU2syFHWAQAQIjSzpD13dq3dW7A7MRq/FHvQm4qVG2kSQYCwEeYORew9g7RkHg1Y+y4gEIElftTQFkm1O8z4STD1TgmSkp86QGCXRuLtNLc7eabtR5fvR/qtFe1VddyY3JMaImUj85+iOAivr85po45pk+urjmSNtDgVGq19IftS2qNs2vGhsK8tdrSSCRBSfwPaQfX37y4ciRClzKOhENgxjrr1UGSYII/tIX7pIqYQFHqx0KkMpZ4lcYJ9Cr5jVDNzGMZg39LuX9o1oPyMcNktOYpyi0ISEpgStznpZPbMcKSvJfdTUmgKHonkFzgUBHwLg3gLBh6WhOgE9eQj0dEmF3IvZTyyQyRiW9+nkEo0EZ4IyGRL7DYymdhTTwuyvt0FCACSvgkB9ij658JQozT+RJi1MJTA3e3x6Tww38PiLxx/j9xG8wMsRfqRsyKsXHfpJ8XQob6IZyxcmaAvbmvAxBhgbzikbdlq0jOeMakFpj6zqXkStD27raIK6l/YUFcBv8k3boSStSLw4s5JbZD90tQZXC+f3NYE9le+iCmSUDWFEIXwhCE0gssLaSzyHgSZ+zcntLEuNdj66ivKkypRtFRO+tl6K+QSQPy3BoUBz6DLdP/6z/9e6fXFcaj2xDPPvYQphq9Fs9WDJcIVjiZID5RiszLn6LazzISOi80AOwcCaUNbGrEeafftcfslFMRHVgAbTILLZdUiJGgIGkSym4+AmrrSF8AOTnMaf2kDWnwjEv8JqR453oGB4RyLG1r6nvGL2m4vgN85LDg4/x7UqYhjUHZGcIOrwJ6Kqbj6wCjOXFiomARFqUZUZtHqkxiiFglx+gCcIHTrwrrqECgCQcACJIWS+EDCQhs4FA3ahJ+r9MEQOTD9VyIsmHdNIfCA7fV7MkV8ZodvBc8B7g/+a/dPBfajnHci+t7WggPelvYcQD4E6NczCJwDDeHaeeCEdd4F93nNc+o7EAC/zPw0hFQEhfFaBxUZQHc/txaSCDDAAoClB96f4ekD7soMCxxJKsVMm7xvEHl58/McnSvz+0LQGDQRzT+HyDucdwIvgsflxfJEPCVPz7PzrmPOi6XFMt+/x5F4ZPS+sCV4jdzZswGgF5qw3vG8cB5n/wpeiv6aPPlKYbdjAP9/MCMD0rtDAf73W28pWQN+9hnbzM5NcPyE4irwAgLcGXi8m14B+nCrmTV6rxPtPfX53+33HXLLSc8iwF23nTfqhDf2OWPYiP0OhEIACY64A0FCRhGMgYklDEcUrmg8sSQSJUkmJaOmoaWjd9Epl8LBuWiM7NJlcsriky1HoSLFSpQqV6fBBBNN0qRdh06TTfObxy6EgSGHPfHCUy+NuV+IB2b7Iyw8LNxfoWHAYPTwcM+x2Lbp9afNNtniKBwUDAIsPKIgdCFC0UQKxxaBKoYIn0A8oXfiqMgpKKVI0MgslYlVGgubDF4ubh4F8vjlcyhTZbwKNSq990xtmrVoNUW9qcRqiywiIkKFa6677KrfXYFA9ntHAzoDMLeAXgBOvAzg9P8ArH+CdQQADoDaN5dZUKG9eSKLmr2L6GoJvQJhIlTAsyFQ3nBRKCci2hfcCAzmQBeJelDQUAyFm+UqPLC+FTYF8oZb2gw6p/gVBvsY2GKeBWBelBFCJ4hIzU8xlKSdYkvCIZTyZF2Eg84YUxLeYiElSHU1p4GFwqlwUgMlv5B4LvQwRpyi7xM95JVQYqTuSgluiRuGHiGxmHiw9fR0auMYMefNVJsIAGq8bF6lVXFCw69ZPWySQgxH0kCGFrO4hdJWbakSIZ1Ziz2qIjBUc3hRJEtVSDsx3hPAMoVzEhnVj/RG40Nzy5yRZ8ZTocQLHjs0RxPXxGfcYn3JkDCDjVc4YhUhhuSqtFeqKTIUxhfBykWkTBLHcR1QNILunM+I4EaRV/NSisKoCuoR9xNt4UOOn5Ih7lEPRAq7Cr8AL8phRc7qrmL30WSMowW8wTXXW3U9wfujqXAJMQ7Dj4bnpdKUYAgbU7wQJ1hyEOU0g2OwyTkNX4V2OQEjn2Jn4J8TZY/MIhHhxEQ8hmp/bvZ3gl1LmzCsfHlZ8H4Jz/jwGHJ07QRijdSoyHOvkVjf/9Fld+ipqOqbAaaCPe8Ubr2V4enOR5TZBpA4LRvQ8GZQgfiviTVKs1/f1a4IT5+o3gR1J/+VzcAmGY0p9bpa2pfOVu2iTgdsIwDV17RNonTD9HosXu+dv6/zxgzkJ8zBFKMtAA34znPzZbFPhQHWeM+5aIIlgfIEMdYTG3JVPKsBYE8MSFz6sKoo1NgQNnBw5uOe/2pTlPOEpX/iWUlizSv5ScPOedX+eFo4Phfn4RK2U31uUoJEonMXOuqxlmZgN88OrDYgV3rmnvMPShoYmT3cflrrrqnRV99yvPfQH8Ehi+pTAjcHfDph4OvG34+JPgEOGYGfq9BWt+9HLK3H/Vm2GckaRiiwvBsJQ750ldstrLnfMppz33rldh4X2hgUkC9fMT5QYXJB3/DSp00012jH+RnfGYF+cs6Y5Psi0zI0D5nnBifI49PbsIbGrFte2jbn5O3pzIhiPIQbjKG+Hj8XTZXCOMKkPgpIQGPEcgKS1I8MNBUb4w7YRMmdK+iLQokXKB9RCJMiGPkRUsxO1ku/a3u4tDUByKd4Mzn1QE76/ksdXYgUCL+jIZunAcImlp4XFb2fHsM7DoMuhp+0Z9MshL5jhlexCd1GxcF255Kq1za3XqxvbeMxM/XR368NOMhF8eGuZ3uyKXhK97Sv+v3VXoRo43use27ome9MoqFT/IFnwcp7pIL8iHl0TkZEdkm/xgMUo9tg7TETH43yNTx09btEpTfQGzMN2X9P2MTRSdHatdMHHNCVt9Il4kawiLNxIixcheAZseUdPLB+oeLZ4dJHo3t21Bsp+3dgUZgxVWqo2KtfuuflDXcb8kjDo5CjgjfRfGu0uyef0JiBpu2mYfzf41iuig/fwZ6k4wiNQUpwcFIQ61RuU/521DwoR2i3viub0Qk3HRG2p4LHueha3oR5nMjTfkdDrcqatY/cTdYgO9xG0l2tRTnjJENRwQLlgvTCnB47I/HG0D4D0xgcGAToOHTRGRkCd79sCZ0NVZzH/SDI0SRqq31odjAASxHN9r343CHJIPzI+34t1ZT38tbOV/FNDYr6vngfuNYK3Tz7TAV5oeQf6bGYDEWU/B5ONMxWppzFO5tryDsp+9YJnNfB5vaByNWY6oxUEOuTYLEThJa7rf35q2OVbLO7qXNtiLsAKf+yCmwFZx5+8PEqdD+iOJctHOcZQCKkMa7rlRp00mxirExNhlB1cNMxQiWZRfFpXsQhStel7XAMq4QPg75eP6MMubAZRcGbaJgNziwsAcoP13wXbrIdT3IC63YJ6YydjWZKduj56Y/mEfqooA+KRDxA+URSdzNrjzs8ErakvyyBmNtBXWlYCRXastZQyFUQitOiTBjNx+9YwzqWFYcjUduRCTLmUuCz0xcomitxHco/A372GN1wQ8jD+hQOtgYPv8bgHMv5YEgL2XIBlliv63GvZuwWOdc8+vuvPcZiMypzgoj6wulLej+l2wBbYJOCEQnHysuWZj6i3GSoqh75/dpxUACTKDoqr/1ma+Xy8xiBROiT/Agt5bM0Ui2YiWY87ADN9z7azU9YBU2hQpuyf0XFaPzh7O4JrOehHHfvFC1KlIZS97T+n6dVK0M2tY88TJ2v1FHtOC3SAdvaEGe7riCyq4qF9eClLBRUl0EYjMtIZ/azEjvfVb4N+5BnWa2jm3zd/qVvHDvPzVFydHBSabvawPHQT6afnciTrruVxYKzL2XVzBiqc8Lt/6Xa1n2M6q0V8vdDut1UWu4wO58jVFTnRfl6QNmYTlDYgaexjPMFcyXAfeMRfQEpBdtl4Wq72Dz/qmUTwYnojvdQMSLKTYWvB0vscantQSL+a+JTGYC+ebdtQDH1JLY3Zm7+jxlk9+fyPLGESqKBNgSq2VVtoYM9oXMGBqyaWAoVKdRTLtJ7vuUE6Sla695l2/iIx3toOc69PlPSIiG1pRW4pzVRltftk8ZD0SJuXUPNCfkpygej1okmdv+MpsgIk2lGhP62+HADeVgBVXaTgfBwCxnZipH/YstyG3JJNO5S1nFlCzmnNZut+92MespaJwxOYnLeJeiQuucR2+b64zKUJ4tDXibX1p4OTQFGToaQYPB6qbotPrNloPLv9rpJgyI3h4hkMg5lWaUK5oaJRKYE11A67Ubruex19VD+WaP3s4uM6l4cBSsQa+CXecelxtNF9a3j5MulWometsokMksbBZTdz+mDgmv9Y4e41KNHiBpE6UiIuf1BExx3SL6N4/XYJa04BsmcvyODl6CfON8RL6pQP7q+/BksCcYPkXvhFJQTgEXRQLW7nWxyGvimVyGz4E+ryLazlSYU/MD3lP1puZNKMM11MPI085roechXzLLOaBfNM00FmxzWmxOWFvuorwiw1N6DdDMEFSpr3RWi3QMKSx/3FYTb74pMz4poFSibLKP80+si6O/wH0lYtJGw1gakkHfLckxBdPx4TcbhSHyMgb0j4iuWPHAEBNlBbswpihxFkVLNx2y+8866FVXmhS2yV5N0REQWTCkLvjGS//TJLz/OdzDaagcYYpSsj6Hx1bqWjpjW44R2cjOD2Op/4X2SEHs6yHdLoalD84m4KfhhwWxEp5BXsBf7rAr2JAvwppZ9OFVCfs8QW32Ormm3XqkGZrQ8q+MfrXLlGREstuE+Y4CF6av0IVeCy73KkrMsqPLSVuilQdUu+1e3rcedHQt3qNG59MWhjheMT5XLE9JPdRcHYpR3+dg2ZRcPhSdxN8hb9r80JE+cNT/1T4x1jEKFf2oak/mZj2DzmXrTgkhME/0GmlbIl/riBIuEQ1wl6/ij8gyiSMLkacL1Zy/2XXLxIamtFjqzguIuiiKJMBFaKzPX4dj1/KKFU+FprVXv4gmcaS9z51ib3HVPhJeie0+tJKTnSAVcI7sJ/NUDBmVcm6QChgMRTJ4GdzZefCtqpv+xv7s/I66+9s2AyvCXsTNFJoMOT+UQd5xLHLqd4H1viEtWm/Jvuwe5NLTJe5z9v3TQ+3cu5lxEzdsYUAilKqqpDVKZIyKsf5dkZ2/JRm4eva2pyWJnuXXA86Y8SNKEYZKOZDDchBGyZ1yEZrJ5OD+qys0AWasLunMMmaq2XMClxEwAC7OF2fUc6Y0iMfw1Xc4O5hDLdyEzBopmZuTcii/SeJkxIkfMS6u+T2V7RgS4UUwjY6hifHV/NlqNDRhiNh5JY+Ob3YWxxcao6ijM/bFG9yLGpnx9/nLO0FBBeY+QkllOfpt8Yl6ns+qexUVn7eL7trNS6oNFUFtoKB3doiIxN5aTRAbZxAmZDbRJmXnGrFtdiBcWGTrQ3ooLm5Yljarzxl7+6XUVNDVPUBCHJ3wyMCge3CKheVvEW8Y/BCgcID4Iv7vOfiA9da0xyvih95PZ79e88ZeJ55emlKVAymDpHOQ8DRMzJXYb3y7A0DLQHyNOeapZfoxVfJFwIfS/0rSMCV7ulOe7VIu0ghWM8XmgzgOQ7/ZXchO8mS6N9zeMB2cszcuUeMu5WSnZYEPnnjdPQbKNdsYlreGxg/3nBeWF8WbGMaX6noNuknpakPPowQyowg+aB8G9V3JIu7P1PLo3zpWv489uaeHPzte5TPnYeS2rC4nWig67cs3cudSkww6eIUeVIDUnckFVVTBTc47NHRmdGOWhbbWI2eHXCGY3N+PX49c60mqQG9uVkzENhEHLINh7RckindbJ1eZMD9oO7Q+lOfI1fAqWD2LaxpPttk5MPbE2/XVQXl2JuhnLjuHzd/AFMfp1vFmJVIFcazUpf1VZU+XiGnUNnB+UVUAZck5B5tv4SqtJYzXJ5aXqUigYjrOgdx1tubV9INqYzZZZmZ3FE6NnuwwmiZU9f9mnDnNyDlfhq3AnruteqFo9zaKRfiIlV5vZ8NnAoGXwO35Kc8p6/kpbX2PA84HEDEumOejcaH+jOpCfBFED5wVdfy5EfUqb8IfJ/ab+sUP3R5TMkGCLeG8e3CpVL1LD6gFlrJ+P0CzoBYjdkmpXGuD3AU5U1DJrRBdrOyc/zBpWM8hhsbuskcs4HB8rsOLA/F+mMOuuT12xLxAGpQMrOJEZQQ9deHJvSSUdTWTGWlbtHNtDfP/enPUdkx0aHgKeYVeNIDU3clF1tVClVbrWFY6fs49T7wocVxLIuPJ1AqJC9WcG/n7oC6PTzWfucHt5hoUB7u+tU1ffiX1ONOu03Tb+i7ULZ53mTREJ+YwqybLxZaiDNCw/j7+D7+djQ8+VIxUgk6dZ1YfVFqss3g9qP4BtyFcqjC/Ky4srLuJ7xU7U4W9a45UtmvFmdqTVaIq0mNna7HaQn7c9c0PzJLMUvpLX2/1+n2CzI+tbxSTcNKWJDspT38wDeIedtQKjaVRpPQ6n2wbT8v+a2MV3kBgWB2WmOlR/KSsCv6DDrxNSofougX3IWxor8Wfp2a4pRzGY/1dOSL+SYbl0BS00FMHAn4LLLebwYV3KXnOYLrsdZOdszzzQ0uKPLmMvVOHDfYNVaKn4m3wkybxD3BflDTaOy0uNdNTkUVIEDVgbyRdjR7VE99lCj2iTYjcw+7lOqrEoOzXCYcshQdrAoHUwXk/Rg3Vgc5V0SoNmXHGjBl5Vmy2bs2NLs+KtVqZokr0ZMgaurIu7QnQSH4all8A+oMz92hqZu6xyqwJ0NwdXfxZ3lewjPQqfxlHOV4QppijC+PBHpGzSo7DlwvQZUkudiq2avNAWHvE3GQ/pakRXuK2WH6GsVcyUgXxg2D1S4zxaM+SeMuQ+VuM4UfOzWypTFaiAO/DwQMqjAxmfyWe/aMVXMFvWKr74mG/lw45pGTDb7IBzKedSTk5NOZoCl5PlDURpTagzqSI8uXqte0L+RavHFHYO36wtURAbdA+StxoT2/E1ZUw3IQf31fHgv5BsEV8iXpkw5glzJ/0iHz70ZQZTJLkmkeh0VmMqNIzVV7jBlbxxkxSr+FdmZCnMyRl6Gz/S78yJKXTGGhPG4RgTtGZiOjYyp0qR2FJSnjCpXNoodfWQHe6T/ar45cJNByu+SMw4btKpW82tN//DgmusJLdjkYVR/s7HNbCrpk5cKLnYpYhQ3YkscDlZgU6FJCtZZ3z/yhq28uTB6GhHGTTf/Ba4YwxlYd2iW040O80Vywt4vbwCV2xa8JO89i59LkmcWyVPbCorTWyuksGTMVk5+5JYlkVPSO5l53s87EB1YjRvebHvWJVCV+Lr7i0TNWXJZCd/luP9+b4sQzBnDczcfaOGXqJ0lEn669OoExJ8/kR7Y31TV2ZcTaHaxRl697rxchY9SXuF7dVUZPrc5iv0Rm+VaI45Oysuh2IWaWYeWzoDGGP1493gArMyPZWtIAs/R6PfDGW7pIhkEvsmuZWKJCXxZYS3I8FjCM1Ur/pBYUgzJ2/64sO7KoO0BAOUMXcBT2RVq0S2Qp7LXVjXU6kL5dljGs1Ydvav5avz66BQNQ2f+ABTbf21Ln0310KMNmi3VkbmmQPUnFpxzF/Wx54IVNlnX0cKLjuC00wZIZcEnDMWwU+Rt70PimqhcWzOvEZzsWpCorws0SzhrmlVfnUSjnPV6qautJ9h+e07pjtJI0ymYS25YMKKx4eVdgdW3n4rZFgK5kkGIzJkb5NHGP04IwpbDr4KcOL2Vz8GQvJQfnrh4D/uk8zdvzy8AKncNIOBH7Eh7eeVfbI2GfTvsfHzYpVN7YefkJUjumxYO2ay2CyNacUwIynKuvOj1PJa2Q0yprisK+0OmpxqsVobU4uVGxM4lqPrQqJG1guSRrqKS5PM4uTNLfJNXiXLAyLGcirkkubSUqHKc6qSoCR4ZWsMNj4n4PVwCrCxQW/nb+zxcgJ3XVgW/z6y7J8v4piOGRFE0pXDCuRLo2o9Gv+TOqdSkdiyfTHiSWUy78QKN6SrrprZmpfyZ4q6EIotMUNnmULBVMm4WFFcQD4CyB8r8c7oLRU2+WRpsrKIB3Eu3y5t+0y5wgMZSZJc8fTUa1ZJJmsjGTdeZ05IkHGWpg2AZ6w8a+rCUn6TV2ZS1nDI36uyWfHSTnbA7WYXVCeLfSLhngeVybNP7uTIJAmFLO/qQggeC7NNbZxvPL5IkJ1t5nMKfTXK4nRZtjh9MccmTmfF5WdPm2thlr/P5p7l3libBoNcqaMJ5t7GH7F/fWLJ08OlRfEvnN2TlCp4PBZtR9uw58sOlqKSxuZ/IUooy1gW2dVgTN09jmaLGo/+3vtFbk90j4W0XSA5LVoakfmuOl4/NScUsk+7Kph35Lyg9pg0ZncUN+Fqa8KjmVlCwyI3TcPzoVlp7S4kpidljiiScrOgLbHsbGJ8wunsinvCyPd2aorBzjymYZojjdzMpT7SvPuqLlkxGrZPfieMEfhm3qqWkw2nDbibS1QGaRkGPrldgmyUJgUSjk9aN1GqnTNv0pI7CmxR03R4envXqGgX0UA4Lto1ap9TNvevDsq8151zSkE++86Ks/GXiQbiQ3Z5kbXDGqRYrygrEl8h6YmX41ectba2Z7fJqZZ+2fiy8BGSnjQiLi+VLVFQrRXZbe3wx+3PHvzwKuPbV6sfJK5+8O2rjO9frX2AO6MIKODJ7RHcMPGPM+1Tt6dmpOW3Paz4aJr/4y7vxlSmJYxwPO6n89C9LRNc3ZmwQrVC1b9N3aeG7t1PquklSmdimzlYEc21O+iNy/2zK7HiJxUL4FCwwDfKd5/elFx1IbFsisonHs/bPcFfnEXSylXfaBLSFIm/DDcHpzyyipjb127zddv/76FSBcomDA/LLqiuLT7J4busDFS/dLx6jVZl1ksjzF8K795JS0yYfCqqaEiRnz2bh2TzbbHKuthSotqlUm6SrdUJyGdbBhbeU01Vufy3IwwzqlIaUG3UqtJEZ57eVX25G55yJ+1OogJ/lANvRqjy/E82ntI+eoMcX3+jmUSQXp/8I/+uRPlRyr04fCZrVcSBOH4uJs/flnGoY37Qetz+T1lszr2oiLZkiO4ifZ/GSdBL4kT/S+B6SUGGp8zEddt5+sJ0T1lZhicQb7zrdt01Gu663HdBPByociV8NqM7YZ16BPKrXZJ13TMknwVPf4r0hjAzpDXbF9IWPG9Ik5+IMoPbfNnBrWFt5xMIHRi0GqmRnC3adTsyIWivpYTBTU1ie3V558/+/cUA53XavnhiVv5vz6wuUxuDxX+UGN1vxn+X+8pO+hreDnuKOZL01ASa48AUjJ2kKgE72OOLShNzNBNJmrynz5/GGDM4MVZdXNML02xlDySOW9nCpu63hurl47CxFeFFBLAMnFo7J4z2hbQUV83mrF1+et3FXqnpZ3IbHBqIE5MuWlEZ6CrmO47HIKF6rgUEmXG1QSXt90tJsZkZInaGAnPq92qSEwkdeEymxoF3LyMTPW2WNSaeo3OHJVlpvRM9hPq3Zo7Wep/u1ZpZ7nM6/rahgJyyPZMhc+QkxFTnq6j+kbzo9MxxvGRP6MyyGdErTVlVEbBxgO4J5FyZbj3p8kx21cWBbMicx3hEs0uT6bbv+JivKQyvziz0VQhKi6sEIp9Zx/BGLcXwf6LbkqV025tchqVJaQnKepCs2ONg2+wZ7I0K6QPTa4XOZA1fJVevtNFNFjOjTiWfZgmH0L2uwtgEH2VedWfUJ6meqogMlgu9e1ZFzBc8rTssycyYVpmHb4m0vtGbzOIwX4omzHNMw//yZEBOOZTOkGVma2Or7R5RXaka0BrtWu3TrkHLUe3Yqv3Y9QycHJBdEzAdvReT1yk8xFBCR3TuFMnzIOmbMJFQbN+zYAEvRPZ9kCwKJ1F9sGiV2MKNjZZE936j/v82zGKaueuxP6TPeaHbQg4S7HgSvuT4vNdrs3wyMtEGd8jW6j3B5N7XxD84isKlk7gWQ57AieOrK5Z8ydK/kDHPzhPnAz8faXEsDYnbrecdbFUxRu3hvS8cW4KCBDuehi85Pv/1iiyflEywwchb5UhkscvBKbmiVFyJLHG4OMVXSUqhu7hI6FbyW4KdhtRgRwsc/LdfaSUAYWJ0VYsYDr9NOHNPIJTYF0+dDtzQdZAgZONTbHMWbGRjMTFLhdwdtZohCxaG3jnvq+KPFKC+CyUFmVPcgkz8aIa1fTZT9XUSY5tNmAeiPET4b2+woEDFHc1T37kPm/9TTf6rpJTyTIS5hbB1y3HfZ8hReBskv4j4EdtS0ZfB4ktjipbpaP0r7HXrp4THV49G4m7Y8RXb8F04/A64+ZZ8AHMrPVYZHrNmKdGZpiVbiuMEqg1RqgvJTLEuwP1xlsQi9kiK+7Ta7WG5The9cOZW4L8M3Vc+s0XZ4hR5hL8mwsXXihWfCcVbR1HKuzLh1t+0PrNCJ7urRI3uE2sHXdeF3Td4cc1qTXlczI3pgh1yT1zkP+5YgfFaZJwRfi4mxahup9PWR/DWdBCdJt3nnnjl0wT5pUSmzpmh/OUwNbriPhxQ6gaZfqeTVti0FaZOoG6kpFA3UFmUIWoKZQ9lRihPxcxu3TfvcqpcSMcaKSNBsH6nCfu9Eve9Kd5tq97QECWUusFjIxWWh2G/05q1Hzb/DGVzaAOFRhk6/GoBcqyqypWdxLfUjBM6MDp8jM+g1AjC09Ue+U0B3Tt33o+DcSUU3XEKnZHWAeBG6zyvisQWh8GnqzyKsyqUZ86Cw18lVta4fUkCS6Be6MAIz1A2UAxatO8S2F2WgCSQk943Dk0iJ7xE8HIQt66iB+fryprGqpiFWddbMiURmd4dmyq6OCPmAxokDEwZUEUp/WzaM9wV0nXnr+kh0+HawMInGkQhXxVtXmgek2FgvngZGEyYxVAoFUBhcqBQhTAVzxSwQ3F5ykBfyuqpU5Zf2dwq3lwwNV3Q06vpurtvf9c9QB1izVGzuX9fO36OZrxdEJhqvg2tm8uu1CqB+F6s7ZbtxV/LZEnG3ee/lHVrxW32yEfJ2MgTe+sVC9Z8wDslfWiPhKT3S80eSk/x1qxZoKg/fSISm/wovNRtYl2j7CX/v3ERuMxr8XtljTpgvU+cRAmWBlMmJS6ifxvmZH5Ph+3vBQuZTsaiYiU2UvtPgdqYCFNrqD9QUsNn7V16yWgS0NF6yokgQC3seFVQEJqSefocQbuDpl5ZyQKaZ1W7KVD2mrKBYkRTi10TKENBUyirg8hhaEsJKoA3Z6mrKakoHrx+PDWZz2gNUabmtlTUwC/Hk0zcziBWlnV60HqW6l6Kj39xJOTLE7j5Q/N2/sJqfKwB2HccV+ie4Vo3BDKOf7m4ja9OvJw3NNeLNIAeTcSM+jGjSZ9pmD1Q/VOH+1a72+jUy3CeUKsoJyIhbtVToUq2XndVHV+vnWvPDuoLqi/xEio/FftxaW9kN7tRaT6YQDbzeRmk9vw8QnOUfWl5UCbcuHkMnS2NFggrRbzMUCtvLpQN8XJQR2b1mPcnhWbm0TR61U8WpnYxbbHRwX6vV238V5MDjbJll8guVRHT6CiMifNl+PRlbhzmjjLbZYzKfDqeFDXQLwwV+BrP+2PI+l0qLH4dFO/l5uDYgbnPD7C4J3qITe3dpcZJc2WBkFnKWVc3KzdDz0cGvPn9jaKafqJGlILxU3RjmSgXJtcivzkmiz8SxWd9/OvG8ff3Yf3ztspi3Cg35pbshsWMyHsucGJwM25sGv9AYsb6l0sNBMvYje21tMv5AtWh/FD4Ztjdo6os1/RmZQkFrdzddlSUaynzCjTz9UqXHat6YklQP2F77TY0f6KW3jjvv2vGyTPzE4QVuXmBqrel1NouLQgo2jPSFR2BVk+rtUMaCMg70jPk7aDwBPZeU5XBUGUyGapBM6smpZpVURNsIZlHrkrTjFOpxmm0QmFpNIXcptVQfF1+1j5Oit72DLXNlh3tj+XmNpeGJqq+wNWNf0GB53FCbV/dkv2gOriLRqfWJYYEguqj0kLig30NUUHBgaSQOjpNSVgZVvDIM8FI8XZ58h/6qOHdsu5d8WnxsHs4dkk4nx/eH8v/Ktzesw7r1wmihWF1teFhtQVhwmAg0ik7ZTuByKf0yfqkwvWWQVQxk19Yv/g3J5ptcfNj8rO8MQE8cwsVyW+foM8lx+dWyRKbS8sSm6rkuddIM4TkGRm7Y/YI98uWTiNNFxCnQ/z/4vT4sJIEiTgjPU4sscc1r5A9/lF6bu6p3Jyvoq5l+069+e+fgoJ/JuYF8n/Pz5/k0QaUygKtWjk/V6VRF6pgqrUbLFRC2N6xajzB91UVWiZe/k+4g30SlUV6y8xL4/VZQ0c1SYrVwiUhm/rO5ZLiS62860Jc+9ecQ7nc/bB2ry6TkDIbxa/s63FAvlU4p6o/sHwSjH2VPqc1Ppusr+r0KdZNniyevvMzF3ZPSdowr3F9Ehj3MnKeoZVmS46MZxWirFQyl+T8/+4TXohWN6wzcmvRNipJEp6BdgStMkY2kSFl4OEP+u0s9rWcPlxv/DcmbFkT9eVkg9XwalL8VvzWZvFWgpXPzbtGnKGgR3e5kjhdSZpukXONOwkLFSjAbWcTZiseAy5wcB3jplQMwe+2cNpyfL8wom2KcsO8tq+V4xj44pRpTaZCy73eJUjhRNIESBm40FOOXOq1rw1fwmrFzRb1rGZ/+XKPFYb+j1BsRba2KLei4NrAgrNQrYdW+Vb52HZYJYdV8CbtLg1WnKtIfVlhqhC+1DHw73an659Qhqhq6tB5sUge5g71U/ZQNJSNIo3aSBnDN2O2nGdeq+vZkm2qJZtUhf2FK+DkM1XxJn99ErzrMiP55lcf39THc8EuT4e1+QNyJu3LgaKY2PydOUgO9mbrQW9MrFqaCW8siq2KLaQdyh1wJ2vVqf4l2wj9275adQqW3A5oHibJ89TKQgxqBuuymytJMHO90prUvg2ETnVLv3lWqGFfcGz6C2xo7HWxUFoBZ4YNdnHUOKdD8naJQZ/njHM492oXr4r/g55pMCR/xIsf0yYP6Y/3cU4OSE8MRMcYbGKP4fC06C81PhgLDVo/Pc3RzaFPgambaXQdnRZGL9enr0afGMg6/fWSGQOzYPpp37ZZM0C4s0L2PMR6riiaZ/sxF/X6g9kHS3jR/JB8sK6QhcrguwL2zvDoW/XtXZcd/IiJw/9CjZbJ1DPPJRRD8maRwgRaKyxVt4fOH2jaVe506Vz2wMxX+taRedMn9lQSZldOnDsdRDsEzHgzV5ps4cYzBbgNauVqWHaX83AvJ3L4ahTn1V55nHtfDXLsUVwbh2PjRtlh9s4K3vOQXJMHK3+00h4V8Pi8dPAZIR9XWSJtdykZNyWd/duS/cXAmsWDKg5lAzWYUPFLxz2TTERYTSJTN1ByTQPqIghwcHT77VpzmKbb6TDU2uaEqLP19jQdPLdn+Xx/HKYGEdlmO7ifU7BB7+0Xh6HeUSdEg8MxzWSqMKw8hWQvchh7649OyB7YHtP2XkQ8O8waO8JYCXQ1G9vd7GysqbcdcjQf+0A9zWVKRj3NZc1loY6Hv7EzNMJJaxHWOg7CxLtBkwu5x7sc7SGEHOsN77uF3S1Mty4tU87yepk9ODP3zzozD8g6M4+h3OvRD0A5xuchF/LFd7nQI1BM+y6BSjnsSe/Dcq38PWy2fOKD3kIu5CFvcrQnYDnsQW/CJk7+Dkk1AaWaAKoJpHAydbwUYa1EMeoO70qjOQcBzztDfv5FUPkFBwLwwqvwouPx4mvxByDtw7OhDoat4P8fVbVNDahBtV3tUD+qneon2pXgYKs1GLNNIwPAg1bJdpAdGPkRyU6Qn8r177JGnGFILjjDwTWhu+9bcWLfp48f4I3/Zw62nOLTgG/Y23EQysf0fMxtn3Trzb4O7vKOsRtNzbxpjEY978Zbw+73+2fg5wMIHMA5KGAevz5AaqKarErVfLVy4/WsmzKhM6xgv++f68tCfajaOq9lAh2C/kTntp22urb8L6ti3wW+thYrBfPk1ci6n02BpxWpLlWhFntAIWwBqC5V4WFjwWDOXovo9n+dnaugjqpN6oK6697FsCkN92To8/6cq+qo2lQcORU01s72FdAJNuB3upCMD/l9HO0LHvhX9cfZxbif9f9cQuqQ2qDO849yBtyca+q42rLfi1hb3tO5OmkTN2oMa/YJgDlhhpW2ICO58sYZVLefD45Q5I9RVAwsPTiCf6M9iqGpqM+0X1bYp6KB2+uXAnpy607Z/+VrFXHygpbSe5LU+thVB6xKBehuLeHgpL4VMqHH9bbQ5N8KZ5XoAG6ffikB8uQJSNE+1WK2XzBL6ZPUWcIOHfAaitHI3QiOpH5WyoQe10t3A+9th6w9e7m+Vg4wvzGR1ynL0u7L+YW3SzJxn3eCp2t6Z7CwIn/w6T2zeM5BgJlPrrkpizsQbPwbAY2+D/jRx0YD/PLC/md0lHVgfQkcBAUQ+I/58euHmBve9/Ij7oyZrm7qUN5XuD6Gngalo2Ut9Ir6wNcImyQFsOJwRdPGNp8q9bowTObWTLi6NixLzKQrHYDHrxpZswc+HK7VrKPXQmi3LV6dkW1qaXYpw6Rh05IL39OKMdYWvCnF9Ugw/JiU5LOSdWLoCnNN2Nto5HaH4XudFKmTwDhMhqKu2nFHTDoWfv/I81hhMHTmvjIOrJv7zzFiILUx/qLlr0n8/gAOl5px9OpjnWprPXVoULMP+PufZlaLrlXUfMk5yE0C1lLhDGEgEVhdekUxInq5yQ7cNR/GiDVOY1FKQ9IbZhm/1l4gcmRSJoF2xhMPo86eIrN3JG2le/QM08jNqEEgKZ0GyUAdilAMd63i1jKVILqlUlqJ+jcQN4++r9ibTtFOjr6U2XIPBPgQffgKM7EaHdhqrE7xxc5drRJXAe6dAUae+AYAfCzURD/mArvdSG7JWgrfa0GCav8p7pXEXkh2g7c64zvEON9R9FY0FEjYl7UWdJp3is31kasdoGcz2MJ0FLYkm/HlRB1m9cuoRGZF0p1T05nTuiyZXnt9BIiOCKIKefzCM0fkLgI4JlfS8FiXh3mUDGtYZm30+BJd+lMVnqvsNcPkeysVUqeXfjRtXE2yr3XbR3671znxjOOS1R3qsXA2pw2LW559ymTLmRDe8clqHe6k8a8uKvD/LwGXqv4Z8G77S2Df8vq+tJUCLvGUTFwSdavJayVKLKm1FPUxu0PojHRb/yYEdIYAHA8MhCDJMk8+yhb1fAcQAXzCfX0oguWcRtnq8FA0idVNMUOxIvQMxWFoHEqloRkagiRRhyIbuzsE4AisarQbSIoEci3wcM0mqdDEqUPdjRpUKVAT1amfj/Swa7qpmvEorukdWrTTk5JqrkmNJrV0UpOOFHybbi/zJ2vWpi7u7RWS0tMBa2qbdg2x/HTvO5mMnEx1G2TxyZJ+qfGR6+G+OzWq0FbCTKt5/tL249OssA2IaeeUePyk1CwTz8rWVocmqFEV0rLoVFlfD97e1o5vgXSdBt/JnSolq2pVcMk1a1aHrpq26W0nzcdIqmNWDEXaq/1thQ+xM4ALnAgFx1TarMoWfYREqsV5IF6N404aISaRINEpp/3ijHiSJy9XS+FXZ9U5b4mttlH6m0pwyfs56jf1LkihZ2D0SGposGswUaMJmkzyhXQZmmV6yKFFm3atnKJBHuyiDpNNCQOdvGFFnryeU+WaZrpuXb40w4A8//DLF7BIgUIz9ZhtlnHCURr+ZUhpOASPEJBRu+R+B3xmHboYFk2IyX8HkTiRkSCEglCRYCSk0GjRY8SMVVjhsYsoMk5RcYuOV0yx8RMkTFRc8X723AsvEycpocSSSk6aLHkK6JSpUqcRKlgUro0wvhbrK4csQIFDk5Y2nRCDtrMiC1JmPBOzw47Y4Uc7/eQHGwzbB4uEj2ih+T6w2IfmlJJeufvm2gufwTwrMpaaqbTMqB4bswtPjGhLVVjPkgUha7bspZdRZg4f+53NRy656prLrrjeO3EiLpylsq1mcg3Z195Y0V6f3Da5rYnYkNzYXNXoz3XjO5saZIrpUq/pcD4GuTlIDl1bXouVeHnDM9aI34RkXkctrrmp5t7RMaVZEhb2pK4Efr1PKMcbJvvNaG+YiuuaggsuUgq+8aaGyJKYFggB44SDpgABkkSkJBJVJIYBIpCahtQCAREaQZQYABUAQgMSgSoCAcCPBqQGBAJVaEBHIVuO5C1ksktKQGEo/YwZAvPAIrAMrMJxE2fZJTlaX4YvKFsua6VURtUCubALL4DN4o90ggNSieBWnhXBLb9KYNb3LoiBtK7WlryljQhwRtUkTLPwhrn2KsbzWmjyuZWjlXHaLVNrjl5lmFhR1dnx3KyjobE6HGLSjNc3N09c0BW4ZIOqmzvWcaX/exUXm1xi3dX7eSl+BAAA";
+  private static final String F400 = "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";
+  static InputStream open(String name) {
+    String b = name.contains("300") ? F300 : name.contains("400") ? F400 : null;
+    if (b == null) return null;
+    return new ByteArrayInputStream(android.util.Base64.decode(b, android.util.Base64.DEFAULT));
   }
 }
 EOF
