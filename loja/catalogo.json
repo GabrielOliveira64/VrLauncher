@@ -94,5 +94,13 @@
     "tamanho": 6396271,
     "miniatura": "https://raw.githubusercontent.com/GabrielOliveira64/VrLauncher/main/loja/thumbs/lythwood_field_thumb.jpg",
     "url": "https://github.com/GabrielOliveira64/VrLauncher/releases/download/loja/lythwood_field.jpg"
+  },
+  {
+    "id": "teufelsberg_lookout",
+    "nome": "teufelsberg_lookout",
+    "tipo": "imagem",
+    "tamanho": 6228563,
+    "miniatura": "https://raw.githubusercontent.com/GabrielOliveira64/VrLauncher/main/loja/thumbs/teufelsberg_lookout_thumb.jpg",
+    "url": "https://github.com/GabrielOliveira64/VrLauncher/releases/download/loja/teufelsberg_lookout.jpg"
   }
 ]
