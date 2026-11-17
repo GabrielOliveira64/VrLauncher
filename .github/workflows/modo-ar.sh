@@ -2,7 +2,7 @@
 # Modo AR (6DoF) do VR Launcher: tudo do 6DoF fica neste arquivo.
 # Para atualizar: envie um modo-ar.sh novo para o repositorio, substituindo este.
 set -e
-echo "modo-ar.sh: Fase 8 - ajustes, zoom da interface e pinca (2026-11-17)"
+echo "modo-ar.sh: Fase 8b - abas de vidro, sliders verticais, apps redondos (2026-11-17)"
 mkdir -p app/src/main/java/com/vr/launcher
 cat > /tmp/vr_orig_ui.js <<'JSEOF'
 var tabAju = mk2('tab', '<div class="tt">AJUSTES</div><div class="cfl"></div>'); tabAju.style.zIndex = 200;
@@ -1700,7 +1700,7 @@ final class ArPanel {
 
   private WebView newWeb(Context c, final Tab tab) {
     final WebView v = new QuietWebView(c);
-    v.setBackgroundColor(menu ? Color.rgb(14, 16, 22) : Color.WHITE);
+    v.setBackgroundColor(menu ? Color.BLACK : Color.WHITE);
     if (kb) {
       v.addJavascriptInterface(new Object() {
         @JavascriptInterface public void key(String k) { ArPanel.this.act.kbKey(k); }
@@ -1973,13 +1973,13 @@ final class ArRenderer implements GLSurfaceView.Renderer {
   private final FloatBuffer bgUv = floatBuf(new float[8]);
 
   // janelas
-  private int winProg = 0, winPosLoc = 0, winUvLoc = 0, winMvpLoc = 0, winTexLoc = 0, winStmLoc = 0, winHalfLoc = 0, winRadLoc = 0, winFlatLoc = 0, winSLoc = 0, winDimLoc = 0;
+  private int winProg = 0, winPosLoc = 0, winUvLoc = 0, winMvpLoc = 0, winTexLoc = 0, winStmLoc = 0, winHalfLoc = 0, winRadLoc = 0, winFlatLoc = 0, winSLoc = 0, winDimLoc = 0, winGlassLoc = 0;
   private final FloatBuffer winVerts = floatBuf(new float[]{-HW, -HH, 0f, HW, -HH, 0f, -HW, HH, 0f, HW, HH, 0f});
   private final FloatBuffer winUvs = floatBuf(new float[]{0f, 0f, 1f, 0f, 0f, 1f, 1f, 1f});
 
   // barra, alca, "+", destaque
   private int flatProg = 0, flatPosLoc = 0, flatUvLoc = 0, flatMvpLoc = 0, flatTexLoc = 0, flatColLoc = 0;
-  private int barTex = 0, cornerTex = 0, roundTex = 0, discTex = 0, ringTex = 0;
+  private int barTex = 0, cornerTex = 0, roundTex = 0, discTex = 0, ringTex = 0, thinTex = 0;
   private final FloatBuffer unitVerts = floatBuf(new float[]{-0.5f, -0.5f, 0f, 0.5f, -0.5f, 0f, -0.5f, 0.5f, 0f, 0.5f, 0.5f, 0f});
   private final FloatBuffer unitUvs = floatBuf(new float[]{0f, 1f, 1f, 1f, 0f, 0f, 1f, 0f});
 
@@ -2177,6 +2177,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     winFlatLoc = GLES20.glGetUniformLocation(winProg, "u_Flat");
     winSLoc = GLES20.glGetUniformLocation(winProg, "u_S");
     winDimLoc = GLES20.glGetUniformLocation(winProg, "u_Dim");
+    winGlassLoc = GLES20.glGetUniformLocation(winProg, "u_Glass");
     winHalfVLoc = GLES20.glGetUniformLocation(winProg, "u_HalfV");
     winShadeLoc = GLES20.glGetUniformLocation(winProg, "u_Shade");
 
@@ -2192,6 +2193,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     roundTex = bitmapTex(makeRound());
     discTex = bitmapTex(makeDisc());
     ringTex = bitmapTex(makeRing());
+    thinTex = bitmapTex(makeThinRing());
     curveGlyph = bitmapTex(makeGlyph(7));
     keyGlyph = bitmapTex(makeGlyph(8));
     linkGlyph = bitmapTex(makeGlyph(9));
@@ -2622,7 +2624,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     if (tabWin != null || s == null || railWin == null) return;
     tabWin = addWindowP(s, railWin.current(), newPanel(ArActivity.MENU_URL, true), true, false);
     tabWin.linked = true;
-    tabWin.s = 0.85f;
+    tabWin.s = RAIL_H / (2f * HH);   // a aba tem a altura do menu
     tabWin.hidden = true;
   }
 
@@ -3106,6 +3108,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
       GLES20.glUniform2f(winHalfVLoc, HW * w.s, HH * w.s);
       GLES20.glUniform1f(winRadLoc, CORNER_R * w.s);
       GLES20.glUniform1f(winSLoc, w.s);
+      GLES20.glUniform1f(winGlassLoc, w == tabWin ? 1f : 0f);
       modelOf(w);
       Matrix.multiplyMM(mvp, 0, vp, 0, model, 0);
       GLES20.glUniformMatrix4fv(winMvpLoc, 1, false, mvp, 0);
@@ -3204,8 +3207,8 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     if (hot) quad(discTex, x, y, size, size, 1f, 1f, 1f, 0.92f * alpha, dimV);
     else if (on) quad(discTex, x, y, size, size, 0.37f, 0.92f, 0.83f, 0.92f * alpha, dimV);
     else {
-      quad(discTex, x, y, size, size, 0.16f, 0.2f, 0.28f, 0.22f * alpha, dimV);
-      quad(ringTex, x, y, size, size, 1f, 1f, 1f, 0.42f * alpha, dimV);
+      quad(discTex, x, y, size, size, 0.16f, 0.2f, 0.28f, 0.05f * alpha, dimV);
+      quad(thinTex, x, y, size, size, 1f, 1f, 1f, 0.17f * alpha, dimV);
     }
     if (!solid) quad(glyph, x + size * 0.025f, y - size * 0.025f, size * 0.62f, size * 0.62f, 0f, 0f, 0f, 0.35f * alpha, dimV);
     quad(glyph, x, y, size * 0.62f, size * 0.62f, solid ? 0.07f : 1f, solid ? 0.08f : 1f, solid ? 0.1f : 1f, alpha, dimV);
@@ -4414,6 +4417,17 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     return b;
   }
 
+  private static Bitmap makeThinRing() {
+    Bitmap b = Bitmap.createBitmap(128, 128, Bitmap.Config.ARGB_8888);
+    Canvas c = new Canvas(b);
+    Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+    p.setColor(Color.WHITE);
+    p.setStyle(Paint.Style.STROKE);
+    p.setStrokeWidth(2f);
+    c.drawCircle(64f, 64f, 61f, p);
+    return b;
+  }
+
   private static Bitmap makeRing() {
     Bitmap b = Bitmap.createBitmap(64, 64, Bitmap.Config.ARGB_8888);
     Canvas c = new Canvas(b);
@@ -4519,6 +4533,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     "uniform vec2 u_Half;\n" +
     "uniform float u_R;\n" +
     "uniform float u_Flat;\n" +
+    "uniform float u_Glass;\n" +
     "uniform float u_Dim;\n" +
     "uniform vec2 u_Shade;\n" +
     "void main() {\n" +
@@ -4528,14 +4543,15 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     "  float al = 1.0 - smoothstep(-0.0006, 0.0006, d);\n" +
     "  vec2 uv = (u_Stm * vec4(v_Uv, 0.0, 1.0)).xy;\n" +
     "  vec3 c = texture2D(u_Tex, uv).rgb;\n" +
-    "  c = mix(c, vec3(0.08, 0.09, 0.12), u_Flat) * u_Dim;\n" +
+    "  c = mix(c, vec3(0.08, 0.09, 0.12), u_Flat * (1.0 - u_Glass)) * u_Dim;\n" +
     "  float on = step(0.5, abs(u_Shade.x));\n" +
     "  float sd = on * step(0.0, u_Shade.x * v_P.x);\n" +
     "  c = mix(c, vec3(0.02, 0.03, 0.05), sd * 0.62);\n" +
     "  float seam = sd * (1.0 - smoothstep(0.0, 0.010, u_Half.x - abs(v_P.x)));\n" +
     "  c = mix(c, vec3(0.37, 0.92, 0.83), seam * 0.95);\n" +
     "  c = mix(c, vec3(1.0), smoothstep(-0.0028, -0.0010, d) * 0.22);\n" +
-    "  gl_FragColor = vec4(c * al, al);\n" +
+    "  float ga = mix(1.0, clamp(0.09 + 1.25 * max(c.r, max(c.g, c.b)), 0.0, 1.0), u_Glass);\n" +
+    "  gl_FragColor = vec4(c * al, ga * al);\n" +
     "}\n";
 
   private static final String FLAT_VS =
@@ -5068,9 +5084,10 @@ final class ArMenuPage {
     "<!doctype html>\n" +
     "<html><head><meta charset=\"utf-8\">\n" +
     "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1,user-scalable=no\">\n" +
+    "<link href=\"https://fonts.googleapis.com/css2?family=Exo+2:wght@300;400;500&display=swap\" rel=\"stylesheet\">\n" +
     "<style>\n" +
     "*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;-webkit-user-select:none;user-select:none}\n" +
-    "html,body{margin:0;height:100%;background:#0e1016;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden}\n" +
+    "html,body{margin:0;height:100%;background:#000;color:#fff;font-family:system-ui,-apple-system,sans-serif;overflow:hidden}\n" +
     "#app{display:flex;height:100%}\n" +
     "#rail{width:168px;flex:none;padding:8px;display:flex;flex-direction:column;gap:5px;background:#151822}\n" +
     ".mi{flex:1;display:flex;align-items:center;gap:8px;padding:0 9px;border-radius:12px;font-size:14px;white-space:nowrap;background:rgba(255,255,255,.07)}\n" +
@@ -5078,14 +5095,21 @@ final class ArMenuPage {
     ".mi.on{background:rgba(255,255,255,.24)}\n" +
     ".mi:active,.ai:active,.row:active,.bt:active{background:#fff;color:#000}\n" +
     "#main{flex:1;padding:14px 16px;display:flex;flex-direction:column;min-width:0}\n" +
-    "h1{font-size:13px;font-weight:300;letter-spacing:2px;opacity:.7;margin:0 0 8px;height:18px}\n" +
+    "h1{font-family:'Exo 2',system-ui,sans-serif;font-size:14px;font-weight:300;letter-spacing:3px;opacity:.8;margin:0;height:22px}\n" +
+    ".pg>h1,.pg>.hd{padding-bottom:9px;margin-bottom:12px;border-bottom:1px solid;border-image:linear-gradient(90deg,rgba(255,255,255,.38),rgba(255,255,255,.12) 55%,rgba(255,255,255,0)) 1}\n" +
+    ".pg>h1{height:auto}\n" +
+    ".pg.on{overflow-y:auto;overflow-x:hidden}\n" +
+    ".pg::-webkit-scrollbar{display:none}\n" +
+    ".pg>*{flex-shrink:0}\n" +
+    "#p-space>#sb{flex-shrink:1}\n" +
     ".pg{display:none;flex:1;min-height:0}\n" +
     ".pg.on{display:flex;flex-direction:column}\n" +
-    ".grid{display:grid;grid-template-columns:repeat(4,1fr);grid-template-rows:repeat(2,1fr);gap:8px;flex:1}\n" +
-    ".ai{border-radius:14px;background:rgba(255,255,255,.09);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;font-size:12px}\n" +
-    ".lg{width:44px;height:44px;border-radius:12px;background:#fff;color:#000;font-weight:600;font-size:22px;display:flex;align-items:center;justify-content:center;overflow:hidden}\n" +
-    ".lg img{width:30px;height:30px}\n" +
-    ".row{display:flex;align-items:center;gap:12px;padding:6px 12px;border-radius:14px;background:rgba(255,255,255,.09);margin-bottom:6px;min-height:52px}\n" +
+    ".grid{display:grid;grid-template-columns:repeat(4,1fr);grid-template-rows:repeat(2,1fr);gap:8px;flex:1;min-height:300px}\n" +
+    ".ai{border-radius:20px;background:transparent;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;font-family:'Exo 2',system-ui,sans-serif;font-size:13px;font-weight:300;letter-spacing:.8px}\n" +
+    ".ai span{opacity:.88}\n" +
+    ".lg{width:76px;height:76px;border-radius:50%;background:#fff;color:#000;font-weight:600;font-size:30px;display:flex;align-items:center;justify-content:center;overflow:hidden}\n" +
+    ".lg img{width:44px;height:44px;border-radius:50%}\n" +
+    ".row{display:flex;align-items:center;gap:12px;padding:6px 12px;border-radius:14px;background:rgba(255,255,255,.07);margin-bottom:6px;min-height:52px}\n" +
     ".chev{font-size:26px;opacity:.7;width:40px;text-align:center}\n" +
     ".hd{display:flex;align-items:center;gap:10px;margin:-2px 0 8px}\n" +
     ".back{padding:7px 14px;border-radius:14px;background:rgba(255,255,255,.12);font-size:14px}\n" +
@@ -5148,14 +5172,14 @@ final class ArMenuPage {
     ".sl.dr .kn{background:#5eead4}\n" +
     ".sl.dr .fl{background:#5eead4}\n" +
     ".cv{min-width:46px;text-align:right;font-size:14px;opacity:.85;flex:none}\n" +
-    ".arow{display:flex;align-items:center;gap:14px;padding:20px 16px;border-radius:16px;background:rgba(255,255,255,.09);margin-bottom:14px}\n" +
-    ".arow svg{width:30px;height:30px;flex:none;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}\n" +
-    ".arow .t{width:170px;flex:none}\n" +
-    ".arow .t b{font-size:17px;display:block}\n" +
-    ".arow .t span{font-size:12px;opacity:.75;display:block;line-height:1.25}\n" +
-    ".arow .sl{height:48px}\n" +
-    ".arow .sl .tr{top:20px;height:8px}\n" +
-    ".arow .sl .kn{top:12px;width:26px;height:26px}\n" +
+    ".vs{flex:1;display:flex;justify-content:space-around;align-items:stretch;gap:20px;padding:4px 30px 0;min-height:0}\n" +
+    ".vc{display:flex;flex-direction:column;align-items:center;gap:10px;flex:1;min-height:0}\n" +
+    ".vc .cv{min-width:0;text-align:center;font-family:'Exo 2',system-ui,sans-serif;font-size:17px;font-weight:300;opacity:.9;height:22px}\n" +
+    ".vc .nm2{font-family:'Exo 2',system-ui,sans-serif;font-size:13px;font-weight:300;letter-spacing:1px;opacity:.85;height:18px}\n" +
+    ".sl.v{flex:1;width:112px;max-width:112px;min-height:0;height:auto;border-radius:36px;background:rgba(255,255,255,.2);overflow:hidden;position:relative;touch-action:none}\n" +
+    ".sl.v .fl{position:absolute;left:0;right:0;bottom:0;height:0;width:auto;background:rgba(255,255,255,.95);border-radius:0}\n" +
+    ".sl.v.dr .fl{background:#fff}\n" +
+    ".sl.v svg{position:absolute;left:50%;bottom:20px;width:34px;height:34px;margin-left:-17px;fill:none;stroke:#fff;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;mix-blend-mode:difference}\n" +
     "#toast{position:absolute;left:50%;bottom:8px;transform:translateX(-50%);background:rgba(0,0,0,.78);padding:6px 14px;border-radius:14px;font-size:12px;display:none;max-width:90%;text-align:center}\n" +
     "</style></head>\n" +
     "<body><div id=\"app\">\n" +
@@ -5171,11 +5195,7 @@ final class ArMenuPage {
     "  </div></div>\n" +
     "  <div class=\"pg\" id=\"p-space\"><div class=\"hd\" id=\"sh\"></div><div id=\"sb\" style=\"flex:1;min-height:0;display:flex;flex-direction:column\"></div></div>\n" +
     "  <div class=\"pg\" id=\"p-apps\"><h1>APPS</h1><div class=\"grid\" id=\"grid\"></div></div>\n" +
-    "  <div class=\"pg\" id=\"p-aju\"><h1>AJUSTES</h1>\n" +
-    "    <div class=\"arow\"><svg viewBox=\"0 0 24 24\"><path d=\"M4 9h4l5-4v14l-5-4H4z\"/><path d=\"M16.5 9a4 4 0 0 1 0 6\"/><path d=\"M19 6.5a8 8 0 0 1 0 11\"/></svg><div class=\"t\"><b>Volume</b><span>Volume geral do celular.</span></div><div class=\"sl\" data-k=\"vol\" data-min=\"0\" data-max=\"100\"><div class=\"tr\"><div class=\"fl\"></div></div><div class=\"kn\"></div></div><div class=\"cv\" data-v=\"vol\"></div></div>\n" +
-    "    <div class=\"arow\"><svg viewBox=\"0 0 24 24\"><circle cx=\"12\" cy=\"12\" r=\"4\"/><path d=\"M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M18.7 5.3l-2.1 2.1M7.4 16.6l-2.1 2.1\"/></svg><div class=\"t\"><b>Brilho da tela</b><span>Brilho do celular.</span></div><div class=\"sl\" data-k=\"bri\" data-min=\"2\" data-max=\"100\"><div class=\"tr\"><div class=\"fl\"></div></div><div class=\"kn\"></div></div><div class=\"cv\" data-v=\"bri\"></div></div>\n" +
-    "    <div class=\"arow\"><svg viewBox=\"0 0 24 24\"><path d=\"M20 14.5A8.5 8.5 0 0 1 9.5 4 8.5 8.5 0 1 0 20 14.5z\"/></svg><div class=\"t\"><b>Brilho do quarto</b><span>Escurece a imagem da c&acirc;mera.</span></div><div class=\"sl\" data-k=\"room\" data-min=\"0\" data-max=\"100\"><div class=\"tr\"><div class=\"fl\"></div></div><div class=\"kn\"></div></div><div class=\"cv\" data-v=\"room\"></div></div>\n" +
-    "  </div>\n" +
+    "  <div class=\"pg\" id=\"p-aju\"><h1>AJUSTES</h1><div class=\"vs\"><div class=\"vc\"><div class=\"cv\" data-v=\"vol\"></div><div class=\"sl v\" data-k=\"vol\" data-min=\"0\" data-max=\"100\"><div class=\"fl\"></div><svg viewBox=\"0 0 24 24\"><path d=\"M4 9h4l5-4v14l-5-4H4z\"/><path d=\"M16.5 9a4 4 0 0 1 0 6\"/><path d=\"M19 6.5a8 8 0 0 1 0 11\"/></svg></div><div class=\"nm2\">VOLUME</div></div><div class=\"vc\"><div class=\"cv\" data-v=\"bri\"></div><div class=\"sl v\" data-k=\"bri\" data-min=\"2\" data-max=\"100\"><div class=\"fl\"></div><svg viewBox=\"0 0 24 24\"><circle cx=\"12\" cy=\"12\" r=\"4\"/><path d=\"M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M18.7 5.3l-2.1 2.1M7.4 16.6l-2.1 2.1\"/></svg></div><div class=\"nm2\">BRILHO</div></div><div class=\"vc\"><div class=\"cv\" data-v=\"room\"></div><div class=\"sl v\" data-k=\"room\" data-min=\"0\" data-max=\"100\"><div class=\"fl\"></div><svg viewBox=\"0 0 24 24\"><path d=\"M20 14.5A8.5 8.5 0 0 1 9.5 4 8.5 8.5 0 1 0 20 14.5z\"/></svg></div><div class=\"nm2\">QUARTO</div></div></div></div>\n" +
     "  <div class=\"pg\" id=\"p-cfg\"><h1>CONFIGURA&Ccedil;&Otilde;ES</h1>\n" +
     "    <div class=\"row\" data-act=\"orig\"><div class=\"t\"><b>Modo 6DoF (AR)</b><span id=\"s6\">Ligado. Desligue para voltar ao modo original.</span></div><div class=\"sw on\" id=\"sw6\"><i></i></div></div>\n" +
     "    <div class=\"row\" data-act=\"gpu\"><div class=\"t\"><b>IA da m&atilde;o na GPU</b><span>Mais r&aacute;pido. Se travar, use a CPU.</span></div><div class=\"sw\" id=\"swg\"><i></i></div></div>\n" +
@@ -5216,11 +5236,15 @@ final class ArMenuPage {
     "function slEl(k){return document.querySelector('.sl[data-k=\"'+k+'\"]');}\n" +
     "function setSl(k,v){var e=slEl(k);if(!e||SLD===k)return;paintSl(e,k,v);}\n" +
     "function paintSl(e,k,v){var mn=+e.getAttribute('data-min'),mx=+e.getAttribute('data-max');v=Math.max(mn,Math.min(mx,v));SLV[k]=v;\n" +
-    "  var f=(v-mn)/(mx-mn),w=e.clientWidth-22;e.querySelector('.fl').style.width=(f*100)+'%';e.querySelector('.kn').style.left=(f*w)+'px';\n" +
+    "  var f=(v-mn)/(mx-mn);\n" +
+    "  if(e.classList.contains('v')){e.querySelector('.fl').style.height=(f*100)+'%';}\n" +
+    "  else{var w=e.clientWidth-22;e.querySelector('.fl').style.width=(f*100)+'%';e.querySelector('.kn').style.left=(f*w)+'px';}\n" +
     "  var c=document.querySelector('[data-v=\"'+k+'\"]');if(c)c.textContent=Math.round(v)+'%';}\n" +
     "function slPos(e,ev){var t=ev.touches&&ev.touches.length?ev.touches[0]:(ev.changedTouches&&ev.changedTouches.length?ev.changedTouches[0]:ev);\n" +
-    "  var r=e.getBoundingClientRect(),mn=+e.getAttribute('data-min'),mx=+e.getAttribute('data-max');\n" +
-    "  var f=(t.clientX-r.left-11)/Math.max(1,r.width-22);f=Math.max(0,Math.min(1,f));return Math.round(mn+f*(mx-mn));}\n" +
+    "  var r=e.getBoundingClientRect(),mn=+e.getAttribute('data-min'),mx=+e.getAttribute('data-max'),f;\n" +
+    "  if(e.classList.contains('v'))f=1-(t.clientY-r.top)/Math.max(1,r.height);\n" +
+    "  else f=(t.clientX-r.left-11)/Math.max(1,r.width-22);\n" +
+    "  f=Math.max(0,Math.min(1,f));return Math.round(mn+f*(mx-mn));}\n" +
     "function slSend(k,v,force){var n=Date.now();if(!force&&n-SLT<60)return;SLT=n;act('set:'+k+':'+v);}\n" +
     "document.querySelectorAll('.sl').forEach(function(e){var k=e.getAttribute('data-k');\n" +
     "  function mv(ev){if(SLD!==k)return;ev.preventDefault();var v=slPos(e,ev);paintSl(e,k,v);slSend(k,v,false);}\n" +
@@ -5287,10 +5311,10 @@ final class ArMenuPage {
     "      return'<div class=\"tl\" style=\"'+(it.miniatura?'background-image:url('+JSON.stringify(it.miniatura).replace(/\"/g,\"'\")+')':'')+'\"><div class=\"nm\">'+(it.tipo==='video'?'&#9654; ':'')+esc(it.nome)+'</div>'+bt+'</div>'}).join('')+'</div>';\n" +
     "    return}\n" +
     "  // biblioteca\n" +
-    "  var n2=S.lib.length,np2=Math.max(1,Math.ceil(n2/PER));if(S.page>=np2)S.page=np2-1;\n" +
+    "  var n2=S.lib.length;if(!n2)S.del=false;var np2=Math.max(1,Math.ceil(n2/PER));if(S.page>=np2)S.page=np2-1;\n" +
     "  h.innerHTML='<h1>MUNDOS'+(st.active&&st.video?' <small style=\"opacity:.55;letter-spacing:0;font-size:11px;margin-left:8px\">pin&ccedil;a 1 s no v&iacute;deo = controles</small>':'')+'</h1>'+pager(n2,S.page,PER)\n" +
     "    +(st.active?hb('exit',IC.out+'<span>Sair</span>'):(n2?hb('trash',IC.trash,S.del):''));\n" +
-    "  var cells=S.del?'':'<div class=\"tl\" data-c=\"add\">'+IC.plus+'<span>Importar</span></div>';\n" +
+    "  var cells=(S.del&&n2)?'':'<div class=\"tl\" data-c=\"add\">'+IC.plus+'<span>Importar</span></div>';\n" +
     "  cells+=S.lib.slice(S.page*PER,S.page*PER+PER).map(function(it){\n" +
     "    var c='<div class=\"tl'+(it.id===st.active?' on':'')+(S.del?' rm':'')+'\" data-c=\"sel:'+it.id+'\" style=\"background-image:url(/spatial/'+it.id+'_t.jpg)\"><div class=\"nm\">'+(it.type==='video'?'&#9654; ':'')+esc(it.name)+'</div>';\n" +
     "    if(S.sel===it.id&&S.del)c+='<div class=\"cf\"><span>Deletar item?</span><div class=\"bs\"><div class=\"cb\" data-c=\"yes\">Sim</div><div class=\"cb\" data-c=\"no\">N&atilde;o</div></div></div>';\n" +
