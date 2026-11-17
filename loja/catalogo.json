@@ -62,5 +62,13 @@
     "tamanho": 4557177,
     "miniatura": "https://raw.githubusercontent.com/GabrielOliveira64/VrLauncher/main/loja/thumbs/wooden_lounge_thumb.jpg",
     "url": "https://github.com/GabrielOliveira64/VrLauncher/releases/download/loja/wooden_lounge.jpg"
+  },
+  {
+    "id": "toposcope_sunset",
+    "nome": "toposcope_sunset",
+    "tipo": "imagem",
+    "tamanho": 22540295,
+    "miniatura": "https://raw.githubusercontent.com/GabrielOliveira64/VrLauncher/main/loja/thumbs/toposcope_sunset_thumb.jpg",
+    "url": "https://github.com/GabrielOliveira64/VrLauncher/releases/download/loja/toposcope_sunset.jpg"
   }
 ]
