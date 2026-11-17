@@ -78,5 +78,13 @@
     "tamanho": 7475027,
     "miniatura": "https://raw.githubusercontent.com/GabrielOliveira64/VrLauncher/main/loja/thumbs/cloudy_cliffside_road_thumb.jpg",
     "url": "https://github.com/GabrielOliveira64/VrLauncher/releases/download/loja/cloudy_cliffside_road.jpg"
+  },
+  {
+    "id": "illovo_beach_balcony",
+    "nome": "illovo_beach_balcony",
+    "tipo": "imagem",
+    "tamanho": 40489798,
+    "miniatura": "https://raw.githubusercontent.com/GabrielOliveira64/VrLauncher/main/loja/thumbs/illovo_beach_balcony_thumb.jpg",
+    "url": "https://github.com/GabrielOliveira64/VrLauncher/releases/download/loja/illovo_beach_balcony.jpg"
   }
 ]
