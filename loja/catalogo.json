@@ -46,5 +46,13 @@
     "tamanho": 3354435,
     "miniatura": "https://raw.githubusercontent.com/GabrielOliveira64/VrLauncher/main/loja/thumbs/sao_thumb.jpg",
     "url": "https://github.com/GabrielOliveira64/VrLauncher/releases/download/loja/sao.jpg"
+  },
+  {
+    "id": "the_Blu_Whale_Encounter_3D_360_VR_1920x1080",
+    "nome": "Oceano",
+    "tipo": "video",
+    "tamanho": 61467518,
+    "miniatura": "https://raw.githubusercontent.com/GabrielOliveira64/VrLauncher/main/loja/thumbs/the_Blu_Whale_Encounter_3D_360_VR_1920x1080_thumb.jpg",
+    "url": "https://github.com/GabrielOliveira64/VrLauncher/releases/download/loja/the_Blu_Whale_Encounter_3D_360_VR_1920x1080.mp4"
   }
 ]
