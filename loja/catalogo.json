@@ -39,4 +39,12 @@
  "miniatura": "https://raw.githubusercontent.com/GabrielOliveira64/VrLauncher/main/loja/thumbs/moto_01_thumb.jpg",
  "url": "https://github.com/GabrielOliveira64/VrLauncher/releases/download/loja/moto_01.mp4"
  },
+  {
+    "id": "sao",
+    "nome": "Sword Art Online",
+    "tipo": "imagem",
+    "tamanho": 3354435,
+    "miniatura": "https://raw.githubusercontent.com/GabrielOliveira64/VrLauncher/main/loja/thumbs/sao_thumb.jpg",
+    "url": "https://github.com/GabrielOliveira64/VrLauncher/releases/download/loja/sao.jpg"
+  }
 ]
