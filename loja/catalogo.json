@@ -86,5 +86,13 @@
     "tamanho": 40489798,
     "miniatura": "https://raw.githubusercontent.com/GabrielOliveira64/VrLauncher/main/loja/thumbs/illovo_beach_balcony_thumb.jpg",
     "url": "https://github.com/GabrielOliveira64/VrLauncher/releases/download/loja/illovo_beach_balcony.jpg"
+  },
+  {
+    "id": "lythwood_field",
+    "nome": "lythwood_field",
+    "tipo": "imagem",
+    "tamanho": 6396271,
+    "miniatura": "https://raw.githubusercontent.com/GabrielOliveira64/VrLauncher/main/loja/thumbs/lythwood_field_thumb.jpg",
+    "url": "https://github.com/GabrielOliveira64/VrLauncher/releases/download/loja/lythwood_field.jpg"
   }
 ]
