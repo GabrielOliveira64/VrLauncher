@@ -54,5 +54,13 @@
     "tamanho": 4528196,
     "miniatura": "https://raw.githubusercontent.com/GabrielOliveira64/VrLauncher/main/loja/thumbs/fireplace_1.jpg",
     "url": "https://github.com/GabrielOliveira64/VrLauncher/releases/download/loja/fireplace.jpg"
+  },
+  {
+    "id": "wooden_lounge",
+    "nome": "wooden_lounge",
+    "tipo": "imagem",
+    "tamanho": 4557177,
+    "miniatura": "https://raw.githubusercontent.com/GabrielOliveira64/VrLauncher/main/loja/thumbs/wooden_lounge_thumb.jpg",
+    "url": "https://github.com/GabrielOliveira64/VrLauncher/releases/download/loja/wooden_lounge.jpg"
   }
 ]
