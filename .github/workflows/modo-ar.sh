@@ -2,8 +2,68 @@
 # Modo AR (6DoF) do VR Launcher: tudo do 6DoF fica neste arquivo.
 # Para atualizar: envie um modo-ar.sh novo para o repositorio, substituindo este.
 set -e
-echo "modo-ar.sh: Fase 7 - estereo VR Box nos dois modos (2026-11-16)"
+echo "modo-ar.sh: Fase 8 - ajustes, zoom da interface e pinca (2026-11-17)"
 mkdir -p app/src/main/java/com/vr/launcher
+cat > /tmp/vr_orig_ui.js <<'JSEOF'
+var tabAju = mk2('tab', '<div class="tt">AJUSTES</div><div class="cfl"></div>'); tabAju.style.zIndex = 200;
+var CFGV = { vol: 50, bri: 50, room: 0, zoom: 1, pOn: 16, pOff: 26 }, SLS = [], ZB = [];
+function cfgRead() { try { if (window.Android && Android.getCfg) { var o = JSON.parse(Android.getCfg()); for (var k in o) CFGV[k] = o[k]; } } catch (e) { } }
+function cfgSet(k, v) { CFGV[k] = v; try { if (window.Android && Android.setCfg) Android.setCfg(k, Math.round(v)); } catch (e) { } }
+function setZoom(z) { window.__zoom = z; WINS.forEach(function (w) { w.R = 800 * z; }); GROUPS.forEach(function (g) { g.R = 800 * z; }); }
+function applyAll() {
+  SLS.forEach(function (s) { s.paint(); });
+  ZB.forEach(function (q) { q.el.classList.toggle('on', q.z === CFGV.zoom); });
+  window.__pOn = CFGV.pOn / 100; window.__pOff = CFGV.pOff / 100;
+}
+function cfgSync() { cfgRead(); if (window.__zoom !== CFGV.zoom) setZoom(CFGV.zoom); applyAll(); }
+function mkSlider(list, tg, key, title, desc, mn, mx) {
+  var r = document.createElement('div'); r.className = 'cfr sr';
+  r.innerHTML = '<div class="cft"><b>' + title + '</b><span>' + desc + '</span></div><div class="sld"><div class="stk"><i></i></div><u></u></div><div class="scv"></div>';
+  list.appendChild(r);
+  var sd = r.querySelector('.sld'), fl = r.querySelector('.stk i'), kn = r.querySelector('u'), lb = r.querySelector('.scv');
+  var lastS = 0, tmr = null;
+  SLS.push({ paint: function () {
+    var v = Math.max(mn, Math.min(mx, CFGV[key])), f = (v - mn) / (mx - mn);
+    fl.style.width = (f * 100) + '%'; kn.style.left = 'calc(' + (f * 100) + '% - 14px)'; lb.textContent = Math.round(v) + '%';
+  } });
+  tg.push({ k: 'sld', el: sd, drag: function (x) {
+    var rc = sd.getBoundingClientRect(); if (rc.width < 2) return;
+    var f = Math.max(0, Math.min(1, (x - rc.left) / rc.width)), v = Math.round(mn + f * (mx - mn));
+    if (v === Math.round(CFGV[key])) return;
+    CFGV[key] = v;
+    if (key === 'pOn' && CFGV.pOff < v + 4) CFGV.pOff = v + 4;
+    if (key === 'pOff' && CFGV.pOn > v - 4) CFGV.pOn = v - 4;
+    applyAll();
+    var n = performance.now(); clearTimeout(tmr);
+    if (n - lastS > 70) { lastS = n; cfgSet(key, v); } else tmr = setTimeout(function () { cfgSet(key, CFGV[key]); }, 90);
+  } });
+}
+(function () {
+  var l = tabCfg.querySelector('.cfl'), r = document.createElement('div');
+  r.className = 'cfr';
+  r.innerHTML = '<div class="cft"><b>Zoom da interface</b><span>Distância das janelas: quanto maior, mais longe.</span></div><div class="cfg5"></div>';
+  l.appendChild(r);
+  var box = r.querySelector('.cfg5');
+  for (var z = 1; z <= 5; z++) (function (z) {
+    var b = document.createElement('div'); b.className = 'cfb'; b.textContent = z + 'x'; box.appendChild(b);
+    ZB.push({ el: b, z: z });
+    T_cfg.push({ k: 'btn', el: b, fn: function () { cfgSet('zoom', z); setZoom(z); applyAll(); toast('Zoom da interface: ' + z + 'x'); } });
+  })(z);
+  var c = document.createElement('div'); c.className = 'cfr';
+  c.innerHTML = '<div class="cft"><b>Clique</b><span>Como a mão clica.</span></div><div class="cfg5"><div class="cfb on">Pinça</div><div class="cfb off">Empurrar</div></div>';
+  l.appendChild(c);
+  var cb = c.querySelectorAll('.cfb');
+  T_cfg.push({ k: 'btn', el: cb[0], fn: function () { toast('Clique por pinça'); } });
+  T_cfg.push({ k: 'btn', el: cb[1], fn: function () { toast('Empurrar: em breve'); } });
+  mkSlider(l, T_cfg, 'pOn', 'Fechar a pinça', 'Distância dos dedos para clicar.', 6, 30);
+  mkSlider(l, T_cfg, 'pOff', 'Soltar a pinça', 'Distância dos dedos para soltar.', 10, 50);
+  var la = tabAju.querySelector('.cfl');
+  mkSlider(la, T_aju, 'vol', 'Volume', 'Volume geral do celular.', 0, 100);
+  mkSlider(la, T_aju, 'bri', 'Brilho da tela', 'Brilho do celular.', 2, 100);
+  mkSlider(la, T_aju, 'room', 'Brilho do quarto', 'Escurece a imagem da câmera.', 0, 100);
+})();
+cfgSync();
+JSEOF
 python3 - <<'PY'
 def patch(path, old, new, skip=None):
     s = open(path, encoding='utf-8').read()
@@ -39,7 +99,7 @@ patch('app/src/main/AndroidManifest.xml', '</application>', """<meta-data androi
   </application>""", '.ArActivity')
 UI = 'app/src/main/assets/ui.js'
 SK = None
-soft(UI, "miSpace = null;", "miSpace = null, T_cfg = [], miCfg = null;", SK)
+soft(UI, "miSpace = null;", "miSpace = null, T_cfg = [], miCfg = null;", 'miCfg = null')
 soft(UI, "['cfg', 'Configurações', soon]", "['cfg', 'Configurações', function () { setTab('cfg'); }]", SK)
 soft(UI, "if (m[0] === 'space') miSpace = d;", "if (m[0] === 'space') miSpace = d; if (m[0] === 'cfg') miCfg = d;", SK)
 soft(UI, "tabApps.style.zIndex = 200; tabHelp.style.zIndex = 200; tabSpace.style.zIndex = 200;",
@@ -51,19 +111,21 @@ soft(UI, "tabApps.style.zIndex = 200; tabHelp.style.zIndex = 200; tabSpace.style
  "r.innerHTML = '<div class=\"cft\"><b>Estéreo (VR Box)</b><span>Divide a tela em duas, uma imagem para cada olho. Desligado: tela inteira.</span></div><div class=\"cfs\"><i></i></div>'; l.appendChild(r); " +
  "try { if (window.Android && Android.getStereo && Android.getStereo()) r.classList.add('on'); } catch (e) { } " +
  "T_cfg.push({ k: 'btn', el: r, fn: function () { if (window.Android && Android.setStereo) { var on = !r.classList.contains('on'); r.classList.toggle('on', on); Android.setStereo(on); toast(on ? 'Estéreo ligado' : 'Estéreo desligado'); } else toast('Estéreo indisponível'); } }); })(); " +
- "tabApps.style.zIndex = 200; tabHelp.style.zIndex = 200; tabSpace.style.zIndex = 200;", SK)
-soft(UI, "['space', tabSpace]]", "['space', tabSpace], ['cfg', tabCfg]]", SK)
+ "tabApps.style.zIndex = 200; tabHelp.style.zIndex = 200; tabSpace.style.zIndex = 200;", 'var tabCfg = mk2')
+soft(UI, "['space', tabSpace]]", "['space', tabSpace], ['cfg', tabCfg]]", "['cfg', tabCfg]")
 soft(UI, "tabSpace.style.display = TAB === 'space' ? 'flex' : 'none';", "tabSpace.style.display = TAB === 'space' ? 'flex' : 'none'; tabCfg.style.display = TAB === 'cfg' ? 'flex' : 'none';", SK)
 soft(UI, "miSpace.classList.toggle('on', TAB === 'space');", "miSpace.classList.toggle('on', TAB === 'space'); miCfg.classList.toggle('on', TAB === 'cfg');", SK)
-soft(UI, "(TAB === 'space' ? tabSpace : null)", "(TAB === 'space' ? tabSpace : (TAB === 'cfg' ? tabCfg : null))", SK)
+soft(UI, "(TAB === 'space' ? tabSpace : null)", "(TAB === 'space' ? tabSpace : (TAB === 'cfg' ? tabCfg : null))", "TAB === 'cfg' ? tabCfg")
 soft(UI, "else if (TAB === 'space') t = t.concat(T_space);", "else if (TAB === 'space') t = t.concat(T_space); else if (TAB === 'cfg') t = t.concat(T_cfg);", SK)
-soft(UI, "RHS.space].forEach", "RHS.space, RHS.cfg].forEach", SK)
+soft(UI, "RHS.space].forEach", "RHS.space, RHS.cfg].forEach", 'RHS.cfg')
 soft(UI, "'.mi.hand,.ai.hand{background:#fff;color:#000}',",
- "'.mi.hand,.ai.hand{background:#fff;color:#000}', '.cfl{flex:1;display:flex;flex-direction:column;gap:14px}', " +
- "'.cfr{display:flex;align-items:center;gap:22px;padding:22px 26px;border-radius:30px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.12)}', " +
- "'.cfr.hand{background:#fff;color:#000}', '.cft{flex:1;display:flex;flex-direction:column;gap:6px}', '.cft b{font-size:28px;font-weight:600}', '.cft span{font-size:19px;font-weight:300;opacity:.8;line-height:1.3}', " +
- "'.cfs{width:92px;height:50px;border-radius:25px;background:rgba(255,255,255,.25);position:relative;flex:none}', '.cfs i{position:absolute;left:5px;top:5px;width:40px;height:40px;border-radius:50%;background:#fff;transition:left .2s}', " +
- "'.cfr.hand .cfs{background:rgba(0,0,0,.3)}', '.cfr.hand .cfs i{background:#000}', '.cfr.on .cfs{background:#3ddc84}', '.cfr.on .cfs i{left:47px}',", SK)
+ "'.mi.hand,.ai.hand{background:#fff;color:#000}', '.cfl{flex:1;display:flex;flex-direction:column;gap:8px}', " +
+ "'.cfr{display:flex;align-items:center;gap:22px;padding:10px 22px;border-radius:26px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.12)}', " +
+ "'.cfr.hand{background:#fff;color:#000}', '.cft{flex:1;display:flex;flex-direction:column;gap:6px}', '.cft b{font-size:24px;font-weight:600}', '.cft span{font-size:16px;font-weight:300;opacity:.8;line-height:1.25}', " +
+ "'.cfs{width:84px;height:44px;border-radius:22px;background:rgba(255,255,255,.25);position:relative;flex:none}', '.cfs i{position:absolute;left:5px;top:5px;width:34px;height:34px;border-radius:50%;background:#fff;transition:left .2s}', " +
+ "'.cfr.hand .cfs{background:rgba(0,0,0,.3)}', '.cfr.hand .cfs i{background:#000}', '.cfr.on .cfs{background:#3ddc84}', '.cfr.on .cfs i{left:45px}'," +
+ "'.cfg5{display:flex;gap:8px;flex:none}', '.cfb{min-width:64px;height:46px;padding:0 12px;border-radius:14px;background:rgba(255,255,255,.14);display:flex;align-items:center;justify-content:center;font-size:21px;font-weight:500}', '.cfb.on{background:#5eead4;color:#04201c}', '.cfb.off{opacity:.45}', '.cfb.hand{background:#fff;color:#000}', " +
+ "'.sld{position:relative;height:60px;flex:1.3;min-width:0}', '.stk{position:absolute;left:0;right:0;top:25px;height:10px;border-radius:5px;background:rgba(255,255,255,.25);overflow:hidden}', '.stk i{display:block;height:100%;width:0;background:#fff}', '.sld u{position:absolute;top:16px;left:0;width:28px;height:28px;border-radius:50%;background:#fff;box-shadow:0 2px 6px rgba(0,0,0,.5);text-decoration:none}', '.sld.hand u,.sld.hand .stk i{background:#5eead4}', '.scv{width:74px;text-align:right;font-size:21px;flex:none}', '.cfr.sr .cft{flex:1}',", SK)
 soft('app/src/main/java/com/vr/launcher/MainActivity.java', 'class Bridge {',
  'class Bridge {\n'
  '              @JavascriptInterface public void openAr() { ui.post(() -> { try {\n'
@@ -77,6 +139,27 @@ soft('app/src/main/java/com/vr/launcher/MainActivity.java', 'class Bridge {',
  '                ait.putStringArrayListExtra("wins", arL);\n'
  '                startActivity(ait); finish();\n'
  '              } catch (Throwable t) { } }); }', 'putStringArrayListExtra')
+
+
+soft(UI, "grid-template-rows:repeat(3,1fr);grid-auto-flow:column", "grid-template-rows:repeat(4,1fr);grid-auto-flow:column", "repeat(4,1fr);grid-auto-flow:column")
+soft(UI, "T_cfg = [], miCfg = null;", "T_cfg = [], miCfg = null, T_aju = [], miAju = null;", 'T_aju')
+soft(UI, "    ['cfg', 'Configurações', function () { setTab('cfg'); }]", "    ['aju', 'Ajustes', function () { setTab('aju'); }],\n    ['cfg', 'Configurações', function () { setTab('cfg'); }]", "setTab('aju')")
+soft(UI, """cfg: '<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>',""", """aju: '<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>',
+    cfg: '<circle cx="12" cy="12" r="3"/><circle cx="12" cy="12" r="6.5"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M18.7 5.3l-2.1 2.1M7.4 16.6l-2.1 2.1"/>',""", "aju: '<path")
+soft(UI, "if (m[0] === 'cfg') miCfg = d;", "if (m[0] === 'cfg') miCfg = d; if (m[0] === 'aju') miAju = d;", "miAju = d")
+soft(UI, "tabApps.style.zIndex = 200; tabHelp.style.zIndex = 200; tabSpace.style.zIndex = 200;", open('/tmp/vr_orig_ui.js', encoding='utf-8').read() + "\ntabApps.style.zIndex = 200; tabHelp.style.zIndex = 200; tabSpace.style.zIndex = 200;", "var tabAju")
+soft(UI, "['cfg', tabCfg]]", "['cfg', tabCfg], ['aju', tabAju]]", "['aju', tabAju]")
+soft(UI, "tabCfg.style.display = TAB === 'cfg' ? 'flex' : 'none';", "tabCfg.style.display = TAB === 'cfg' ? 'flex' : 'none'; tabAju.style.display = TAB === 'aju' ? 'flex' : 'none';", "tabAju.style.display")
+soft(UI, "miCfg.classList.toggle('on', TAB === 'cfg');", "miCfg.classList.toggle('on', TAB === 'cfg'); miAju.classList.toggle('on', TAB === 'aju');", "miAju.classList")
+soft(UI, "(TAB === 'cfg' ? tabCfg : null)", "(TAB === 'cfg' ? tabCfg : (TAB === 'aju' ? tabAju : null))", "tabAju : null")
+soft(UI, "else if (TAB === 'cfg') t = t.concat(T_cfg);", "else if (TAB === 'cfg') t = t.concat(T_cfg); else if (TAB === 'aju') t = t.concat(T_aju);", "T_aju)")
+soft(UI, "RHS.space, RHS.cfg].forEach", "RHS.space, RHS.cfg, RHS.aju].forEach", "RHS.aju")
+soft(UI, "  function setTab(t) {\n", "  function setTab(t) {\n    try { cfgSync(); } catch (e) { }\n", "try { cfgSync(); }")
+soft(UI, "function rn(o) { return clamp(o.R, 240, 2400); }", "function rn(o) { return clamp(o.R, 240, 6000); }", "240, 6000")
+soft(UI, "s: 0.85, R: 800,", "s: 0.85, R: 800 * (window.__zoom || 1),", "800 * (window.__zoom")
+HAND = 'app/src/main/assets/hand.js'
+soft(HAND, "pinch = pinch ? ratio < 0.26 : ratio < 0.16;", "pinch = pinch ? ratio < (window.__pOff || 0.26) : ratio < (window.__pOn || 0.16);", "window.__pOff")
+soft(HAND, "      if (pt.k === 'win') {\n        if (!grab) grab", "      if (pt.k === 'sld') { pt.drag(cx, cy); }\n      else if (pt.k === 'win') {\n        if (!grab) grab", "pt.k === 'sld'")
 
 MA = 'app/src/main/java/com/vr/launcher/MainActivity.java'
 soft(MA, 'class Bridge {',
@@ -152,6 +235,46 @@ soft(MA, '      GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);\n    }\n   
       }
     }
     @Override public void onFrameAvailable""", 'surfW / 2, surfH')
+
+soft(MA, '  boolean stereoOn = false;\n', """  boolean stereoOn = false;
+  View roomV;
+  /* ---- ajustes: volume, brilho da tela, brilho do quarto, zoom, pinca (guardados em "ar", os mesmos do modo 6DoF) ---- */
+  String cfgJson() {
+    android.content.SharedPreferences pf = getSharedPreferences("ar", MODE_PRIVATE);
+    int vol = 50, bri = pf.getInt("bri", -1);
+    try { android.media.AudioManager am = (android.media.AudioManager) getSystemService(AUDIO_SERVICE); int mx = am.getStreamMaxVolume(3); vol = mx <= 0 ? 0 : Math.round(100f * am.getStreamVolume(3) / mx); } catch (Throwable t) { }
+    if (bri < 0) { try { bri = Math.round(100f * android.provider.Settings.System.getInt(getContentResolver(), android.provider.Settings.System.SCREEN_BRIGHTNESS, 128) / 255f); } catch (Throwable t) { bri = 50; } }
+    return "{\\"vol\\":" + vol + ",\\"bri\\":" + bri + ",\\"room\\":" + pf.getInt("room", 0) + ",\\"zoom\\":" + pf.getInt("zoom", 1)
+      + ",\\"pOn\\":" + Math.round(pf.getFloat("pOn", 0.16f) * 100f) + ",\\"pOff\\":" + Math.round(pf.getFloat("pOff", 0.26f) * 100f) + "}";
+  }
+  void applyRoom(int v) { if (roomV != null) roomV.setAlpha(0.96f * Math.max(0, Math.min(100, v)) / 100f); }
+  void applyBrightness(int v) {
+    try {
+      WindowManager.LayoutParams lp = getWindow().getAttributes();
+      lp.screenBrightness = v < 0 ? WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE : Math.max(0.02f, Math.min(1f, v / 100f));
+      getWindow().setAttributes(lp);
+    } catch (Throwable t) { }
+  }
+  void cfgSet(String k, int v) {
+    android.content.SharedPreferences pf = getSharedPreferences("ar", MODE_PRIVATE);
+    try {
+      if ("vol".equals(k)) {
+        android.media.AudioManager am = (android.media.AudioManager) getSystemService(AUDIO_SERVICE);
+        int mx = am.getStreamMaxVolume(3);
+        am.setStreamVolume(3, Math.round(mx * Math.max(0, Math.min(100, v)) / 100f), 0);
+      } else if ("bri".equals(k)) { int b = Math.max(2, Math.min(100, v)); pf.edit().putInt("bri", b).apply(); applyBrightness(b); }
+      else if ("room".equals(k)) { int r = Math.max(0, Math.min(100, v)); pf.edit().putInt("room", r).apply(); applyRoom(r); }
+      else if ("zoom".equals(k)) pf.edit().putInt("zoom", Math.max(1, Math.min(5, v))).apply();
+      else if ("pOn".equals(k) || "pOff".equals(k)) {
+        float on = pf.getFloat("pOn", 0.16f), off = pf.getFloat("pOff", 0.26f), f = Math.max(0.05f, Math.min(0.6f, v / 100f));
+        if ("pOn".equals(k)) { on = f; if (off < on + 0.04f) off = on + 0.04f; } else { off = f; if (on > off - 0.04f) on = off - 0.04f; }
+        pf.edit().putFloat("pOn", Math.max(0.05f, on)).putFloat("pOff", Math.min(0.6f, off)).apply();
+      }
+    } catch (Throwable t) { }
+  }
+""", 'String cfgJson()')
+soft(MA, '    @JavascriptInterface public boolean getStereo()', '    @JavascriptInterface public String getCfg() { return cfgJson(); }\n    @JavascriptInterface public void setCfg(final String k, final int v) { ui.post(() -> cfgSet(k, v)); }\n    @JavascriptInterface public boolean getStereo()', 'public String getCfg')
+soft(MA, '    root.addView(previewView, new FrameLayout.LayoutParams(-1, -1));\n', '    root.addView(previewView, new FrameLayout.LayoutParams(-1, -1));\n    roomV = new View(this); roomV.setBackgroundColor(0xFF000000); roomV.setAlpha(0f);\n    root.addView(roomV, new FrameLayout.LayoutParams(-1, -1));\n    try { android.content.SharedPreferences pf0 = getSharedPreferences("ar", MODE_PRIVATE); applyRoom(pf0.getInt("room", 0)); applyBrightness(pf0.getInt("bri", -1)); } catch (Throwable t) { }\n', 'roomV = new View')
 PY
 cat > app/src/main/java/com/vr/launcher/ArHand.java <<'EOF'
 package com.vr.launcher;
@@ -1754,12 +1877,12 @@ final class ArRenderer implements GLSurfaceView.Renderer {
   static final float CURVE_TH = 0.30f, RN = HW / CURVE_TH;
   static final int CN = 28;
   // menu 3D: trilho vertical de icones (so icones) com a aba ao lado direito
-  static final int RAIL_N = 5;
+  static final int RAIL_N = 6;
   // RAIL_TOP: espaco do relogio no topo; o relogio tem a mesma largura dos icones
   static final float RAIL_P = 0.064f, RAIL_IC = 0.05f, RAIL_HALF = 0.04f, RAIL_DIST = 0.9f, RAIL_TOP = 0.05f, RAIL_H = RAIL_TOP + RAIL_N * RAIL_P;
   static final float CLOCK_W = RAIL_IC, CLOCK_H = 0.03f;
-  // home, centralizar, espacial, apps, configuracoes (indices de makeGlyph)
-  static final int[] RAIL_GLYPH = {0, 1, 3, 4, 5};
+  // home, centralizar, mundos, apps, ajustes (sliders), configuracoes (engrenagem) (indices de makeGlyph)
+  static final int[] RAIL_GLYPH = {0, 1, 3, 4, 5, 11};
   static final String[] VIEW_NAMES = {"preenchida (corta)", "meio-termo", "inteira (faixas)", "esticada (tela cheia)"};
   // pinca: liga com as pontas coladas, so solta quando abre de verdade
   static final float PINCH_ON = 0.16f, PINCH_OFF = 0.26f;
@@ -1820,6 +1943,11 @@ final class ArRenderer implements GLSurfaceView.Renderer {
   volatile String focusText = "";
   volatile ArImu imu;
   volatile boolean hybridOn = true;       // 6DoF -> 3DoF quando o ARCore perde o rastreio
+  volatile float pinchOn = PINCH_ON, pinchOff = PINCH_OFF;   // distancia (relativa a mao) para fechar e para soltar a pinca
+  volatile float roomDim = 0f;            // brilho do quarto: camada escura sobre a camera (0 a 1)
+  volatile int zoom = 1;                  // distancia das janelas: 1x a 5x
+  private float zoomApplied = 1f;
+  private int bgDimLoc = -1;
   volatile boolean stereo = false;        // tela dividida (um desenho por olho) para o oculos VR Box
   volatile int viewMode = 1;              // 0 preenchida (corta), 1 meio-termo, 2 inteira (faixas), 3 esticada (tela cheia)
   private volatile boolean vpDirty = true;
@@ -2036,6 +2164,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     bgPosLoc = GLES20.glGetAttribLocation(bgProg, "a_Position");
     bgUvLoc = GLES20.glGetAttribLocation(bgProg, "a_TexCoord");
     bgTexLoc = GLES20.glGetUniformLocation(bgProg, "u_Texture");
+    bgDimLoc = GLES20.glGetUniformLocation(bgProg, "u_Dim");
 
     winProg = program(WIN_VS, WIN_FS);
     winPosLoc = GLES20.glGetAttribLocation(winProg, "a_Pos");
@@ -2192,6 +2321,11 @@ final class ArRenderer implements GLSurfaceView.Renderer {
         needSpawn = false;
       }
       maintainAnchors(s);
+      if (!needSpawn && tracking && zoomApplied != zoom) {
+        float kz = zoom / zoomApplied;
+        zoomApplied = zoom;
+        rescaleLayout(s, camPose, kz);
+      }
 
       if (!dim) feedTracker(frame);
       updateInteraction(s, frame, ct);
@@ -2452,7 +2586,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
   /** Posicao da janela i de k, num arco a 1,2 m a frente, todas viradas para a camera. */
   private Pose arcPose(Pose cp, int i, int k) {
     float[] t = cp.getTranslation();
-    float dist = 1.2f, step = (2f * HW + 0.06f) / dist;
+    float dist = 1.2f * zoom, step = (2f * HW + 0.06f) / dist;
     float a = heading(cp) - (i - (k - 1) / 2f) * step;
     return facing(t[0] + dist * (float) Math.sin(a), t[1], t[2] + dist * (float) Math.cos(a), t[0], t[2]);
   }
@@ -2473,9 +2607,10 @@ final class ArRenderer implements GLSurfaceView.Renderer {
       } catch (Throwable e) { }
     }
     initWins = null;
+    zoomApplied = zoom;
     railWin = new Win(cp, null, null, true);
     railWin.rail = true;
-    float left = k > 0 ? (k - 1) / 2f * ((2f * HW + 0.06f) / 1.2f) + HW / 1.2f + 0.16f : 0.15f;
+    float left = k > 0 ? (k - 1) / 2f * ((2f * HW + 0.06f) / (1.2f * zoom)) + HW / (1.2f * zoom) + 0.16f : 0.15f;
     placeRailBeside(s, cp, Math.min(0.42f, left));
     menuOpen = false;   // o menu so abre com o gesto
     menuReveal = 0f;
@@ -2511,8 +2646,35 @@ final class ArRenderer implements GLSurfaceView.Renderer {
   }
 
   /** Centralizar: traz janelas e menu para a frente, sem fechar nada. Grupos continuam juntos. */
+  /** Zoom da interface mudou: afasta (ou aproxima) todas as janelas da camera na mesma direcao, sem mexer no menu. */
+  private void rescaleLayout(Session s, Pose cp, float k) {
+    resetInteraction();
+    float[] c = cp.getTranslation();
+    ArrayList<Win> seen = new ArrayList<Win>();
+    for (Win w : wins) {
+      if (w.menu || seen.contains(w)) continue;
+      ArrayList<Win> u = new ArrayList<Win>(unit(w));
+      seen.addAll(u);
+      Win w0 = u.get(0);
+      Pose G = w0.group != null ? w0.group.g : w0.pose;
+      float[] t = G.getTranslation();
+      Pose n = new Pose(new float[]{c[0] + (t[0] - c[0]) * k, c[1] + (t[1] - c[1]) * k, c[2] + (t[2] - c[2]) * k}, G.getRotationQuaternion());
+      if (w0.group != null) {
+        w0.group.g = n;
+        layoutGroup(w0.group, n);
+      } else {
+        w0.pose = n;
+        if (w0.anchor != null) { try { w0.anchor.detach(); } catch (Throwable e) { } w0.anchor = null; }
+        if (tracking) w0.anchor = anchorOf(s, n);
+      }
+    }
+    say("Zoom da interface: " + Math.round(zoom) + "x");
+  }
+
   private void centerAll(Session s, Pose cp) {
     resetInteraction();
+    zoomApplied = zoom;
+    final float RZ = GRP_R * zoom;   // distancia das janelas (zoom da interface)
     ArrayList<ArrayList<Win>> units = new ArrayList<ArrayList<Win>>();
     ArrayList<Win> seen = new ArrayList<Win>();
     for (Win w : wins) {
@@ -2526,12 +2688,12 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     for (int i = 0; i < units.size(); i++) {
       ArrayList<Win> u = units.get(i);
       float sp = 0f;
-      for (Win w : u) sp += 2f * (float) Math.atan(HW * w.s / GRP_R);
-      sp += (u.size() - 1) * GGAP / GRP_R;
+      for (Win w : u) sp += 2f * (float) Math.atan(HW * w.s / RZ);
+      sp += (u.size() - 1) * GGAP / RZ;
       span[i] = sp;
       total += sp;
     }
-    float gapA = 0.06f / GRP_R;
+    float gapA = 0.06f / RZ;
     if (units.size() > 1) total += (units.size() - 1) * gapA;
     float[] t = cp.getTranslation();
     float h = heading(cp);
@@ -2540,7 +2702,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
       ArrayList<Win> u = units.get(i);
       float a = h + total / 2f - (cum + span[i] / 2f);
       cum += span[i] + gapA;
-      Pose G = facing(t[0] + GRP_R * (float) Math.sin(a), t[1], t[2] + GRP_R * (float) Math.cos(a), t[0], t[2]);
+      Pose G = facing(t[0] + RZ * (float) Math.sin(a), t[1], t[2] + RZ * (float) Math.cos(a), t[0], t[2]);
       Win w0 = u.get(0);
       if (w0.group != null) {
         w0.group.g = G;
@@ -3167,7 +3329,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     fistN = handFist ? fistN + 1 : 0;
     peace = !handFist && computePeace();
     peaceN = peace ? peaceN + 1 : 0;
-    pinch = (handFist || peace) ? false : (pinch ? ratio < PINCH_OFF : ratio < PINCH_ON);
+    pinch = (handFist || peace) ? false : (pinch ? ratio < pinchOff : ratio < pinchOn);
     pinchN = pinch ? pinchN + 1 : 0;
 
     // ponto do cursor: ponta do indicador com a mao aberta, meio da pinca com a mao fechando
@@ -3748,7 +3910,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     if (k == 0) { closeTab(); return; }
     if (k == 1) { recenter(); return; }
     if (menuTab == k && tabWin != null && !tabWin.hidden) { closeTab(); return; }
-    openTab(k == 2 ? "space" : k == 3 ? "apps" : "cfg", k);
+    openTab(k == 2 ? "space" : k == 3 ? "apps" : k == 4 ? "aju" : "cfg", k);
   }
 
   private void openTab(String name, int k) {
@@ -3919,6 +4081,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
     GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, camTex);
     GLES20.glUniform1i(bgTexLoc, 0);
+    GLES20.glUniform1f(bgDimLoc, 1f - 0.96f * Math.max(0f, Math.min(1f, roomDim)));
     bgQuad.position(0);
     bgUv.position(0);
     GLES20.glVertexAttribPointer(bgPosLoc, 2, GLES20.GL_FLOAT, false, 0, bgQuad);
@@ -4168,6 +4331,17 @@ final class ArRenderer implements GLSurfaceView.Renderer {
         c.drawLine(14f, 32f, 48f, 32f, p); c.drawLine(72f, 32f, 84f, 32f, p); c.drawCircle(60f, 32f, 10f, p);
         c.drawLine(14f, 64f, 24f, 64f, p); c.drawLine(48f, 64f, 84f, 64f, p); c.drawCircle(36f, 64f, 10f, p);
         break;
+      case 11: { // engrenagem: aro com 8 dentes e furo central
+        p.setStrokeWidth(6f);
+        c.drawCircle(48f, 48f, 20f, p);
+        c.drawCircle(48f, 48f, 7f, p);
+        for (int i = 0; i < 8; i++) {
+          double an = i * Math.PI / 4.0;
+          float ca = (float) Math.cos(an), sa = (float) Math.sin(an);
+          c.drawLine(48f + ca * 27f, 48f + sa * 27f, 48f + ca * 36f, 48f + sa * 36f, p);
+        }
+        break;
+      }
       case 6:   // +
         p.setStrokeWidth(9f);
         c.drawLine(22f, 48f, 74f, 48f, p);
@@ -4317,7 +4491,8 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     "precision mediump float;\n" +
     "varying vec2 v_TexCoord;\n" +
     "uniform samplerExternalOES u_Texture;\n" +
-    "void main() { gl_FragColor = texture2D(u_Texture, v_TexCoord); }\n";
+    "uniform float u_Dim;\n" +
+    "void main() { vec4 c = texture2D(u_Texture, v_TexCoord); gl_FragColor = vec4(c.rgb * u_Dim, 1.0); }\n";
 
   // janela: textura externa (WebView) com cantos arredondados
   private static final String WIN_VS =
@@ -4392,6 +4567,8 @@ import android.graphics.Bitmap;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.media.AudioManager;
+import android.provider.Settings;
 import android.view.Display;
 import android.view.Gravity;
 import android.view.MotionEvent;
@@ -4484,6 +4661,11 @@ public class ArActivity extends Activity {
     renderer.viewMode = prefs.getInt("view3", 0);
     renderer.hybridOn = prefs.getBoolean("hybrid", true);
     renderer.stereo = prefs.getBoolean("stereo", false);
+    renderer.pinchOn = prefs.getFloat("pOn", ArRenderer.PINCH_ON);
+    renderer.pinchOff = prefs.getFloat("pOff", ArRenderer.PINCH_OFF);
+    renderer.roomDim = prefs.getInt("room", 0) / 100f;
+    renderer.zoom = Math.max(1, Math.min(5, prefs.getInt("zoom", 1)));
+    applyBrightness(prefs.getInt("bri", -1));
     renderer.overlay = overlay;
     // janelas e abas que estavam abertas no modo original: cada item = "indice da aba atual" + "\n" + enderecos
     if (b == null) {
@@ -4647,6 +4829,7 @@ public class ArActivity extends Activity {
       savePrefs();
       return;
     }
+    if (a.startsWith("set:")) { setValue(a); return; }
     if (a.startsWith("sp:")) { space.command(a); return; }
     if (a.startsWith("app:")) {
       try {
@@ -4709,7 +4892,64 @@ public class ArActivity extends Activity {
   }
 
   String menuState() {
-    return "{\"gpu\":" + tracker.wantsGpu() + ",\"hybrid\":" + renderer.hybridOn + ",\"stereo\":" + renderer.stereo + "}";
+    return "{\"gpu\":" + tracker.wantsGpu() + ",\"hybrid\":" + renderer.hybridOn + ",\"stereo\":" + renderer.stereo
+      + ",\"vol\":" + volumeNow() + ",\"bri\":" + brightnessNow() + ",\"room\":" + Math.round(renderer.roomDim * 100f)
+      + ",\"zoom\":" + renderer.zoom + ",\"pOn\":" + Math.round(renderer.pinchOn * 100f) + ",\"pOff\":" + Math.round(renderer.pinchOff * 100f) + "}";
+  }
+
+  // ---- ajustes (volume, brilho da tela, brilho do quarto, zoom da interface, pinca) ----
+
+  private int volumeNow() {
+    try {
+      AudioManager am = (AudioManager) getSystemService(AUDIO_SERVICE);
+      int mx = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
+      return mx <= 0 ? 0 : Math.round(100f * am.getStreamVolume(AudioManager.STREAM_MUSIC) / mx);
+    } catch (Throwable t) { return 50; }
+  }
+
+  private int brightnessNow() {
+    int b = prefs.getInt("bri", -1);
+    if (b >= 0) return b;
+    try { return Math.round(100f * Settings.System.getInt(getContentResolver(), Settings.System.SCREEN_BRIGHTNESS, 128) / 255f); } catch (Throwable t) { return 50; }
+  }
+
+  /** v < 0: segue o brilho do sistema. */
+  private void applyBrightness(final int v) {
+    ui.post(new Runnable() {
+      @Override public void run() {
+        try {
+          WindowManager.LayoutParams lp = getWindow().getAttributes();
+          lp.screenBrightness = v < 0 ? WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE : Math.max(0.02f, Math.min(1f, v / 100f));
+          getWindow().setAttributes(lp);
+        } catch (Throwable t) { }
+      }
+    });
+  }
+
+  /** "set:chave:valor" vindo do menu. */
+  private void setValue(String a) {
+    try {
+      String[] p = a.split(":");
+      String k = p[1];
+      int v = Integer.parseInt(p[2].trim());
+      if ("vol".equals(k)) {
+        AudioManager am = (AudioManager) getSystemService(AUDIO_SERVICE);
+        int mx = am.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
+        am.setStreamVolume(AudioManager.STREAM_MUSIC, Math.round(mx * Math.max(0, Math.min(100, v)) / 100f), 0);
+        return;
+      }
+      if ("bri".equals(k)) { prefs.edit().putInt("bri", Math.max(2, Math.min(100, v))).apply(); applyBrightness(Math.max(2, Math.min(100, v))); return; }
+      if ("room".equals(k)) { renderer.roomDim = Math.max(0, Math.min(100, v)) / 100f; prefs.edit().putInt("room", Math.max(0, Math.min(100, v))).apply(); return; }
+      if ("zoom".equals(k)) { int z = Math.max(1, Math.min(5, v)); renderer.zoom = z; prefs.edit().putInt("zoom", z).apply(); return; }
+      if ("pOn".equals(k) || "pOff".equals(k)) {
+        float on = renderer.pinchOn, off = renderer.pinchOff, f = Math.max(0.05f, Math.min(0.6f, v / 100f));
+        if ("pOn".equals(k)) { on = f; if (off < on + 0.04f) off = on + 0.04f; }
+        else { off = f; if (on > off - 0.04f) on = off - 0.04f; }
+        renderer.pinchOn = Math.max(0.05f, on);
+        renderer.pinchOff = Math.min(0.6f, off);
+        prefs.edit().putFloat("pOn", renderer.pinchOn).putFloat("pOff", renderer.pinchOff).apply();
+      }
+    } catch (Throwable t) { }
   }
 
   // ---- camera: mesma proporcao do app original (16:9, preenchendo a tela) ----
@@ -4895,6 +5135,27 @@ final class ArMenuPage {
     ".vk{position:absolute;top:8px;left:-9px;width:18px;height:18px;border-radius:50%;background:#fff}\n" +
     ".vrow{display:flex;gap:6px;justify-content:center;flex-wrap:wrap}\n" +
     ".vrow .hb{height:40px;min-width:40px;margin:0}\n" +
+    "#p-cfg .row{min-height:44px;padding:4px 12px;margin-bottom:5px}\n" +
+    ".seg{display:flex;gap:6px;flex:none}\n" +
+    ".sb{min-width:46px;height:34px;padding:0 10px;border-radius:10px;background:rgba(255,255,255,.12);display:flex;align-items:center;justify-content:center;font-size:14px}\n" +
+    ".sb.on{background:#5eead4;color:#04201c}\n" +
+    ".sb.off{opacity:.45}\n" +
+    ".sb:active{background:#fff;color:#000}\n" +
+    ".sl{position:relative;height:38px;flex:1.5;min-width:0;touch-action:none}\n" +
+    ".sl .tr{position:absolute;left:11px;right:11px;top:15px;height:8px;border-radius:4px;background:rgba(255,255,255,.22);overflow:hidden}\n" +
+    ".sl .fl{height:100%;width:0;background:#fff}\n" +
+    ".sl .kn{position:absolute;top:8px;left:0;width:22px;height:22px;margin-left:0;border-radius:50%;background:#fff;box-shadow:0 1px 4px rgba(0,0,0,.5)}\n" +
+    ".sl.dr .kn{background:#5eead4}\n" +
+    ".sl.dr .fl{background:#5eead4}\n" +
+    ".cv{min-width:46px;text-align:right;font-size:14px;opacity:.85;flex:none}\n" +
+    ".arow{display:flex;align-items:center;gap:14px;padding:20px 16px;border-radius:16px;background:rgba(255,255,255,.09);margin-bottom:14px}\n" +
+    ".arow svg{width:30px;height:30px;flex:none;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}\n" +
+    ".arow .t{width:170px;flex:none}\n" +
+    ".arow .t b{font-size:17px;display:block}\n" +
+    ".arow .t span{font-size:12px;opacity:.75;display:block;line-height:1.25}\n" +
+    ".arow .sl{height:48px}\n" +
+    ".arow .sl .tr{top:20px;height:8px}\n" +
+    ".arow .sl .kn{top:12px;width:26px;height:26px}\n" +
     "#toast{position:absolute;left:50%;bottom:8px;transform:translateX(-50%);background:rgba(0,0,0,.78);padding:6px 14px;border-radius:14px;font-size:12px;display:none;max-width:90%;text-align:center}\n" +
     "</style></head>\n" +
     "<body><div id=\"app\">\n" +
@@ -4910,11 +5171,20 @@ final class ArMenuPage {
     "  </div></div>\n" +
     "  <div class=\"pg\" id=\"p-space\"><div class=\"hd\" id=\"sh\"></div><div id=\"sb\" style=\"flex:1;min-height:0;display:flex;flex-direction:column\"></div></div>\n" +
     "  <div class=\"pg\" id=\"p-apps\"><h1>APPS</h1><div class=\"grid\" id=\"grid\"></div></div>\n" +
+    "  <div class=\"pg\" id=\"p-aju\"><h1>AJUSTES</h1>\n" +
+    "    <div class=\"arow\"><svg viewBox=\"0 0 24 24\"><path d=\"M4 9h4l5-4v14l-5-4H4z\"/><path d=\"M16.5 9a4 4 0 0 1 0 6\"/><path d=\"M19 6.5a8 8 0 0 1 0 11\"/></svg><div class=\"t\"><b>Volume</b><span>Volume geral do celular.</span></div><div class=\"sl\" data-k=\"vol\" data-min=\"0\" data-max=\"100\"><div class=\"tr\"><div class=\"fl\"></div></div><div class=\"kn\"></div></div><div class=\"cv\" data-v=\"vol\"></div></div>\n" +
+    "    <div class=\"arow\"><svg viewBox=\"0 0 24 24\"><circle cx=\"12\" cy=\"12\" r=\"4\"/><path d=\"M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M18.7 5.3l-2.1 2.1M7.4 16.6l-2.1 2.1\"/></svg><div class=\"t\"><b>Brilho da tela</b><span>Brilho do celular.</span></div><div class=\"sl\" data-k=\"bri\" data-min=\"2\" data-max=\"100\"><div class=\"tr\"><div class=\"fl\"></div></div><div class=\"kn\"></div></div><div class=\"cv\" data-v=\"bri\"></div></div>\n" +
+    "    <div class=\"arow\"><svg viewBox=\"0 0 24 24\"><path d=\"M20 14.5A8.5 8.5 0 0 1 9.5 4 8.5 8.5 0 1 0 20 14.5z\"/></svg><div class=\"t\"><b>Brilho do quarto</b><span>Escurece a imagem da c&acirc;mera.</span></div><div class=\"sl\" data-k=\"room\" data-min=\"0\" data-max=\"100\"><div class=\"tr\"><div class=\"fl\"></div></div><div class=\"kn\"></div></div><div class=\"cv\" data-v=\"room\"></div></div>\n" +
+    "  </div>\n" +
     "  <div class=\"pg\" id=\"p-cfg\"><h1>CONFIGURA&Ccedil;&Otilde;ES</h1>\n" +
     "    <div class=\"row\" data-act=\"orig\"><div class=\"t\"><b>Modo 6DoF (AR)</b><span id=\"s6\">Ligado. Desligue para voltar ao modo original.</span></div><div class=\"sw on\" id=\"sw6\"><i></i></div></div>\n" +
     "    <div class=\"row\" data-act=\"gpu\"><div class=\"t\"><b>IA da m&atilde;o na GPU</b><span>Mais r&aacute;pido. Se travar, use a CPU.</span></div><div class=\"sw\" id=\"swg\"><i></i></div></div>\n" +
     "    <div class=\"row\" data-go=\"help\"><div class=\"t\"><b>Ajuda e gestos</b><span>Como usar a m&atilde;o no modo 6DoF.</span></div><div class=\"chev\">&rsaquo;</div></div>\n" +
     "    <div class=\"row\" data-act=\"stereo\"><div class=\"t\"><b>Est&eacute;reo (VR Box)</b><span>Divide a tela em duas, uma imagem para cada olho.</span></div><div class=\"sw\" id=\"sws\"><i></i></div></div>\n" +
+    "    <div class=\"row\"><div class=\"t\"><b>Zoom da interface</b><span>Dist&acirc;ncia das janelas: quanto maior, mais longe.</span></div><div class=\"seg\" id=\"zseg\"><div class=\"sb\" data-z=\"1\">1x</div><div class=\"sb\" data-z=\"2\">2x</div><div class=\"sb\" data-z=\"3\">3x</div><div class=\"sb\" data-z=\"4\">4x</div><div class=\"sb\" data-z=\"5\">5x</div></div></div>\n" +
+    "    <div class=\"row\"><div class=\"t\"><b>Clique</b><span>Como a m&atilde;o clica.</span></div><div class=\"seg\"><div class=\"sb on\" data-c=\"0\">Pin&ccedil;a</div><div class=\"sb off\" data-c=\"1\">Empurrar</div></div></div>\n" +
+    "    <div class=\"row\"><div class=\"t\"><b>Fechar a pin&ccedil;a</b><span>Dist&acirc;ncia dos dedos para clicar.</span></div><div class=\"sl\" data-k=\"pOn\" data-min=\"6\" data-max=\"30\"><div class=\"tr\"><div class=\"fl\"></div></div><div class=\"kn\"></div></div><div class=\"cv\" data-v=\"pOn\"></div></div>\n" +
+    "    <div class=\"row\"><div class=\"t\"><b>Soltar a pin&ccedil;a</b><span>Dist&acirc;ncia dos dedos para soltar.</span></div><div class=\"sl\" data-k=\"pOff\" data-min=\"10\" data-max=\"50\"><div class=\"tr\"><div class=\"fl\"></div></div><div class=\"kn\"></div></div><div class=\"cv\" data-v=\"pOff\"></div></div>\n" +
     "    <div class=\"row\" data-act=\"hybrid\"><div class=\"t\"><b>Modo h&iacute;brido</b><span>Usa o girosc&oacute;pio quando o ARCore perde o rastreio.</span></div><div class=\"sw\" id=\"swh\"><i></i></div></div>\n" +
     "  </div>\n" +
     "</div></div>\n" +
@@ -4932,13 +5202,36 @@ final class ArMenuPage {
     "  var sp=document.createElement('span');sp.textContent=n;d.appendChild(lg);d.appendChild(sp);\n" +
     "  d.onclick=function(){act('app:'+i);};grid.appendChild(d);});\n" +
     "function show(n){cur=n;if(n==='space'){S.sel=null;S.sig='';setTimeout(sTick,0);sRender();}\n" +
-    "  ['help','space','apps','cfg'].forEach(function(k){\n" +
+    "  ['help','space','apps','aju','cfg'].forEach(function(k){\n" +
     "    document.getElementById('p-'+k).className='pg'+(k===n?' on':'');});\n" +
-    "  if(n==='cfg')refresh();}\n" +
+    "  if(n==='cfg'||n==='aju')refresh();}\n" +
     "function refresh(){var s={};try{s=JSON.parse(A.state())}catch(e){}\n" +
     "  document.getElementById('swg').className='sw'+(s.gpu?' on':'');\n" +
     "  document.getElementById('swh').className='sw'+(s.hybrid?' on':'');\n" +
-    "  document.getElementById('sws').className='sw'+(s.stereo?' on':'');}\n" +
+    "  document.getElementById('sws').className='sw'+(s.stereo?' on':'');\n" +
+    "  ['vol','bri','room','pOn','pOff'].forEach(function(k){if(typeof s[k]==='number')setSl(k,s[k]);});\n" +
+    "  if(typeof s.zoom==='number')setZoomUi(s.zoom);}\n" +
+    "/* ---------- sliders e zoom ---------- */\n" +
+    "var SLV={},SLD=null,SLT=0;\n" +
+    "function slEl(k){return document.querySelector('.sl[data-k=\"'+k+'\"]');}\n" +
+    "function setSl(k,v){var e=slEl(k);if(!e||SLD===k)return;paintSl(e,k,v);}\n" +
+    "function paintSl(e,k,v){var mn=+e.getAttribute('data-min'),mx=+e.getAttribute('data-max');v=Math.max(mn,Math.min(mx,v));SLV[k]=v;\n" +
+    "  var f=(v-mn)/(mx-mn),w=e.clientWidth-22;e.querySelector('.fl').style.width=(f*100)+'%';e.querySelector('.kn').style.left=(f*w)+'px';\n" +
+    "  var c=document.querySelector('[data-v=\"'+k+'\"]');if(c)c.textContent=Math.round(v)+'%';}\n" +
+    "function slPos(e,ev){var t=ev.touches&&ev.touches.length?ev.touches[0]:(ev.changedTouches&&ev.changedTouches.length?ev.changedTouches[0]:ev);\n" +
+    "  var r=e.getBoundingClientRect(),mn=+e.getAttribute('data-min'),mx=+e.getAttribute('data-max');\n" +
+    "  var f=(t.clientX-r.left-11)/Math.max(1,r.width-22);f=Math.max(0,Math.min(1,f));return Math.round(mn+f*(mx-mn));}\n" +
+    "function slSend(k,v,force){var n=Date.now();if(!force&&n-SLT<60)return;SLT=n;act('set:'+k+':'+v);}\n" +
+    "document.querySelectorAll('.sl').forEach(function(e){var k=e.getAttribute('data-k');\n" +
+    "  function mv(ev){if(SLD!==k)return;ev.preventDefault();var v=slPos(e,ev);paintSl(e,k,v);slSend(k,v,false);}\n" +
+    "  function st(ev){ev.preventDefault();SLD=k;e.classList.add('dr');var v=slPos(e,ev);paintSl(e,k,v);slSend(k,v,true);}\n" +
+    "  function en(ev){if(SLD!==k)return;SLD=null;e.classList.remove('dr');slSend(k,SLV[k],true);setTimeout(refresh,250);}\n" +
+    "  e.addEventListener('touchstart',st,{passive:false});e.addEventListener('touchmove',mv,{passive:false});\n" +
+    "  e.addEventListener('touchend',en);e.addEventListener('touchcancel',en);\n" +
+    "  e.addEventListener('mousedown',function(ev){st(ev);function m(x){mv(x);}function u(x){document.removeEventListener('mousemove',m);document.removeEventListener('mouseup',u);en(x);}document.addEventListener('mousemove',m);document.addEventListener('mouseup',u);});});\n" +
+    "function setZoomUi(z){document.querySelectorAll('[data-z]').forEach(function(b){b.className='sb'+(+b.getAttribute('data-z')===z?' on':'');});}\n" +
+    "document.querySelectorAll('[data-z]').forEach(function(b){b.onclick=function(){var z=+b.getAttribute('data-z');setZoomUi(z);act('set:zoom:'+z);};});\n" +
+    "document.querySelectorAll('[data-c]').forEach(function(b){b.onclick=function(){if(b.getAttribute('data-c')==='1')toast('Empurrar: em breve');};});\n" +
     "document.querySelectorAll('[data-go]').forEach(function(e){e.onclick=function(){show(e.getAttribute('data-go'));};});\n" +
     "document.querySelectorAll('[data-act]').forEach(function(e){e.onclick=function(){\n" +
     "  var a=e.getAttribute('data-act');act(a);\n" +
