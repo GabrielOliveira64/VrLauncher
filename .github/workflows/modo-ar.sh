@@ -2,7 +2,7 @@
 # Modo AR (6DoF) do VR Launcher: tudo do 6DoF fica neste arquivo.
 # Para atualizar: envie um modo-ar.sh novo para o repositorio, substituindo este.
 set -e
-echo "modo-ar.sh: Fase 9 - gesto do menu, 3 pontinhos, proporcao, tela cheia, fonte local (2026-11-17)"
+echo "modo-ar.sh: Fase 10 - video 360 top-bottom e lado a lado (2026-11-17)"
 mkdir -p app/src/main/java/com/vr/launcher
 cat > /tmp/vr_orig_ui.js <<'JSEOF'
 var tabAju = mk2('tab', '<div class="tt">AJUSTES</div><div class="cfl"></div>'); tabAju.style.zIndex = 200;
@@ -2105,6 +2105,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
   // espacial 360: panorama (imagem ou video) no lugar da camera, fixo no mundo, com fade
   private int spTex = 0, spProg = 0, spKind = 0;   // spKind: 1 imagem, 2 video
   private boolean spOes = false, spWant = false;
+  private int spLayout = 0, spLayLoc = -1, curEye = 0;   // spLayout: 0 mono, 1 top-bottom, 2 lado a lado
   private int spPosLoc = 0, spProjLoc = 0, spRotLoc = 0, spYawLoc = 0, spTexLoc = 0, spStmLoc = 0, spAlphaLoc = 0;
   private float spAlpha = 0f, spYaw = 0f;
   private SurfaceTexture spSt = null;
@@ -2431,6 +2432,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     final int eyes = st ? 2 : 1;
     for (int e = 0; e < eyes; e++) {
       GLES20.glViewport(vpX + e * cw, vpY, vpW, vpH);
+      curEye = e;
       if (st) {
         // olho esquerdo: a camera anda meia distancia interpupilar para a esquerda (o mundo desloca para a direita)
         Matrix.setIdentityM(eyeT, 0);
@@ -4317,6 +4319,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
   void startSpaceVideo(File f) {
     boolean had = spKind != 0;
     releaseSpace();
+    spLayout = act.space.layoutOf(f);
     if (!ensureSpaceProg(true)) {
       act.space.say("Espacial indisponivel neste aparelho");
       act.space.left();
@@ -4379,7 +4382,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     String fs = head
       + "#ifdef GL_FRAGMENT_PRECISION_HIGH\nprecision highp float;\n#else\nprecision mediump float;\n#endif\n"
       + "varying vec2 v_Ndc;\n"
-      + "uniform mat4 u_InvProj;\nuniform mat3 u_Rot;\nuniform float u_Yaw;\nuniform float u_A;\n"
+      + "uniform mat4 u_InvProj;\nuniform mat3 u_Rot;\nuniform float u_Yaw;\nuniform float u_A;\nuniform vec4 u_Lay;\n"
       + "#ifdef OES\nuniform samplerExternalOES u_Tex;\nuniform mat4 u_Stm;\n#else\nuniform sampler2D u_Tex;\n#endif\n"
       + "void main() {\n"
       + "  vec4 p = u_InvProj * vec4(v_Ndc, 1.0, 1.0);\n"
@@ -4389,7 +4392,9 @@ final class ArRenderer implements GLSurfaceView.Renderer {
       + "  float az = atan(r.x, -r.z);\n"
       + "  float el = asin(clamp(r.y, -1.0, 1.0));\n"
       + "#ifdef OES\n"
-      + "  vec2 uv = (u_Stm * vec4(az * 0.15915494 + 0.5, 0.5 + el * 0.31830989, 0.0, 1.0)).xy;\n"
+      + "  vec2 b = vec2(az * 0.15915494 + 0.5, 0.5 + el * 0.31830989);\n"
+      + "  b = b * u_Lay.xz + u_Lay.yw;\n"
+      + "  vec2 uv = (u_Stm * vec4(b, 0.0, 1.0)).xy;\n"
       + "#else\n"
       + "  vec2 uv = vec2(az * 0.15915494 + 0.5, 0.5 - el * 0.31830989);\n"
       + "#endif\n"
@@ -4408,6 +4413,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     spAlphaLoc = GLES20.glGetUniformLocation(pr, "u_A");
     spTexLoc = GLES20.glGetUniformLocation(pr, "u_Tex");
     spStmLoc = GLES20.glGetUniformLocation(pr, "u_Stm");
+    spLayLoc = GLES20.glGetUniformLocation(pr, "u_Lay");
     return true;
   }
 
@@ -4427,6 +4433,11 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     GLES20.glUniform1f(spYawLoc, spYaw);
     GLES20.glUniform1f(spAlphaLoc, e);
     if (spOes) GLES20.glUniformMatrix4fv(spStmLoc, 1, false, spStm, 0);
+    // video estereo: olho esquerdo = metade de cima (top-bottom) ou da esquerda; direito = a outra. Sem estereo na tela, so o olho esquerdo.
+    int ey = stereo ? curEye : 0;
+    if (spLayout == 1) GLES20.glUniform4f(spLayLoc, 1f, 0f, 0.5f, ey == 0 ? 0.5f : 0f);
+    else if (spLayout == 2) GLES20.glUniform4f(spLayLoc, 0.5f, ey == 0 ? 0f : 0.5f, 1f, 0f);
+    else GLES20.glUniform4f(spLayLoc, 1f, 0f, 1f, 0f);
     GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
     GLES20.glBindTexture(spOes ? GLES11Ext.GL_TEXTURE_EXTERNAL_OES : GLES20.GL_TEXTURE_2D, spTex);
     GLES20.glUniform1i(spTexLoc, 0);
@@ -5930,7 +5941,7 @@ final class ArSpace {
     if (id == null || !id.matches("[0-9]+")) return false;
     if (id.equals(active)) act.exitSpace();
     boolean ok = false;
-    String[] sf = {".jpg", ".mp4", "_t.jpg", ".txt", ".src"};
+    String[] sf = {".jpg", ".mp4", "_t.jpg", ".txt", ".src", ".fmt"};
     for (String s : sf) { File f = new File(dir, id + s); if (f.exists() && f.delete()) ok = true; }
     libVer++;
     if (!ok) say("Nao consegui deletar");
@@ -6022,7 +6033,7 @@ final class ArSpace {
           for (int i = 0; i < src.length(); i++) {
             JSONObject o = src.optJSONObject(i);
             if (o == null) continue;
-            String id = o.optString("id", ""), tp = o.optString("tipo", ""), url = o.optString("url", ""), th = o.optString("miniatura", "");
+            String id = o.optString("id", ""), tp = o.optString("tipo", ""), url = o.optString("url", ""), th = o.optString("miniatura", ""), fm = o.optString("formato", "");
             if (!id.matches("[A-Za-z0-9_-]{1,60}") || !(tp.equals("imagem") || tp.equals("video")) || !storeUrlOk(url)) continue;
             String nome = o.optString("nome", id);
             JSONObject r = new JSONObject();
@@ -6032,7 +6043,7 @@ final class ArSpace {
             r.put("tamanho", o.optLong("tamanho", 0));
             r.put("miniatura", storeUrlOk(th) ? th : "");
             out.put(r);
-            items.put(id, new String[]{url, tp, nome});
+            items.put(id, new String[]{url, tp, nome, fm});
           }
           res = out.toString();
           synchronized (catItems) { catItems.clear(); catItems.putAll(items); }
@@ -6073,7 +6084,7 @@ final class ArSpace {
     if (it == null) { say("Item invalido"); return; }
     if (!busy.compareAndSet(false, true)) { say("Aguarde o download atual"); return; }
     dl.put(sid, 0);
-    final String url = it[0], tipo = it[1], nome = it[2];
+    final String url = it[0], tipo = it[1], nome = it[2], formato = it.length > 3 ? it[3] : "";
     new Thread(new Runnable() {
       @Override public void run() {
         boolean isV = "video".equals(tipo);
@@ -6107,6 +6118,7 @@ final class ArSpace {
           if (isV) {
             finishVideo(id, mp4, nome);
             writeText(new File(dir, id + ".src"), sid);
+            if (formato.length() > 0) writeText(new File(dir, id + ".fmt"), formato);
           } else {
             lastId = null;
             importImageFile(tmp, nome);
@@ -6209,6 +6221,33 @@ final class ArSpace {
     lastId = id;
     t.recycle();
     s.recycle();
+  }
+
+  /**
+   * Layout do video 360: 0 mono (2:1), 1 top-bottom (olho esquerdo em cima), 2 lado a lado.
+   * O catalogo pode dizer "formato" (mono, top-bottom, side-by-side); sem isso, decide pela proporcao do video.
+   */
+  int layoutOf(File mp4) {
+    try {
+      String n = mp4.getName();
+      File ff = new File(dir, n.substring(0, n.lastIndexOf('.')) + ".fmt");
+      if (ff.exists()) {
+        String f = readText(ff, "").trim().toLowerCase();
+        if (f.startsWith("top") || f.equals("tb") || f.equals("ou") || f.startsWith("over")) return 1;
+        if (f.startsWith("side") || f.equals("sbs") || f.equals("lr") || f.startsWith("lado")) return 2;
+        if (f.startsWith("mono")) return 0;
+      }
+      MediaMetadataRetriever mr = new MediaMetadataRetriever();
+      try {
+        mr.setDataSource(mp4.getAbsolutePath());
+        String ws = mr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_WIDTH), hs = mr.extractMetadata(MediaMetadataRetriever.METADATA_KEY_VIDEO_HEIGHT);
+        if (ws == null || hs == null) return 0;
+        float r = Float.parseFloat(ws) / Math.max(1f, Float.parseFloat(hs));
+        if (r >= 3.4f) return 2;           // 4:1  = lado a lado
+        if (r >= 0.8f && r <= 1.25f) return 1;   // 1:1  = top-bottom
+      } finally { mr.release(); }
+    } catch (Throwable t) { }
+    return 0;
   }
 
   /** Confere que o MP4 e um video, gera a miniatura e o nome. */
