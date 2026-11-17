@@ -102,5 +102,13 @@
     "tamanho": 6228563,
     "miniatura": "https://raw.githubusercontent.com/GabrielOliveira64/VrLauncher/main/loja/thumbs/teufelsberg_lookout_thumb.jpg",
     "url": "https://github.com/GabrielOliveira64/VrLauncher/releases/download/loja/teufelsberg_lookout.jpg"
+  },
+  {
+    "id": "snowy_park_01",
+    "nome": "snowy_park_01",
+    "tipo": "imagem",
+    "tamanho": 5124952,
+    "miniatura": "https://raw.githubusercontent.com/GabrielOliveira64/VrLauncher/main/loja/thumbs/snowy_park_01_thumb.jpg",
+    "url": "https://github.com/GabrielOliveira64/VrLauncher/releases/download/loja/snowy_park_01.jpg"
   }
 ]
