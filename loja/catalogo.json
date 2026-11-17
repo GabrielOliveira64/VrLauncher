@@ -70,5 +70,13 @@
     "tamanho": 22540295,
     "miniatura": "https://raw.githubusercontent.com/GabrielOliveira64/VrLauncher/main/loja/thumbs/toposcope_sunset_thumb.jpg",
     "url": "https://github.com/GabrielOliveira64/VrLauncher/releases/download/loja/toposcope_sunset.jpg"
+  },
+  {
+    "id": "cloudy_cliffside_road",
+    "nome": "cloudy_cliffside_road",
+    "tipo": "imagem",
+    "tamanho": 7475027,
+    "miniatura": "https://raw.githubusercontent.com/GabrielOliveira64/VrLauncher/main/loja/thumbs/cloudy_cliffside_road_thumb.jpg",
+    "url": "https://github.com/GabrielOliveira64/VrLauncher/releases/download/loja/cloudy_cliffside_road.jpg"
   }
 ]
