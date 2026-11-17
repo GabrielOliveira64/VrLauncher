@@ -46,5 +46,13 @@
     "tamanho": 61467518,
     "miniatura": "https://raw.githubusercontent.com/GabrielOliveira64/VrLauncher/main/loja/thumbs/hUpkVa4UkMg-MQ.jpg",
     "url": "https://github.com/GabrielOliveira64/VrLauncher/releases/download/loja/the_Blu_Whale_Encounter_3D_360_VR_1920x1080.mp4"
+  },
+  {
+    "id": "fireplace",
+    "nome": "fireplace",
+    "tipo": "imagem",
+    "tamanho": 4528196,
+    "miniatura": "https://raw.githubusercontent.com/GabrielOliveira64/VrLauncher/main/loja/thumbs/fireplace_1.jpg",
+    "url": "https://github.com/GabrielOliveira64/VrLauncher/releases/download/loja/fireplace.jpg"
   }
 ]
