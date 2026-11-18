@@ -43,6 +43,7 @@
     "id": "the_Blu_Whale_Encounter_3D_360_VR_1920x1080",
     "nome": "Baleia",
     "tipo": "video",
+    "formato": "top-bottom",
     "tamanho": 61467518,
     "miniatura": "https://raw.githubusercontent.com/GabrielOliveira64/VrLauncher/main/loja/thumbs/hUpkVa4UkMg-MQ.jpg",
     "url": "https://github.com/GabrielOliveira64/VrLauncher/releases/download/loja/the_Blu_Whale_Encounter_3D_360_VR_1920x1080.mp4"
