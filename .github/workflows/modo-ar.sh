@@ -2,7 +2,7 @@
 # Modo AR (6DoF) do VR Launcher: tudo do 6DoF fica neste arquivo.
 # Para atualizar: envie um modo-ar.sh novo para o repositorio, substituindo este.
 set -e
-echo "modo-ar.sh: Fase 11 - correcao de lente e video 3D (2026-11-18)"
+echo "modo-ar.sh: Fase 12 - menu web/aplicativos, lente em config, video auto, distorcao (2026-11-18)"
 mkdir -p app/src/main/java/com/vr/launcher
 cat > /tmp/vr_orig_ui.js <<'JSEOF'
 var tabAju = mk2('tab', '<div class="tt">AJUSTES</div><div class="cfl"></div>'); tabAju.style.zIndex = 200;
@@ -1955,7 +1955,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
   static final float RAIL_P = 0.064f, RAIL_IC = 0.05f, RAIL_HALF = 0.04f, RAIL_DIST = 0.9f, RAIL_TOP = 0.05f, RAIL_H = RAIL_TOP + RAIL_N * RAIL_P;
   static final float CLOCK_W = RAIL_IC, CLOCK_H = 0.03f;
   // home, centralizar, mundos, apps, ajustes (sliders), configuracoes (engrenagem) (indices de makeGlyph)
-  static final int[] RAIL_GLYPH = {0, 1, 3, 4, 5, 13, 11};
+  static final int[] RAIL_GLYPH = {0, 1, 3, 14, 4, 5, 11};
   static final String[] VIEW_NAMES = {"preenchida (corta)", "meio-termo", "inteira (faixas)", "esticada (tela cheia)"};
   // pinca: liga com as pontas coladas, so solta quando abre de verdade
   static final float PINCH_ON = 0.16f, PINCH_OFF = 0.26f;
@@ -2021,7 +2021,12 @@ final class ArRenderer implements GLSurfaceView.Renderer {
   volatile float roomDim = 0f;            // brilho do quarto: camada escura sobre a camera (0 a 1)
   volatile int zoom = 1;                  // distancia das janelas: 1x a 5x
   private float zoomApplied = 1f;
-  private int bgDimLoc = -1;
+  private int bgDimLoc = -1, bgT0Loc = -1, bgTXLoc = -1, bgTYLoc = -1, bgCenterLoc = -1, bgStrLoc = -1, bgTimeLoc = -1, bgAspLoc = -1;
+  // efeito de distorcao do gesto do menu (intensidade reduzida em relacao ao original)
+  private static final float DIST_GAIN = 0.6f;
+  private float distTarget = 0f, distStrength = 0f, distCx = 0f, distCy = 0f, distStrNow = 0f;
+  private long distPulseNs = 0L;
+  private final long startNs = System.nanoTime();
   volatile int aspectIdx = 0;
   private final FloatBuffer[] winVA = new FloatBuffer[4], curVA = new FloatBuffer[4];
   private Win drawW = null, moreWin = null, moreOwner = null;
@@ -2161,7 +2166,14 @@ final class ArRenderer implements GLSurfaceView.Renderer {
   private boolean spOes = false, spWant = false;
   private volatile int spLayout = 0;
   int spLayoutNow() { return spLayout; }
-  void cycleLayout() { spLayout = (spLayout + 1) % 3; say(new String[]{"Video 2D / mono", "Video 3D top-bottom", "Video 3D lado a lado"}[spLayout]); }
+  private volatile int spAuto = 0, layMode = 0;   // layMode: 0 automatico, 1 2D, 2 top-bottom, 3 lado a lado
+  int layModeNow() { return layMode; }
+  private void applyLayMode() { spLayout = layMode == 0 ? spAuto : layMode - 1; }
+  void cycleLayout() {
+    layMode = (layMode + 1) % 4;
+    applyLayMode();
+    say(new String[]{"Video: automatico", "Video 2D / mono", "Video 3D top-bottom", "Video 3D lado a lado"}[layMode]);
+  }
   private int spLayLoc = -1, curEye = 0;   // spLayout: 0 mono, 1 top-bottom, 2 lado a lado
   private int spPosLoc = 0, spProjLoc = 0, spRotLoc = 0, spYawLoc = 0, spTexLoc = 0, spStmLoc = 0, spAlphaLoc = 0;
   private float spAlpha = 0f, spYaw = 0f;
@@ -2301,6 +2313,13 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     bgUvLoc = GLES20.glGetAttribLocation(bgProg, "a_TexCoord");
     bgTexLoc = GLES20.glGetUniformLocation(bgProg, "u_Texture");
     bgDimLoc = GLES20.glGetUniformLocation(bgProg, "u_Dim");
+    bgT0Loc = GLES20.glGetUniformLocation(bgProg, "u_T0");
+    bgTXLoc = GLES20.glGetUniformLocation(bgProg, "u_TX");
+    bgTYLoc = GLES20.glGetUniformLocation(bgProg, "u_TY");
+    bgCenterLoc = GLES20.glGetUniformLocation(bgProg, "u_Center");
+    bgStrLoc = GLES20.glGetUniformLocation(bgProg, "u_Strength");
+    bgTimeLoc = GLES20.glGetUniformLocation(bgProg, "u_Time");
+    bgAspLoc = GLES20.glGetUniformLocation(bgProg, "u_Aspect");
 
     winProg = program(WIN_VS, WIN_FS);
     winPosLoc = GLES20.glGetAttribLocation(winProg, "a_Pos");
@@ -2466,8 +2485,14 @@ final class ArRenderer implements GLSurfaceView.Renderer {
       }
 
       if (!dim) feedTracker(frame);
+      distTarget = 0f;
       updateInteraction(s, frame, ct);
       animateMenu(frameDt);
+      {
+        float pulse = Math.max(0f, 1f - (System.nanoTime() - distPulseNs) / 800000000f);
+        distStrength += (distTarget - distStrength) * Math.min(1f, frameDt * 10f);
+        distStrNow = Math.max(distStrength, 1.2f * pulse) * DIST_GAIN;
+      }
       placeTab();
       placeKb();
       placeMore();
@@ -3444,6 +3469,12 @@ final class ArRenderer implements GLSurfaceView.Renderer {
   }
 
   /** Trilho do menu: so icones, um abaixo do outro; aparecem descendo. */
+  /** O botao de centralizar so aparece com alguma janela web aberta. */
+  private boolean centerHidden() {
+    for (Win w : wins) if (!w.menu && !w.kb && !w.rail && !w.hidden) return false;
+    return true;
+  }
+
   private void drawRail(float dimV, boolean idle) {
     Win rw = railWin;
     if (rw == null || menuReveal < 0.01f) return;
@@ -3456,11 +3487,14 @@ final class ArRenderer implements GLSurfaceView.Renderer {
       float ec = ac * ac * (3f - 2f * ac);
       quad(clockTex, 0f, -0.019f + (1f - ec) * 0.05f, CLOCK_W * (0.8f + 0.2f * ec), CLOCK_H * (0.8f + 0.2f * ec), 1f, 1f, 1f, ec, dimV);
     }
+    final boolean chd = centerHidden();
     for (int k = 0; k < RAIL_N; k++) {
-      float a = Math.max(0f, Math.min(1f, rv - (k + 1)));
+      if (chd && k == 1) continue;
+      int pos = chd && k > 1 ? k - 1 : k;
+      float a = Math.max(0f, Math.min(1f, rv - (pos + 1)));
       if (a <= 0f) continue;
       float e = a * a * (3f - 2f * a);
-      float y = -(RAIL_TOP + (k + 0.5f) * RAIL_P) + (1f - e) * 0.05f;
+      float y = -(RAIL_TOP + (pos + 0.5f) * RAIL_P) + (1f - e) * 0.05f;
       boolean hot = hov && hoverRegion == R_ICON && hoverElem == k;
       boolean sel = k >= 2 && menuTab == k && tabWin != null && !tabWin.hidden;
       float sc = (0.7f + 0.3f * e) * (hot ? 1.15f : 1f);
@@ -4040,8 +4074,10 @@ final class ArRenderer implements GLSurfaceView.Renderer {
       float barY = -RAIL_H - 0.034f;
       if (Math.abs(x) <= 0.05f && Math.abs(y - barY) <= 0.026f && menuReveal > 0.9f) return R_BAR;
       if (Math.abs(x) <= 0.036f && y <= -RAIL_TOP && y >= -RAIL_H) {
-        int k = Math.min(RAIL_N - 1, (int) ((-y - RAIL_TOP) / RAIL_P));
-        if (menuReveal * (RAIL_N + 2) - (k + 1) > 0.6f) { regElem = k; return R_ICON; }
+        boolean chd = centerHidden();
+        int pos = Math.min(RAIL_N - 1 - (chd ? 1 : 0), (int) ((-y - RAIL_TOP) / RAIL_P));
+        int k = chd && pos >= 1 ? pos + 1 : pos;
+        if (menuReveal * (RAIL_N + 2) - (pos + 1) > 0.6f) { regElem = k; return R_ICON; }
       }
       return R_NONE;
     }
@@ -4124,14 +4160,19 @@ final class ArRenderer implements GLSurfaceView.Renderer {
       // descer uns 40% da tela, e durante pelo menos 0,5 s; os primeiros 15% sao ignorados (tremida)
       float raw = Math.max(0f, Math.min(1f, (py - swY0) / (0.40f * Math.max(1f, vh))));
       float tf = Math.min(1f, (now - swT) / (float) SW_MIN_MS);
+      if (!swDone) {
+        distTarget = 0.25f + 0.75f * Math.max(0f, Math.min(1f, (py - swY0) / (0.40f * Math.max(1f, vh))));
+        distCx = 2f * px / Math.max(1f, vw) - 1f;
+        distCy = 1f - 2f * py / Math.max(1f, vh);
+      }
       swProg = Math.min(Math.max(0f, (raw - 0.15f) / 0.85f), tf);
       if (!swDone) {
         if (swMode == 1) {
           menuReveal = swProg;
-          if (swProg >= 1f) { menuOpen = true; swDone = true; }
+          if (swProg >= 1f) { menuOpen = true; swDone = true; distPulseNs = System.nanoTime(); }
         } else if (swMode == 2) {
           menuReveal = 1f - swProg;
-          if (swProg >= 1f) { hideMenu(); swDone = true; }
+          if (swProg >= 1f) { hideMenu(); swDone = true; distPulseNs = System.nanoTime(); }
         }
       }
     } else if (swActive) {
@@ -4198,7 +4239,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     if (k == 0) { closeTab(); return; }
     if (k == 1) { recenter(); return; }
     if (menuTab == k && tabWin != null && !tabWin.hidden) { closeTab(); return; }
-    openTab(k == 2 ? "space" : k == 3 ? "apps" : k == 4 ? "aju" : k == 5 ? "lente" : "cfg", k);
+    openTab(k == 2 ? "space" : k == 3 ? "web" : k == 4 ? "apps" : k == 5 ? "aju" : "cfg", k);
   }
 
   private void openTab(String name, int k) {
@@ -4373,6 +4414,15 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, camTex);
     GLES20.glUniform1i(bgTexLoc, 0);
     GLES20.glUniform1f(bgDimLoc, 1f - 0.96f * Math.max(0f, Math.min(1f, roomDim)));
+    bgUv.position(0);
+    float t0x = bgUv.get(0), t0y = bgUv.get(1);
+    GLES20.glUniform2f(bgT0Loc, t0x, t0y);
+    GLES20.glUniform2f(bgTXLoc, bgUv.get(2) - t0x, bgUv.get(3) - t0y);
+    GLES20.glUniform2f(bgTYLoc, bgUv.get(4) - t0x, bgUv.get(5) - t0y);
+    GLES20.glUniform2f(bgCenterLoc, distCx, distCy);
+    GLES20.glUniform1f(bgStrLoc, distStrNow);
+    GLES20.glUniform1f(bgTimeLoc, ((System.nanoTime() - startNs) / 1000000L % 1000000L) / 1000f);
+    GLES20.glUniform1f(bgAspLoc, vh > 0 ? (float) vw / vh : 1f);
     bgQuad.position(0);
     bgUv.position(0);
     GLES20.glVertexAttribPointer(bgPosLoc, 2, GLES20.GL_FLOAT, false, 0, bgQuad);
@@ -4426,7 +4476,9 @@ final class ArRenderer implements GLSurfaceView.Renderer {
   void startSpaceVideo(File f) {
     boolean had = spKind != 0;
     releaseSpace();
-    spLayout = act.space.layoutOf(f);
+    spAuto = act.space.layoutOf(f);
+    layMode = 0;
+    applyLayMode();
     if (!ensureSpaceProg(true)) {
       act.space.say("Espacial indisponivel neste aparelho");
       act.space.left();
@@ -4642,6 +4694,14 @@ final class ArRenderer implements GLSurfaceView.Renderer {
         }
         break;
       }
+      case 14:  // web: globo com meridiano e paralelos
+        p.setStrokeWidth(6f);
+        c.drawCircle(48f, 48f, 32f, p);
+        c.drawOval(new RectF(32f, 16f, 64f, 80f), p);
+        c.drawLine(16f, 48f, 80f, 48f, p);
+        c.drawLine(22f, 31f, 74f, 31f, p);
+        c.drawLine(22f, 65f, 74f, 65f, p);
+        break;
       case 13:  // oculos: duas lentes e a ponte
         p.setStrokeWidth(6f);
         c.drawCircle(28f, 52f, 16f, p); c.drawCircle(68f, 52f, 16f, p);
@@ -4805,15 +4865,32 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     "attribute vec4 a_Position;\n" +
     "attribute vec2 a_TexCoord;\n" +
     "varying vec2 v_TexCoord;\n" +
-    "void main() { gl_Position = a_Position; v_TexCoord = a_TexCoord; }\n";
+    "varying vec2 v_Ndc;\n" +
+    "void main() { gl_Position = a_Position; v_TexCoord = a_TexCoord; v_Ndc = a_Position.xy; }\n";
 
+  // com u_Strength > 0: ondas + giro + aberracao cromatica + brilho ao redor de u_Center (efeito "outra dimensao" do gesto do menu)
   private static final String BG_FS =
     "#extension GL_OES_EGL_image_external : require\n" +
-    "precision mediump float;\n" +
-    "varying vec2 v_TexCoord;\n" +
-    "uniform samplerExternalOES u_Texture;\n" +
-    "uniform float u_Dim;\n" +
-    "void main() { vec4 c = texture2D(u_Texture, v_TexCoord); gl_FragColor = vec4(c.rgb * u_Dim, 1.0); }\n";
+    "#ifdef GL_FRAGMENT_PRECISION_HIGH\nprecision highp float;\n#else\nprecision mediump float;\n#endif\n" +
+    "varying vec2 v_TexCoord;\nvarying vec2 v_Ndc;\n" +
+    "uniform samplerExternalOES u_Texture;\nuniform float u_Dim;\n" +
+    "uniform vec2 u_T0;\nuniform vec2 u_TX;\nuniform vec2 u_TY;\nuniform vec2 u_Center;\n" +
+    "uniform float u_Strength;\nuniform float u_Time;\nuniform float u_Aspect;\n" +
+    "vec2 tcOf(vec2 n) { return u_T0 + (n.x * 0.5 + 0.5) * u_TX + (n.y * 0.5 + 0.5) * u_TY; }\n" +
+    "void main() {\n" +
+    "  if (u_Strength < 0.002) { gl_FragColor = vec4(texture2D(u_Texture, v_TexCoord).rgb * u_Dim, 1.0); return; }\n" +
+    "  vec2 p = v_Ndc - u_Center;\n  p.x *= u_Aspect;\n  float r = length(p);\n  float rad = 0.5;\n" +
+    "  float fall = exp(-(r * r) / (rad * rad));\n  float wave = sin(r * 22.0 - u_Time * 7.0);\n" +
+    "  vec2 dir = p / max(r, 0.0001);\n  float amp = u_Strength * fall;\n" +
+    "  vec2 q = p + dir * wave * 0.035 * amp;\n" +
+    "  float ang = amp * 0.9 * (1.0 - smoothstep(0.0, rad * 1.6, r));\n  float cs = cos(ang);\n  float sn = sin(ang);\n" +
+    "  q = vec2(cs * q.x - sn * q.y, sn * q.x + cs * q.y);\n" +
+    "  vec2 n2 = vec2(q.x / u_Aspect, q.y) + u_Center;\n" +
+    "  vec2 off = dir * amp * 0.018;\n  off.x = off.x / u_Aspect;\n" +
+    "  float cr = texture2D(u_Texture, tcOf(n2 + off)).r;\n  float cg = texture2D(u_Texture, tcOf(n2)).g;\n  float cb = texture2D(u_Texture, tcOf(n2 - off)).b;\n" +
+    "  vec3 col = vec3(cr, cg, cb);\n  float rr = (r - 0.18) / 0.16;\n" +
+    "  float glow = amp * (0.25 + 0.15 * wave) * exp(-(rr * rr));\n  col += vec3(0.20, 0.45, 0.75) * glow * 0.6;\n" +
+    "  gl_FragColor = vec4(col * u_Dim, 1.0);\n}\n";
 
   // janela: textura externa (WebView) com cantos arredondados
   private static final String WIN_VS =
@@ -4930,7 +5007,7 @@ public class ArActivity extends Activity {
   static final String VID_URL = "about:vid";
   static final String MORE_URL = "about:more";
   /** Aba do menu que a pagina deve mostrar (lida pela pagina via ArMenu.page()). */
-  volatile String menuPage = "apps";
+  volatile String menuPage = "web";
 
   private FrameLayout root;
   private GLSurfaceView gl;
@@ -5508,6 +5585,7 @@ final class ArMenuPage {
     ".sl.v .fl{position:absolute;left:0;right:0;bottom:0;height:0;width:auto;background:rgba(255,255,255,.95);border-radius:0}\n" +
     ".sl.v.dr .fl{background:#fff}\n" +
     ".sl.v svg{position:absolute;left:50%;bottom:20px;width:34px;height:34px;margin-left:-17px;fill:none;stroke:#fff;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round;mix-blend-mode:difference}\n" +
+    ".soon{margin-top:70px;text-align:center;font-family:'Exo 2',system-ui,sans-serif;font-weight:300;font-size:22px;letter-spacing:3px;opacity:.55}\n" +
     "#toast{position:absolute;left:50%;bottom:8px;transform:translateX(-50%);background:rgba(0,0,0,.78);padding:6px 14px;border-radius:14px;font-size:12px;display:none;max-width:90%;text-align:center}\n" +
     "</style></head>\n" +
     "<body><div id=\"app\">\n" +
@@ -5522,9 +5600,10 @@ final class ArMenuPage {
     "    <div class=\"hi\"><b>Dois dedos juntos e esticados, descendo</b> &mdash; abre ou fecha o menu</div>\n" +
     "  </div></div>\n" +
     "  <div class=\"pg\" id=\"p-space\"><div class=\"hd\" id=\"sh\"></div><div id=\"sb\" style=\"flex:1;min-height:0;display:flex;flex-direction:column\"></div></div>\n" +
-    "  <div class=\"pg\" id=\"p-apps\"><h1>APPS</h1><div class=\"grid\" id=\"grid\"></div></div>\n" +
+    "  <div class=\"pg\" id=\"p-web\"><h1>WEB</h1><div class=\"grid\" id=\"grid\"></div></div>\n" +
+    "  <div class=\"pg\" id=\"p-apps\"><h1>APLICATIVOS</h1><div class=\"soon\">Em breve</div></div>\n" +
     "  <div class=\"pg\" id=\"p-aju\"><h1>AJUSTES</h1><div class=\"vs\"><div class=\"vc\"><div class=\"cv\" data-v=\"vol\"></div><div class=\"sl v\" data-k=\"vol\" data-min=\"0\" data-max=\"100\"><div class=\"fl\"></div><svg viewBox=\"0 0 24 24\"><path d=\"M4 9h4l5-4v14l-5-4H4z\"/><path d=\"M16.5 9a4 4 0 0 1 0 6\"/><path d=\"M19 6.5a8 8 0 0 1 0 11\"/></svg></div><div class=\"nm2\">VOLUME</div></div><div class=\"vc\"><div class=\"cv\" data-v=\"bri\"></div><div class=\"sl v\" data-k=\"bri\" data-min=\"2\" data-max=\"100\"><div class=\"fl\"></div><svg viewBox=\"0 0 24 24\"><circle cx=\"12\" cy=\"12\" r=\"4\"/><path d=\"M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M18.7 5.3l-2.1 2.1M7.4 16.6l-2.1 2.1\"/></svg></div><div class=\"nm2\">BRILHO</div></div><div class=\"vc\"><div class=\"cv\" data-v=\"room\"></div><div class=\"sl v\" data-k=\"room\" data-min=\"0\" data-max=\"100\"><div class=\"fl\"></div><svg viewBox=\"0 0 24 24\"><path d=\"M20 14.5A8.5 8.5 0 0 1 9.5 4 8.5 8.5 0 1 0 20 14.5z\"/></svg></div><div class=\"nm2\">QUARTO</div></div></div></div>\n" +
-    "  <div class=\"pg\" id=\"p-lente\"><h1>CORRE&Ccedil;&Atilde;O DE LENTE</h1>\n" +
+    "  <div class=\"pg\" id=\"p-lente\"><div class=\"hd\"><div class=\"back\" data-go=\"cfg\">&lsaquo; Voltar</div><h1>CORRE&Ccedil;&Atilde;O DE LENTE</h1></div>\n" +
     "<div class=\"row\"><div class=\"t\"><b>Dist&acirc;ncia entre os olhos (IPD)</b><span>Em mm. Valor da sua medida, padr&atilde;o 64.</span></div><div class=\"sl\" data-k=\"ipd\" data-min=\"50\" data-max=\"75\"><div class=\"tr\"><div class=\"fl\"></div></div><div class=\"kn\"></div></div><div class=\"cv\" data-v=\"ipd\"></div></div>\n" +
     "<div class=\"row\"><div class=\"t\"><b>Separa&ccedil;&atilde;o das imagens</b><span>Em mm. Positivo afasta, negativo aproxima.</span></div><div class=\"sl\" data-k=\"sep\" data-min=\"-20\" data-max=\"20\"><div class=\"tr\"><div class=\"fl\"></div></div><div class=\"kn\"></div></div><div class=\"cv\" data-v=\"sep\"></div></div>\n" +
     "<div class=\"row\"><div class=\"t\"><b>Altura das imagens</b><span>Em mm. Positivo sobe a imagem.</span></div><div class=\"sl\" data-k=\"vsep\" data-min=\"-15\" data-max=\"15\"><div class=\"tr\"><div class=\"fl\"></div></div><div class=\"kn\"></div></div><div class=\"cv\" data-v=\"vsep\"></div></div>\n" +
@@ -5541,6 +5620,7 @@ final class ArMenuPage {
     "    <div class=\"row\"><div class=\"t\"><b>Clique</b><span>Como a m&atilde;o clica.</span></div><div class=\"seg\"><div class=\"sb on\" data-c=\"0\">Pin&ccedil;a</div><div class=\"sb off\" data-c=\"1\">Empurrar</div></div></div>\n" +
     "    <div class=\"row\"><div class=\"t\"><b>Fechar a pin&ccedil;a</b><span>Dist&acirc;ncia dos dedos para clicar.</span></div><div class=\"sl\" data-k=\"pOn\" data-min=\"6\" data-max=\"30\"><div class=\"tr\"><div class=\"fl\"></div></div><div class=\"kn\"></div></div><div class=\"cv\" data-v=\"pOn\"></div></div>\n" +
     "    <div class=\"row\"><div class=\"t\"><b>Soltar a pin&ccedil;a</b><span>Dist&acirc;ncia dos dedos para soltar.</span></div><div class=\"sl\" data-k=\"pOff\" data-min=\"10\" data-max=\"50\"><div class=\"tr\"><div class=\"fl\"></div></div><div class=\"kn\"></div></div><div class=\"cv\" data-v=\"pOff\"></div></div>\n" +
+    "    <div class=\"row\" data-go=\"lente\"><div class=\"t\"><b>Corre&ccedil;&atilde;o de lente</b><span>Dist&acirc;ncia entre olhos, separa&ccedil;&atilde;o, tamanho e distor&ccedil;&atilde;o.</span></div><div class=\"chev\">&rsaquo;</div></div>\n" +
     "    <div class=\"row\" data-act=\"hybrid\"><div class=\"t\"><b>Modo h&iacute;brido</b><span>Usa o girosc&oacute;pio quando o ARCore perde o rastreio.</span></div><div class=\"sw\" id=\"swh\"><i></i></div></div>\n" +
     "  </div>\n" +
     "</div></div>\n" +
@@ -5558,7 +5638,7 @@ final class ArMenuPage {
     "  var sp=document.createElement('span');sp.textContent=n;d.appendChild(lg);d.appendChild(sp);\n" +
     "  d.onclick=function(){act('app:'+i);};grid.appendChild(d);});\n" +
     "function show(n){cur=n;if(n==='space'){S.sel=null;S.sig='';setTimeout(sTick,0);sRender();}\n" +
-    "  ['help','space','apps','aju','lente','cfg'].forEach(function(k){\n" +
+    "  ['help','space','web','apps','aju','lente','cfg'].forEach(function(k){\n" +
     "    document.getElementById('p-'+k).className='pg'+(k===n?' on':'');});\n" +
     "  if(n==='cfg'||n==='aju'||n==='lente')refresh();}\n" +
     "function refresh(){var s={};try{s=JSON.parse(A.state())}catch(e){}\n" +
@@ -5700,7 +5780,7 @@ final class ArMenuPage {
     "    document.querySelectorAll('[data-t]').forEach(function(e){if(e.getAttribute('data-t')===k)e.textContent=p>=0?p+'%':'Baixando\u2026'})});\n" +
     "}\n" +
     "setInterval(sTick,400);\n" +
-    "var w0='apps';try{w0=A.page()||'apps'}catch(e){}show(w0);\n" +
+    "var w0='web';try{w0=A.page()||'web'}catch(e){}show(w0);\n" +
     "</script></body></html>\n" +
     "\n";
 }
@@ -5894,7 +5974,7 @@ final class ArVidPage {
     "var S={},sig='',dur=0;\n" +
     "function render(){\n" +
     "  document.getElementById('row').innerHTML=bt('seek:0',IC.restart)+bt('rel:-10000',IC.rew+'<span>10</span>')+bt('play',S.playing?IC.pause:IC.play)\n" +
-    "   +bt('rel:10000','<span>10</span>'+IC.fwd)+bt('speed','<span>'+(S.speed||1)+'&times;</span>')+bt('mute',S.muted?IC.mute:IC.vol)+bt('loop',IC.loop,S.loop)+bt('fmt','<span>'+['2D','TB','LR'][S.lay||0]+'</span>',(S.lay||0)>0);\n" +
+    "   +bt('rel:10000','<span>10</span>'+IC.fwd)+bt('speed','<span>'+(S.speed||1)+'&times;</span>')+bt('mute',S.muted?IC.mute:IC.vol)+bt('loop',IC.loop,S.loop)+bt('fmt','<span>'+['AUTO','2D','TB','LR'][S.lay||0]+'</span>',(S.lay||0)>0);\n" +
     "}\n" +
     "function tick(){\n" +
     "  var s;try{s=JSON.parse(A.spState())}catch(e){return}\n" +
@@ -6578,7 +6658,7 @@ final class ArSpace {
       .append(",\"name\":").append(q(activeName)).append(",\"active\":").append(q(active)).append(",\"video\":").append(activeVideo)
       .append(",\"pos\":").append(pos).append(",\"dur\":").append(dur).append(",\"playing\":").append(playing)
       .append(",\"muted\":").append(muted).append(",\"loop\":").append(loop)
-      .append(",\"lay\":").append(act.renderer.spLayoutNow())
+      .append(",\"lay\":").append(act.renderer.layModeNow())
       .append(",\"speed\":").append(SPEEDS[spd]).append(",\"dl\":{");
     boolean first = true;
     for (Map.Entry<String, Integer> e : dl.entrySet()) {
