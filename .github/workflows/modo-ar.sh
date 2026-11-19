@@ -2,7 +2,7 @@
 # Modo AR (6DoF) do VR Launcher: tudo do 6DoF fica neste arquivo.
 # Para atualizar: envie um modo-ar.sh novo para o repositorio, substituindo este.
 set -e
-echo "modo-ar.sh: Fase 14 - modo de lente Cardboard e FOV do panorama (2026-11-18)"
+echo "modo-ar.sh: Fase 15 - grade web, boas-vindas e zoom do menu (2026-11-19)"
 mkdir -p app/src/main/java/com/vr/launcher
 cat > /tmp/vr_orig_ui.js <<'JSEOF'
 var tabAju = mk2('tab', '<div class="tt">AJUSTES</div><div class="cfl"></div>'); tabAju.style.zIndex = 200;
@@ -1257,6 +1257,8 @@ final class ArPanel {
   final boolean vid;
   /** Menu dos tres pontinhos da janela: pagina propria (ArMorePage). */
   final boolean more;
+  /** Tela de boas-vindas: pagina propria (ArHelloPage) com a ponte "ArMenu". */
+  final boolean hello;
   private long downTime = 0;
   private Runnable tick, watchdog;
 
@@ -1269,6 +1271,7 @@ final class ArPanel {
     this.kb = menu && ArActivity.KB_URL.equals(url);
     this.vid = menu && ArActivity.VID_URL.equals(url);
     this.more = menu && ArActivity.MORE_URL.equals(url);
+    this.hello = menu && ArActivity.HELLO_URL.equals(url);
     this.id = ++seq;
     tabs.add(new Tab(url));
     android.opengl.Matrix.setIdentityM(stm, 0);
@@ -1526,6 +1529,7 @@ final class ArPanel {
       t.loaded = true;
       if (kb) t.web.loadDataWithBaseURL("https://vrlauncher.local/", ArKbPage.HTML, "text/html", "utf-8", null);
       else if (vid) t.web.loadDataWithBaseURL("https://vrlauncher.local/", ArVidPage.HTML, "text/html", "utf-8", null);
+      else if (hello) t.web.loadDataWithBaseURL("https://vrlauncher.local/", ArHelloPage.HTML, "text/html", "utf-8", null);
       else if (more) t.web.loadDataWithBaseURL("https://vrlauncher.local/", ArMorePage.HTML, "text/html", "utf-8", null);
       else if (menu) t.web.loadDataWithBaseURL("https://vrlauncher.local/", ArMenuPage.HTML, "text/html", "utf-8", null);
       else t.web.loadUrl(t.url);
@@ -2200,7 +2204,17 @@ final class ArRenderer implements GLSurfaceView.Renderer {
   private long spLastMs = 0;
 
   // menu 3D
-  private Win railWin = null, tabWin = null;
+  private Win railWin = null, tabWin = null, helloWin = null;
+  // zoom do menu (1..5; 2 = tamanho original)
+  volatile int menuZoom = 2;
+  private float menuScaleApplied = 1f;
+  private static final float[] MENU_SCALE = {0.7f, 1f, 1.3f, 1.6f, 2f};
+  private float menuScale() { return MENU_SCALE[Math.max(0, Math.min(4, menuZoom - 1))]; }
+  // tela de boas-vindas: 0 oculta, 1 pergunta o nome, 2 saudacao, 3 sumindo
+  volatile int helloMode = 0;
+  volatile String helloText = "", helloBuf = "";
+  private boolean helloDone = false;
+  private long helloT = 0;
   private boolean menuOpen = false;
   private float menuReveal = 0f;
   private int menuTab = -1;
@@ -2508,6 +2522,15 @@ final class ArRenderer implements GLSurfaceView.Renderer {
         distStrength += (distTarget - distStrength) * Math.min(1f, frameDt * 10f);
         distStrNow = Math.max(distStrength, 1.2f * pulse) * DIST_GAIN;
       }
+      {
+        float ms = menuScale();
+        if (ms != menuScaleApplied && railWin != null) {
+          menuScaleApplied = ms;
+          railWin.s = ms;
+          if (tabWin != null) tabWin.s = RAIL_H / (2f * HH) * ms;
+        }
+      }
+      updateHello(nowMs);
       placeTab();
       placeKb();
       placeMore();
@@ -2858,7 +2881,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     if (tabWin != null || s == null || railWin == null) return;
     tabWin = addWindowP(s, railWin.current(), newPanel(ArActivity.MENU_URL, true), true, false);
     tabWin.linked = true;
-    tabWin.s = RAIL_H / (2f * HH);   // a aba tem a altura do menu
+    tabWin.s = RAIL_H / (2f * HH) * menuScale();   // a aba tem a altura do menu
     tabWin.hidden = true;
   }
 
@@ -2866,7 +2889,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
   private void placeRailBeside(Session s, Pose cp, float off) {
     float[] t = cp.getTranslation();
     float a = heading(cp) + off;
-    setRailPose(s, facing(t[0] + RAIL_DIST * (float) Math.sin(a), t[1] + RAIL_H / 2f, t[2] + RAIL_DIST * (float) Math.cos(a), t[0], t[2]));
+    setRailPose(s, facing(t[0] + RAIL_DIST * (float) Math.sin(a), t[1] + RAIL_H * menuScale() / 2f, t[2] + RAIL_DIST * (float) Math.cos(a), t[0], t[2]));
   }
 
   /** Trilho com o topo no ponto onde o raio (mao ou olhar) cruza a distancia do menu. */
@@ -3266,6 +3289,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     if (tok.equals("k:close")) { hideKb(); return; }
     Win o = kbOwner;
     if (o == null || !wins.contains(o)) return;
+    if (o == helloWin) { helloKey(tok); return; }
     if (o.editing) {
       if (tok.startsWith("t:")) {
         if (o.urlSel) { o.urlBuf = ""; o.urlSel = false; }
@@ -3284,6 +3308,66 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     if (tok.startsWith("t:")) o.panel.typeText(tok.substring(2));
     else if (tok.equals("k:back")) o.panel.pressKey("back");
     else if (tok.equals("k:enter")) o.panel.pressKey("enter");
+  }
+
+  // ---- tela de boas-vindas ----
+
+  private void updateHello(long now) {
+    if (helloDone) return;
+    Session s = session;
+    if (helloMode == 0) {
+      // so depois de carregar a IA da mao e de o ARCore comecar a rastrear (layout inicial criado)
+      if (s == null || needSpawn || railWin == null || lastCamPose == null || !tracking || !act.handReady()) return;
+      if (helloWin == null) {
+        Pose cp = lastCamPose;
+        float[] t = cp.getTranslation();
+        float h = heading(cp);
+        Pose p = facing(t[0] + 1.1f * (float) Math.sin(h), t[1], t[2] + 1.1f * (float) Math.cos(h), t[0], t[2]);
+        helloWin = addWindowP(s, p, newPanel(ArActivity.HELLO_URL, true), true, false);
+        helloWin.s = 1.15f;
+      }
+      helloWin.hidden = false;
+      String nm = act.nick();
+      helloBuf = "";
+      helloT = now;
+      if (nm.length() == 0) {
+        helloText = "Ol\u00e1, como voc\u00ea se chama?";
+        helloMode = 1;
+        showKb(helloWin);
+      } else {
+        helloText = "Ol\u00e1, bem vindo de volta, " + nm;
+        helloMode = 2;
+      }
+    } else if (helloMode == 1) {
+      if (kbWin == null || kbWin.hidden || kbOwner != helloWin) showKb(helloWin);
+    } else if (helloMode == 2) {
+      if (now - helloT > 3200) { helloMode = 3; helloT = now; }
+    } else if (helloMode == 3) {
+      if (now - helloT > 900) {
+        helloMode = 0;
+        helloDone = true;
+        if (helloWin != null) helloWin.hidden = true;
+        if (kbOwner == helloWin) hideKb();
+      }
+    }
+  }
+
+  private void helloKey(String tok) {
+    if (helloMode != 1) return;
+    if (tok.startsWith("t:")) {
+      String t = tok.substring(2);
+      if (helloBuf.length() + t.length() <= 20) helloBuf += t;
+    } else if (tok.equals("k:back")) {
+      if (helloBuf.length() > 0) helloBuf = helloBuf.substring(0, helloBuf.length() - 1);
+    } else if (tok.equals("k:enter")) {
+      String n = helloBuf.trim();
+      if (n.length() == 0) return;
+      act.setNick(n);
+      helloText = "Prazer, " + n;
+      helloMode = 2;
+      helloT = SystemClock.uptimeMillis();
+      hideKb();
+    }
   }
 
   private void spawnFront(Session s, String url) {
@@ -3407,7 +3491,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
       GLES20.glUniform2f(winHalfVLoc, w.hw * w.s, w.hh * w.s);
       GLES20.glUniform1f(winRadLoc, CORNER_R * w.s);
       GLES20.glUniform1f(winSLoc, w.s);
-      GLES20.glUniform1f(winGlassLoc, (w == tabWin || w == moreWin) ? 1f : 0f);
+      GLES20.glUniform1f(winGlassLoc, (w == tabWin || w == moreWin || w == helloWin) ? 1f : 0f);
       modelOf(w);
       Matrix.multiplyMM(mvp, 0, vp, 0, model, 0);
       GLES20.glUniformMatrix4fv(winMvpLoc, 1, false, mvp, 0);
@@ -3434,8 +3518,8 @@ final class ArRenderer implements GLSurfaceView.Renderer {
       boolean cornOn = (sizeWin == w) || (hov && hoverRegion == R_CORNER);
       boolean barAct = dragWin == w, cornAct = sizeWin == w;
       float ba = barOn ? 0.95f : 0.55f, ca = cornOn ? 0.95f : 0.5f;
-      if (!w.kb) quad(barTex, 0f, barCy(w), BAR_W * (barOn ? 1.15f : 0.62f), BAR_H * (barOn ? 1.2f : 0.7f), barAct ? 0.37f : 1f, barAct ? 0.92f : 1f, barAct ? 0.83f : 1f, ba, dimV);
-      if (!w.kb) quad(cornerTex, w.hw - 0.013f, -w.hh + 0.013f, CS * (cornOn ? 1.2f : 0.8f), CS * (cornOn ? 1.2f : 0.8f), cornAct ? 0.37f : 1f, cornAct ? 0.92f : 1f, cornAct ? 0.83f : 1f, ca, dimV);
+      if (!w.kb && w != helloWin) quad(barTex, 0f, barCy(w), BAR_W * (barOn ? 1.15f : 0.62f), BAR_H * (barOn ? 1.2f : 0.7f), barAct ? 0.37f : 1f, barAct ? 0.92f : 1f, barAct ? 0.83f : 1f, ba, dimV);
+      if (!w.kb && w != helloWin) quad(cornerTex, w.hw - 0.013f, -w.hh + 0.013f, CS * (cornOn ? 1.2f : 0.8f), CS * (cornOn ? 1.2f : 0.8f), cornAct ? 0.37f : 1f, cornAct ? 0.92f : 1f, cornAct ? 0.83f : 1f, ca, dimV);
       if (!w.menu) {
         boolean curveOn = hov && hoverRegion == R_CURVE;
         iconBtn(curveGlyph, -PLUS_X, barCy(w), PLUS_S * (curveOn ? 1.2f : 0.9f), curveOn, moreWin != null && !moreWin.hidden && moreOwner == w, 1f, dimV);
@@ -4090,6 +4174,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
   /** x, y em metros com a janela na escala 1. Define regElem quando cai na barra do navegador. */
   private int region(Win w, float x, float y) {
     regElem = 0;
+    if (w == helloWin) return R_NONE;
     if (w.rail) {
       float barY = -RAIL_H - 0.034f;
       if (Math.abs(x) <= 0.05f && Math.abs(y - barY) <= 0.026f && menuReveal > 0.9f) return R_BAR;
@@ -4246,8 +4331,9 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     closeTab();
   }
 
-  private float tabOffX() { return RAIL_HALF + 0.035f + HW * (tabWin != null ? tabWin.s : 0.85f); }
-  private float tabOffY() { return -RAIL_H / 2f; }
+  private float railS() { return railWin != null ? railWin.s : 1f; }
+  private float tabOffX() { return (RAIL_HALF + 0.035f) * railS() + HW * (tabWin != null ? tabWin.s : 0.85f); }
+  private float tabOffY() { return -RAIL_H * railS() / 2f; }
 
   /** A aba do menu fica sempre ao lado direito do trilho. */
   private void placeTab() {
@@ -5057,6 +5143,7 @@ public class ArActivity extends Activity {
   static final String KB_URL = "about:kb";
   static final String VID_URL = "about:vid";
   static final String MORE_URL = "about:more";
+  static final String HELLO_URL = "about:hello";
   /** Aba do menu que a pagina deve mostrar (lida pela pagina via ArMenu.page()). */
   volatile String menuPage = "web";
 
@@ -5117,6 +5204,7 @@ public class ArActivity extends Activity {
     renderer.pinchOff = prefs.getFloat("pOff", ArRenderer.PINCH_OFF);
     renderer.roomDim = prefs.getInt("room", 0) / 100f;
     renderer.sharp = prefs.getInt("sharp", 40) / 100f;
+    renderer.menuZoom = Math.max(1, Math.min(5, prefs.getInt("mz", 2)));
     renderer.ipdMm = prefs.getInt("ipd", 64);
     renderer.sepMm = prefs.getInt("sep", 0);
     renderer.vOffMm = prefs.getInt("vsep", 0);
@@ -5356,11 +5444,28 @@ public class ArActivity extends Activity {
     queueGl(new Runnable() { @Override public void run() { renderer.pageFocus(p); } });
   }
 
+  String nick() { return prefs.getString("nick", ""); }
+  void setNick(String n) { prefs.edit().putString("nick", n).apply(); }
+  boolean handReady() { return !"carregando modelo...".equals(tracker.status); }
+
+  private static String q(String s) {
+    if (s == null) return "\"\"";
+    StringBuilder b = new StringBuilder("\"");
+    for (int i = 0; i < s.length(); i++) {
+      char c = s.charAt(i);
+      if (c == '"' || c == '\\') b.append('\\').append(c);
+      else if (c < 32) b.append(' ');
+      else b.append(c);
+    }
+    return b.append('"').toString();
+  }
+
   String menuState() {
     return "{\"gpu\":" + tracker.wantsGpu() + ",\"hybrid\":" + renderer.hybridOn + ",\"stereo\":" + renderer.stereo
       + ",\"vol\":" + volumeNow() + ",\"bri\":" + brightnessNow() + ",\"room\":" + Math.round(renderer.roomDim * 100f)
       + ",\"curved\":" + renderer.moreCurved + ",\"desktop\":" + ArPanel.desktop + ",\"bz\":" + ArPanel.zoomPct + ",\"ar\":" + renderer.aspectIdx
       + ",\"lmode\":" + renderer.lensMode + ",\"ipd\":" + Math.round(renderer.eIpd()) + ",\"sep\":" + Math.round(renderer.eSep()) + ",\"vsep\":" + Math.round(renderer.eVoff()) + ",\"lsize\":" + Math.round(renderer.eSize()) + ",\"ldist\":" + Math.round(renderer.eDist()) + ",\"lfov\":" + Math.round(renderer.eFov()) + ",\"sharp\":" + Math.round(renderer.sharp * 100f)
+      + ",\"mz\":" + renderer.menuZoom + ",\"hm\":" + renderer.helloMode + ",\"ht\":" + q(renderer.helloText) + ",\"hb\":" + q(renderer.helloBuf)
       + ",\"zoom\":" + renderer.zoom + ",\"pOn\":" + Math.round(renderer.pinchOn * 100f) + ",\"pOff\":" + Math.round(renderer.pinchOff * 100f) + "}";
   }
 
@@ -5413,6 +5518,7 @@ public class ArActivity extends Activity {
       if ("lsize".equals(k)) { v = Math.max(60, Math.min(120, v)); renderer.sizePct = v; prefs.edit().putInt("lsize", v).apply(); return; }
       if ("ldist".equals(k)) { v = Math.max(0, Math.min(200, v)); renderer.distPct = v; prefs.edit().putInt("ldist2", v).apply(); return; }
       if ("lfov".equals(k)) { v = Math.max(60, Math.min(120, v)); renderer.fovDeg = v; prefs.edit().putInt("lfov", v).apply(); return; }
+      if ("mzoom".equals(k)) { int z = Math.max(1, Math.min(5, v)); renderer.menuZoom = z; prefs.edit().putInt("mz", z).apply(); return; }
       if ("lmode".equals(k)) { v = v == 0 ? 0 : 1; renderer.lensMode = v; prefs.edit().putInt("lmode", v).apply(); return; }
       if ("sharp".equals(k)) { v = Math.max(0, Math.min(100, v)); renderer.sharp = v / 100f; prefs.edit().putInt("sharp", v).apply(); return; }
       if ("lreset".equals(k)) { renderer.ipdMm = 64; renderer.sepMm = 0; renderer.vOffMm = 0; renderer.sizePct = 100; renderer.distPct = 100; renderer.fovDeg = 90; renderer.sharp = 0.4f; prefs.edit().putInt("ipd", 64).putInt("sep", 0).putInt("vsep", 0).putInt("lsize", 100).putInt("ldist2", 100).putInt("lfov", 90).putInt("sharp", 40).apply(); return; }
@@ -5566,11 +5672,15 @@ final class ArMenuPage {
     "#p-space>#sb{flex-shrink:1}\n" +
     ".pg{display:none;flex:1;min-height:0}\n" +
     ".pg.on{display:flex;flex-direction:column}\n" +
-    ".grid{display:grid;grid-template-columns:repeat(4,1fr);grid-template-rows:repeat(2,1fr);gap:8px;flex:1;min-height:300px}\n" +
-    ".ai{border-radius:20px;background:transparent;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;font-family:'Exo 2',system-ui,sans-serif;font-size:13px;font-weight:300;letter-spacing:.8px}\n" +
+    ".grid{display:flex;flex-direction:column;align-items:center;justify-content:center;flex:1;min-height:300px;overflow:hidden}\n" +
+    ".hr{display:flex;justify-content:center;margin-top:-6px;transform:translateX(-37px)}\n" +
+    ".hr.od{transform:translateX(38px)}\n" +
+    ".ai{width:150px;height:112px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:9px;font-family:'Exo 2',system-ui,sans-serif;font-size:13px;font-weight:300;letter-spacing:.8px}\n" +
     ".ai span{opacity:.88}\n" +
-    ".lg{width:76px;height:76px;border-radius:50%;background:#fff;color:#000;font-weight:600;font-size:30px;display:flex;align-items:center;justify-content:center;overflow:hidden}\n" +
-    ".lg img{width:44px;height:44px;border-radius:50%}\n" +
+    ".ai:active{background:transparent;color:#fff;opacity:.6}\n" +
+    ".lg{width:36px;height:36px;border-radius:50%;color:#fff;font-weight:300;font-size:18px;display:flex;align-items:center;justify-content:center;overflow:hidden}\n" +
+    ".lg img{width:36px;height:36px;border-radius:50%;display:block}\n" +
+    ".lg.fb{background:rgba(255,255,255,.16)}\n" +
     ".row{display:flex;align-items:center;gap:12px;padding:6px 12px;border-radius:14px;background:rgba(255,255,255,.07);margin-bottom:6px;min-height:52px}\n" +
     ".chev{font-size:26px;opacity:.7;width:40px;text-align:center}\n" +
     ".hd{display:flex;align-items:center;gap:10px;margin:-2px 0 8px}\n" +
@@ -5677,7 +5787,8 @@ final class ArMenuPage {
     "    <div class=\"row\" data-act=\"gpu\"><div class=\"t\"><b>IA da m&atilde;o na GPU</b><span>Mais r&aacute;pido. Se travar, use a CPU.</span></div><div class=\"sw\" id=\"swg\"><i></i></div></div>\n" +
     "    <div class=\"row\" data-go=\"help\"><div class=\"t\"><b>Ajuda e gestos</b><span>Como usar a m&atilde;o no modo 6DoF.</span></div><div class=\"chev\">&rsaquo;</div></div>\n" +
     "    <div class=\"row\" data-act=\"stereo\"><div class=\"t\"><b>Est&eacute;reo (VR Box)</b><span>Divide a tela em duas, uma imagem para cada olho.</span></div><div class=\"sw\" id=\"sws\"><i></i></div></div>\n" +
-    "    <div class=\"row\"><div class=\"t\"><b>Zoom da interface</b><span>Dist&acirc;ncia das janelas: quanto maior, mais longe.</span></div><div class=\"seg\" id=\"zseg\"><div class=\"sb\" data-z=\"1\">1x</div><div class=\"sb\" data-z=\"2\">2x</div><div class=\"sb\" data-z=\"3\">3x</div><div class=\"sb\" data-z=\"4\">4x</div><div class=\"sb\" data-z=\"5\">5x</div></div></div>\n" +
+    "    <div class=\"row\"><div class=\"t\"><b>Zoom das janelas</b><span>Dist&acirc;ncia das janelas: quanto maior, mais longe.</span></div><div class=\"seg\" id=\"zseg\"><div class=\"sb\" data-z=\"1\">1x</div><div class=\"sb\" data-z=\"2\">2x</div><div class=\"sb\" data-z=\"3\">3x</div><div class=\"sb\" data-z=\"4\">4x</div><div class=\"sb\" data-z=\"5\">5x</div></div></div>\n" +
+    "    <div class=\"row\"><div class=\"t\"><b>Zoom do menu</b><span>Tamanho do menu quando ele abre (2x = padr&atilde;o).</span></div><div class=\"seg\" id=\"mseg\"><div class=\"sb\" data-m=\"1\">1x</div><div class=\"sb\" data-m=\"2\">2x</div><div class=\"sb\" data-m=\"3\">3x</div><div class=\"sb\" data-m=\"4\">4x</div><div class=\"sb\" data-m=\"5\">5x</div></div></div>\n" +
     "    <div class=\"row\"><div class=\"t\"><b>Clique</b><span>Como a m&atilde;o clica.</span></div><div class=\"seg\"><div class=\"sb on\" data-c=\"0\">Pin&ccedil;a</div><div class=\"sb off\" data-c=\"1\">Empurrar</div></div></div>\n" +
     "    <div class=\"row\"><div class=\"t\"><b>Fechar a pin&ccedil;a</b><span>Dist&acirc;ncia dos dedos para clicar.</span></div><div class=\"sl\" data-k=\"pOn\" data-min=\"6\" data-max=\"30\"><div class=\"tr\"><div class=\"fl\"></div></div><div class=\"kn\"></div></div><div class=\"cv\" data-v=\"pOn\"></div></div>\n" +
     "    <div class=\"row\"><div class=\"t\"><b>Soltar a pin&ccedil;a</b><span>Dist&acirc;ncia dos dedos para soltar.</span></div><div class=\"sl\" data-k=\"pOff\" data-min=\"10\" data-max=\"50\"><div class=\"tr\"><div class=\"fl\"></div></div><div class=\"kn\"></div></div><div class=\"cv\" data-v=\"pOff\"></div></div>\n" +
@@ -5694,10 +5805,10 @@ final class ArMenuPage {
     "var grid=document.getElementById('grid');\n" +
     "NAMES.forEach(function(n,i){var d=document.createElement('div');d.className='ai';\n" +
     "  var lg=document.createElement('div');lg.className='lg';var im=new Image();\n" +
-    "  im.onerror=function(){lg.textContent=n.charAt(0);im.remove();};\n" +
+    "  im.onerror=function(){lg.textContent=n.charAt(0);lg.className='lg fb';im.remove();};\n" +
     "  im.src='https://www.google.com/s2/favicons?domain='+DOM[i]+'&sz=128';lg.appendChild(im);\n" +
     "  var sp=document.createElement('span');sp.textContent=n;d.appendChild(lg);d.appendChild(sp);\n" +
-    "  d.onclick=function(){act('app:'+i);};grid.appendChild(d);});\n" +
+    "  d.onclick=function(){act('app:'+i);};(function(){var ri=Math.floor(i/4),rows=grid.children;while(rows.length<=ri){var r=document.createElement('div');r.className='hr'+(rows.length%2?' od':'');grid.appendChild(r);}rows[ri].appendChild(d);})();});\n" +
     "function show(n){cur=n;if(n==='space'){S.sel=null;S.sig='';setTimeout(sTick,0);sRender();}\n" +
     "  ['help','space','web','apps','aju','lente','cfg'].forEach(function(k){\n" +
     "    document.getElementById('p-'+k).className='pg'+(k===n?' on':'');});\n" +
@@ -5708,6 +5819,7 @@ final class ArMenuPage {
     "  document.getElementById('sws').className='sw'+(s.stereo?' on':'');\n" +
     "  ['vol','bri','room','pOn','pOff','ipd','sep','vsep','lsize','ldist','lfov','sharp'].forEach(function(k){if(typeof s[k]==='number')setSl(k,s[k]);});\n" +
     "  if(typeof s.zoom==='number')setZoomUi(s.zoom);\n" +
+    "  if(typeof s.mz==='number')setMz(s.mz);\n" +
     "  if(typeof s.lmode==='number')setLm(s.lmode);}\n" +
     "/* ---------- sliders e zoom ---------- */\n" +
     "var UN={ipd:' mm',sep:' mm',vsep:' mm',lfov:'\u00b0'},SLV={},SLD=null,SLT=0;\n" +
@@ -5735,6 +5847,8 @@ final class ArMenuPage {
     "  document.querySelectorAll('.lc').forEach(function(r){r.classList.toggle('dis',m===0);});\n" +
     "  var t=document.getElementById('lms');if(t)t.textContent=m===0?'Cardboard: valores prontos para o VR Box.':'Personalizado: ajuste cada item.';}\n" +
     "document.querySelectorAll('[data-lm]').forEach(function(b){b.onclick=function(){var m=+b.getAttribute('data-lm');setLm(m);act('set:lmode:'+m);setTimeout(refresh,300);};});\n" +
+    "function setMz(z){document.querySelectorAll('[data-m]').forEach(function(b){b.className='sb'+(+b.getAttribute('data-m')===z?' on':'');});}\n" +
+    "document.querySelectorAll('[data-m]').forEach(function(b){b.onclick=function(){var z=+b.getAttribute('data-m');setMz(z);act('set:mzoom:'+z);};});\n" +
     "function setZoomUi(z){document.querySelectorAll('[data-z]').forEach(function(b){b.className='sb'+(+b.getAttribute('data-z')===z?' on':'');});}\n" +
     "document.querySelectorAll('[data-z]').forEach(function(b){b.onclick=function(){var z=+b.getAttribute('data-z');setZoomUi(z);act('set:zoom:'+z);};});\n" +
     "document.querySelectorAll('[data-c]').forEach(function(b){b.onclick=function(){if(b.getAttribute('data-c')==='1')toast('Empurrar: em breve');};});\n" +
@@ -6787,6 +6901,46 @@ final class ArMorePage {
     "document.querySelectorAll('[data-z]').forEach(function(e){e.onclick=function(){act('more:zoom:'+e.getAttribute('data-z'));setTimeout(refresh,200);};});\n" +
     "document.querySelectorAll('[data-r]').forEach(function(e){e.onclick=function(){act('more:ar:'+e.getAttribute('data-r'));setTimeout(refresh,200);};});\n" +
     "refresh();setInterval(refresh,1000);\n" +
+    "</script></body></html>\n" +
+    "\n";
+}
+EOF
+cat > app/src/main/java/com/vr/launcher/ArHelloPage.java <<'EOF'
+package com.vr.launcher;
+
+/** Pagina HTML gerada (hello.html). */
+final class ArHelloPage {
+  static final String HTML =
+    "<!doctype html>\n" +
+    "<html><head><meta charset=\"utf-8\">\n" +
+    "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1,user-scalable=no\">\n" +
+    "<style>\n" +
+    "@font-face{font-family:'Exo 2';font-weight:300;src:url(/font/exo2-300.woff2) format('woff2')}\n" +
+    "@font-face{font-family:'Exo 2';font-weight:400;src:url(/font/exo2-400.woff2) format('woff2')}\n" +
+    "*{box-sizing:border-box;-webkit-user-select:none;user-select:none}\n" +
+    "html,body{margin:0;height:100%;background:#000;color:#fff;overflow:hidden;font-family:'Exo 2',system-ui,sans-serif}\n" +
+    "#w{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:30px;opacity:0;transition:opacity .8s ease}\n" +
+    "#w.on{opacity:1}\n" +
+    "#t{font-weight:300;font-size:44px;letter-spacing:1.5px;text-align:center;padding:0 24px;line-height:1.2}\n" +
+    "#f{width:70%;max-width:520px;height:64px;border-radius:32px;border:1.5px solid rgba(255,255,255,.55);display:none;align-items:center;justify-content:center;font-weight:300;font-size:28px;letter-spacing:1px;padding:0 26px;overflow:hidden;white-space:nowrap}\n" +
+    "#f.on{display:flex}\n" +
+    "#c{display:inline-block;width:2px;height:30px;background:#fff;margin-left:3px;animation:bl 1s steps(1) infinite}\n" +
+    "#ph{opacity:.4}\n" +
+    "@keyframes bl{50%{opacity:0}}\n" +
+    "</style></head><body>\n" +
+    "<div id=\"w\"><div id=\"t\"></div><div id=\"f\"><span id=\"v\"></span><span id=\"c\"></span></div></div>\n" +
+    "<script>\n" +
+    "var A=window.ArMenu,last='';\n" +
+    "function tick(){var s={};try{s=JSON.parse(A.state())}catch(e){}\n" +
+    "  var m=s.hm||0,sig=[m,s.ht,s.hb].join('|');\n" +
+    "  if(sig!==last){last=sig;\n" +
+    "    document.getElementById('t').textContent=s.ht||'';\n" +
+    "    var f=document.getElementById('f');f.className=m===1?'on':'';\n" +
+    "    var v=document.getElementById('v');\n" +
+    "    if(s.hb){v.id='v';v.className='';v.textContent=s.hb;}else{v.className='';v.innerHTML='<span id=\"ph\">apelido</span>';}\n" +
+    "    document.getElementById('w').className=(m===1||m===2)?'on':'';}\n" +
+    "}\n" +
+    "setInterval(tick,120);tick();\n" +
     "</script></body></html>\n" +
     "\n";
 }
