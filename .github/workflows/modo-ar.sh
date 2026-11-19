@@ -2,7 +2,7 @@
 # Modo AR (6DoF) do VR Launcher: tudo do 6DoF fica neste arquivo.
 # Para atualizar: envie um modo-ar.sh novo para o repositorio, substituindo este.
 set -e
-echo "modo-ar.sh: Fase 12 - menu web/aplicativos, lente em config, video auto, distorcao (2026-11-18)"
+echo "modo-ar.sh: Fase 13 - panorama pelo giroscopio e nitidez (2026-11-18)"
 mkdir -p app/src/main/java/com/vr/launcher
 cat > /tmp/vr_orig_ui.js <<'JSEOF'
 var tabAju = mk2('tab', '<div class="tt">AJUSTES</div><div class="cfl"></div>'); tabAju.style.zIndex = 200;
@@ -706,6 +706,7 @@ final class ArFuse {
   private boolean ready = false;
   private float yc = 1f, ys = 0f;
   private boolean yawInit = false;
+  volatile boolean freezeYaw = false;
 
   private final float[] a = new float[9], b = new float[9], c = new float[9], d = new float[9];
 
@@ -751,7 +752,7 @@ final class ArFuse {
       System.arraycopy(rAr, 0, refAr, 0, 9);
       System.arraycopy(rG, 0, refG, 0, 9);
     }
-    if (best >= 0 && ready && spd < 1.5f) yawUpdate(rAr, rG);
+    if (best >= 0 && ready && spd < 1.5f && !(freezeYaw && yawInit)) yawUpdate(rAr, rG);
   }
 
   private void base(float[] rG, float[] out) {
@@ -2177,6 +2178,11 @@ final class ArRenderer implements GLSurfaceView.Renderer {
   private int spLayLoc = -1, curEye = 0;   // spLayout: 0 mono, 1 top-bottom, 2 lado a lado
   private int spPosLoc = 0, spProjLoc = 0, spRotLoc = 0, spYawLoc = 0, spTexLoc = 0, spStmLoc = 0, spAlphaLoc = 0;
   private float spAlpha = 0f, spYaw = 0f;
+  // o panorama segue so o giroscopio (liso, sem os saltos de relocalizacao do ARCore)
+  private final float[] spView = new float[16], rP = new float[9];
+  private boolean spGyro = false;
+  volatile float sharp = 0.4f;   // nitidez do panorama (0..1)
+  private int spPxLoc = -1, spShLoc = -1;
   private SurfaceTexture spSt = null;
   private Surface spSurf = null;
   private final AtomicBoolean spAvail = new AtomicBoolean(false);
@@ -2467,7 +2473,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
       lastCamPose = camPose;
       if (recenterReq) {
         recenterReq = false;
-        if (spKind != 0) spYaw = heading(camPose) - (float) Math.PI;
+        if (spKind != 0) spYaw = panoHeading(camPose) - (float) Math.PI;
         if (!needSpawn && tracking) centerAll(s, camPose);
       }
       float[] ct = camPose.getTranslation();
@@ -2635,7 +2641,8 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     poseToMat(ar, rAr);
 
     if (tracking) {
-      if (imuOk && hybridOn) fuse.feed(rAr, rG);
+      fuse.freezeYaw = spKind != 0;   // com o panorama aberto o desvio de direcao nao e mais puxado para o ARCore
+      if (imuOk && (hybridOn || spKind != 0)) fuse.feed(rAr, rG);
       if (hybridActive) {
         hybridActive = false;
         boolean reset = anchorLost;
@@ -2666,6 +2673,10 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     if (!hybridOn) hybridActive = false;
     dim = !tracking && !hybridActive && lostSince != 0 && now - lostSince > 300;
 
+    spGyro = spKind != 0 && imuOk && fuse.fused(rG, rP);
+    if (spGyro) {
+      buildView(ZERO3, rP, spView);
+    }
     if (hybridActive && imuOk && fuse.fused(rG, rF)) {
       buildView(lastPos, rF, view);
       ArFuse.quatFromMat(rF, qF);
@@ -4439,8 +4450,19 @@ final class ArRenderer implements GLSurfaceView.Renderer {
   // Espacial 360
   // =============================================================
 
+  private static final float[] ZERO3 = new float[3];
+
+  /** Direcao para onde o usuario olha, pelo mesmo referencial do panorama (giroscopio quando ele esta em uso). */
+  private float panoHeading(Pose cp) {
+    if (spGyro) {
+      float fx = -rP[2], fz = -rP[8];
+      if (fx * fx + fz * fz > 1e-6f) return (float) Math.atan2(fx, fz);
+    }
+    return heading(cp);
+  }
+
   private float yawNow() {
-    return lastCamPose != null ? heading(lastCamPose) - (float) Math.PI : 0f;
+    return lastCamPose != null ? panoHeading(lastCamPose) - (float) Math.PI : 0f;
   }
 
   /** Imagem 360 equiretangular (thread do GL). Entra com fade; o centro da imagem fica na frente de quem olha. */
@@ -4459,11 +4481,12 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, t[0]);
     int w = b.getWidth(), h = b.getHeight();
     boolean pot = (w & (w - 1)) == 0 && (h & (h - 1)) == 0;
-    GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_LINEAR);
+    GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, pot ? GLES20.GL_LINEAR_MIPMAP_LINEAR : GLES20.GL_LINEAR);
     GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
     GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, pot ? GLES20.GL_REPEAT : GLES20.GL_CLAMP_TO_EDGE);
     GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE);
     GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, b, 0);
+    if (pot) GLES20.glGenerateMipmap(GLES20.GL_TEXTURE_2D);
     b.recycle();
     spTex = t[0];
     spKind = 1;
@@ -4543,8 +4566,9 @@ final class ArRenderer implements GLSurfaceView.Renderer {
       + "varying vec2 v_Ndc;\n"
       + "uniform mat4 u_InvProj;\nuniform mat3 u_Rot;\nuniform float u_Yaw;\nuniform float u_A;\nuniform vec4 u_Lay;\n"
       + "#ifdef OES\nuniform samplerExternalOES u_Tex;\nuniform mat4 u_Stm;\n#else\nuniform sampler2D u_Tex;\n#endif\n"
-      + "void main() {\n"
-      + "  vec4 p = u_InvProj * vec4(v_Ndc, 1.0, 1.0);\n"
+      + "uniform vec2 u_Px;\nuniform float u_Sharp;\n"
+      + "vec2 uvOf(vec2 n) {\n"
+      + "  vec4 p = u_InvProj * vec4(n, 1.0, 1.0);\n"
       + "  vec3 w = u_Rot * normalize(p.xyz / p.w);\n"
       + "  float c = cos(u_Yaw), s = sin(u_Yaw);\n"
       + "  vec3 r = vec3(c * w.x - s * w.z, w.y, s * w.x + c * w.z);\n"
@@ -4553,11 +4577,18 @@ final class ArRenderer implements GLSurfaceView.Renderer {
       + "#ifdef OES\n"
       + "  vec2 b = vec2(az * 0.15915494 + 0.5, 0.5 + el * 0.31830989);\n"
       + "  b = b * u_Lay.xz + u_Lay.yw;\n"
-      + "  vec2 uv = (u_Stm * vec4(b, 0.0, 1.0)).xy;\n"
+      + "  return (u_Stm * vec4(b, 0.0, 1.0)).xy;\n"
       + "#else\n"
-      + "  vec2 uv = vec2(az * 0.15915494 + 0.5, 0.5 - el * 0.31830989);\n"
+      + "  return vec2(az * 0.15915494 + 0.5, 0.5 - el * 0.31830989);\n"
       + "#endif\n"
-      + "  vec3 col = texture2D(u_Tex, uv).rgb;\n"
+      + "}\n"
+      + "void main() {\n"
+      + "  vec3 col = texture2D(u_Tex, uvOf(v_Ndc)).rgb;\n"
+      + "  if (u_Sharp > 0.01) {\n"
+      + "    vec3 bl = texture2D(u_Tex, uvOf(v_Ndc + vec2(u_Px.x, 0.0))).rgb + texture2D(u_Tex, uvOf(v_Ndc - vec2(u_Px.x, 0.0))).rgb\n"
+      + "            + texture2D(u_Tex, uvOf(v_Ndc + vec2(0.0, u_Px.y))).rgb + texture2D(u_Tex, uvOf(v_Ndc - vec2(0.0, u_Px.y))).rgb;\n"
+      + "    col = clamp(col + (col - bl * 0.25) * u_Sharp, 0.0, 1.0);\n"
+      + "  }\n"
       + "  gl_FragColor = vec4(col * u_A, u_A);\n"
       + "}\n";
     String vs = "attribute vec2 a_Pos;\nvarying vec2 v_Ndc;\nvoid main() { v_Ndc = a_Pos; gl_Position = vec4(a_Pos, 0.0, 1.0); }\n";
@@ -4573,6 +4604,8 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     spTexLoc = GLES20.glGetUniformLocation(pr, "u_Tex");
     spStmLoc = GLES20.glGetUniformLocation(pr, "u_Stm");
     spLayLoc = GLES20.glGetUniformLocation(pr, "u_Lay");
+    spPxLoc = GLES20.glGetUniformLocation(pr, "u_Px");
+    spShLoc = GLES20.glGetUniformLocation(pr, "u_Sharp");
     return true;
   }
 
@@ -4581,7 +4614,8 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     if (spKind == 0 || spProg == 0 || spTex == 0 || spAlpha <= 0.005f) return;
     float e = spAlpha * spAlpha * (3f - 2f * spAlpha);
     Matrix.invertM(invProj, 0, proj, 0);
-    for (int j = 0; j < 3; j++) for (int i = 0; i < 3; i++) rot3[j * 3 + i] = view[i * 4 + j];
+    final float[] vw3 = spGyro ? spView : view;
+    for (int j = 0; j < 3; j++) for (int i = 0; i < 3; i++) rot3[j * 3 + i] = vw3[i * 4 + j];
     GLES20.glDisable(GLES20.GL_DEPTH_TEST);
     GLES20.glDepthMask(false);
     GLES20.glEnable(GLES20.GL_BLEND);
@@ -4590,6 +4624,8 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     GLES20.glUniformMatrix4fv(spProjLoc, 1, false, invProj, 0);
     GLES20.glUniformMatrix3fv(spRotLoc, 1, false, rot3, 0);
     GLES20.glUniform1f(spYawLoc, spYaw);
+    GLES20.glUniform2f(spPxLoc, 2f / Math.max(1, vpW), 2f / Math.max(1, vpH));
+    GLES20.glUniform1f(spShLoc, sharp * 1.5f);
     GLES20.glUniform1f(spAlphaLoc, e);
     if (spOes) GLES20.glUniformMatrix4fv(spStmLoc, 1, false, spStm, 0);
     // video estereo: olho esquerdo = metade de cima (top-bottom) ou da esquerda; direito = a outra. Sem estereo na tela, so o olho esquerdo.
@@ -5065,6 +5101,7 @@ public class ArActivity extends Activity {
     renderer.pinchOn = prefs.getFloat("pOn", ArRenderer.PINCH_ON);
     renderer.pinchOff = prefs.getFloat("pOff", ArRenderer.PINCH_OFF);
     renderer.roomDim = prefs.getInt("room", 0) / 100f;
+    renderer.sharp = prefs.getInt("sharp", 40) / 100f;
     renderer.ipdMm = prefs.getInt("ipd", 64);
     renderer.sepMm = prefs.getInt("sep", 0);
     renderer.vOffMm = prefs.getInt("vsep", 0);
@@ -5306,7 +5343,7 @@ public class ArActivity extends Activity {
     return "{\"gpu\":" + tracker.wantsGpu() + ",\"hybrid\":" + renderer.hybridOn + ",\"stereo\":" + renderer.stereo
       + ",\"vol\":" + volumeNow() + ",\"bri\":" + brightnessNow() + ",\"room\":" + Math.round(renderer.roomDim * 100f)
       + ",\"curved\":" + renderer.moreCurved + ",\"desktop\":" + ArPanel.desktop + ",\"bz\":" + ArPanel.zoomPct + ",\"ar\":" + renderer.aspectIdx
-      + ",\"ipd\":" + Math.round(renderer.ipdMm) + ",\"sep\":" + Math.round(renderer.sepMm) + ",\"vsep\":" + Math.round(renderer.vOffMm) + ",\"lsize\":" + Math.round(renderer.sizePct) + ",\"ldist\":" + Math.round(renderer.distPct)
+      + ",\"ipd\":" + Math.round(renderer.ipdMm) + ",\"sep\":" + Math.round(renderer.sepMm) + ",\"vsep\":" + Math.round(renderer.vOffMm) + ",\"lsize\":" + Math.round(renderer.sizePct) + ",\"sharp\":" + Math.round(renderer.sharp * 100f) + ",\"ldist\":" + Math.round(renderer.distPct)
       + ",\"zoom\":" + renderer.zoom + ",\"pOn\":" + Math.round(renderer.pinchOn * 100f) + ",\"pOff\":" + Math.round(renderer.pinchOff * 100f) + "}";
   }
 
@@ -5358,7 +5395,8 @@ public class ArActivity extends Activity {
       if ("vsep".equals(k)) { v = Math.max(-15, Math.min(15, v)); renderer.vOffMm = v; prefs.edit().putInt("vsep", v).apply(); return; }
       if ("lsize".equals(k)) { v = Math.max(60, Math.min(120, v)); renderer.sizePct = v; prefs.edit().putInt("lsize", v).apply(); return; }
       if ("ldist".equals(k)) { v = Math.max(0, Math.min(100, v)); renderer.distPct = v; prefs.edit().putInt("ldist", v).apply(); return; }
-      if ("lreset".equals(k)) { renderer.ipdMm = 64; renderer.sepMm = 0; renderer.vOffMm = 0; renderer.sizePct = 100; renderer.distPct = 0; prefs.edit().putInt("ipd", 64).putInt("sep", 0).putInt("vsep", 0).putInt("lsize", 100).putInt("ldist", 0).apply(); return; }
+      if ("sharp".equals(k)) { v = Math.max(0, Math.min(100, v)); renderer.sharp = v / 100f; prefs.edit().putInt("sharp", v).apply(); return; }
+      if ("lreset".equals(k)) { renderer.ipdMm = 64; renderer.sepMm = 0; renderer.vOffMm = 0; renderer.sizePct = 100; renderer.distPct = 0; prefs.edit().putInt("ipd", 64).putInt("sep", 0).putInt("vsep", 0).putInt("lsize", 100).putInt("ldist", 0).putInt("sharp", 40).apply(); renderer.sharp = 0.4f; return; }
       if ("zoom".equals(k)) { int z = Math.max(1, Math.min(5, v)); renderer.zoom = z; prefs.edit().putInt("zoom", z).apply(); return; }
       if ("pOn".equals(k) || "pOff".equals(k)) {
         float on = renderer.pinchOn, off = renderer.pinchOff, f = Math.max(0.05f, Math.min(0.6f, v / 100f));
@@ -5609,6 +5647,7 @@ final class ArMenuPage {
     "<div class=\"row\"><div class=\"t\"><b>Altura das imagens</b><span>Em mm. Positivo sobe a imagem.</span></div><div class=\"sl\" data-k=\"vsep\" data-min=\"-15\" data-max=\"15\"><div class=\"tr\"><div class=\"fl\"></div></div><div class=\"kn\"></div></div><div class=\"cv\" data-v=\"vsep\"></div></div>\n" +
     "<div class=\"row\"><div class=\"t\"><b>Tamanho da imagem</b><span>Em %. Reduz ou amplia cada olho.</span></div><div class=\"sl\" data-k=\"lsize\" data-min=\"60\" data-max=\"120\"><div class=\"tr\"><div class=\"fl\"></div></div><div class=\"kn\"></div></div><div class=\"cv\" data-v=\"lsize\"></div></div>\n" +
     "<div class=\"row\"><div class=\"t\"><b>Corre&ccedil;&atilde;o de distor&ccedil;&atilde;o</b><span>Em %. Compensa o efeito da lente.</span></div><div class=\"sl\" data-k=\"ldist\" data-min=\"0\" data-max=\"100\"><div class=\"tr\"><div class=\"fl\"></div></div><div class=\"kn\"></div></div><div class=\"cv\" data-v=\"ldist\"></div></div>\n" +
+    "<div class=\"row\"><div class=\"t\"><b>Nitidez do mundo</b><span>Agu\u00e7a imagens e v\u00eddeos 360 (modo mundo).</span></div><div class=\"sl\" data-k=\"sharp\" data-min=\"0\" data-max=\"100\"><div class=\"tr\"><div class=\"fl\"></div></div><div class=\"kn\"></div></div><div class=\"cv\" data-v=\"sharp\"></div></div>\n" +
     "    <div class=\"row\" data-act=\"set:lreset:0\"><div class=\"t\"><b>Restaurar padr&otilde;es</b><span>Vale s&oacute; no modo Est&eacute;reo (VR Box).</span></div><div class=\"chev\">&#8634;</div></div>\n" +
     "  </div>\n" +
     "  <div class=\"pg\" id=\"p-cfg\"><h1>CONFIGURA&Ccedil;&Otilde;ES</h1>\n" +
@@ -5645,7 +5684,7 @@ final class ArMenuPage {
     "  document.getElementById('swg').className='sw'+(s.gpu?' on':'');\n" +
     "  document.getElementById('swh').className='sw'+(s.hybrid?' on':'');\n" +
     "  document.getElementById('sws').className='sw'+(s.stereo?' on':'');\n" +
-    "  ['vol','bri','room','pOn','pOff','ipd','sep','vsep','lsize','ldist'].forEach(function(k){if(typeof s[k]==='number')setSl(k,s[k]);});\n" +
+    "  ['vol','bri','room','pOn','pOff','ipd','sep','vsep','lsize','ldist','sharp'].forEach(function(k){if(typeof s[k]==='number')setSl(k,s[k]);});\n" +
     "  if(typeof s.zoom==='number')setZoomUi(s.zoom);}\n" +
     "/* ---------- sliders e zoom ---------- */\n" +
     "var UN={ipd:' mm',sep:' mm',vsep:' mm'},SLV={},SLD=null,SLT=0;\n" +
@@ -6430,7 +6469,7 @@ final class ArSpace {
     if (s != b) b.recycle();
     String id = String.valueOf(System.currentTimeMillis() * 10 + (cnt++ % 10));
     FileOutputStream fo = new FileOutputStream(new File(dir, id + ".jpg"));
-    try { s.compress(Bitmap.CompressFormat.JPEG, 90, fo); } finally { fo.close(); }
+    try { s.compress(Bitmap.CompressFormat.JPEG, 95, fo); } finally { fo.close(); }
     Bitmap t = Bitmap.createScaledBitmap(s, 320, 160, true);
     fo = new FileOutputStream(new File(dir, id + "_t.jpg"));
     try { t.compress(Bitmap.CompressFormat.JPEG, 80, fo); } finally { fo.close(); }
