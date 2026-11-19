@@ -2,7 +2,7 @@
 # Modo AR (6DoF) do VR Launcher: tudo do 6DoF fica neste arquivo.
 # Para atualizar: envie um modo-ar.sh novo para o repositorio, substituindo este.
 set -e
-echo "modo-ar.sh: Fase 13 - panorama pelo giroscopio e nitidez (2026-11-18)"
+echo "modo-ar.sh: Fase 14 - modo de lente Cardboard e FOV do panorama (2026-11-18)"
 mkdir -p app/src/main/java/com/vr/launcher
 cat > /tmp/vr_orig_ui.js <<'JSEOF'
 var tabAju = mk2('tab', '<div class="tt">AJUSTES</div><div class="cfl"></div>'); tabAju.style.zIndex = 200;
@@ -2044,7 +2044,16 @@ final class ArRenderer implements GLSurfaceView.Renderer {
   private float imgAspect = 0f;
   private static final float IPD = 0.064f;   // padrao da distancia entre os olhos virtuais (m)
   // correcao de lente (so no modo estereo)
-  volatile float ipdMm = 64f, sepMm = 0f, vOffMm = 0f, sizePct = 100f, distPct = 0f;
+  volatile float ipdMm = 64f, sepMm = 0f, vOffMm = 0f, sizePct = 100f, distPct = 100f, fovDeg = 90f;   // valores do modo personalizado
+  volatile int lensMode = 0;   // 0 Cardboard (predefinido), 1 personalizado
+  // modo Cardboard: IPD 64 mm, sem deslocamentos, distorcao do Cardboard V2 (k1 0,34 / k2 0,55) e 90 graus de campo de visao
+  float eIpd() { return lensMode == 0 ? 64f : ipdMm; }
+  float eSep() { return lensMode == 0 ? 0f : sepMm; }
+  float eVoff() { return lensMode == 0 ? 0f : vOffMm; }
+  float eSize() { return lensMode == 0 ? 100f : sizePct; }
+  float eDist() { return lensMode == 0 ? 100f : distPct; }
+  float eFov() { return lensMode == 0 ? 90f : fovDeg; }
+  private final float[] spProjM = new float[16];
   private int lnProg = 0, lnPos = -1, lnK1 = -1, lnK2 = -1, lnTex = -1, lnAsp = -1;
   private int lnFbo = 0, lnTexId = 0, lnDepth = 0, lnW = 0, lnH = 0;
   private boolean lnBad = false;
@@ -2053,7 +2062,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     "void main() { gl_Position = vec4(a_Position, 0.0, 1.0); v_Uv = a_Position * 0.5 + 0.5; }\n";
   private static final String LN_FS =
     "precision mediump float;\nvarying vec2 v_Uv;\nuniform sampler2D u_Tex;\nuniform float u_K1;\nuniform float u_K2;\nuniform float u_Asp;\n" +
-    "void main() { vec2 q = v_Uv * 2.0 - 1.0; vec2 a = vec2(q.x * u_Asp, q.y); float r2 = dot(a, a) * 0.5;\n" +
+    "void main() { vec2 q = v_Uv * 2.0 - 1.0; vec2 a = vec2(q.x * u_Asp, q.y); float r2 = dot(a, a) * 0.25;\n" +
     "  vec2 src = q * (1.0 + u_K1 * r2 + u_K2 * r2 * r2); vec2 uv = src * 0.5 + 0.5;\n" +
     "  if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) gl_FragColor = vec4(0.0, 0.0, 0.0, 1.0);\n" +
     "  else gl_FragColor = vec4(texture2D(u_Tex, uv).rgb, 1.0); }\n";
@@ -2518,20 +2527,20 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     final float[] mono = vpMono;
     if (st) System.arraycopy(vp, 0, mono, 0, 16);
     final int eyes = st ? 2 : 1;
-    final float ipdM = ipdMm / 1000f;
+    final float ipdM = eIpd() / 1000f;
     final float pxMm = act.getResources().getDisplayMetrics().xdpi / 25.4f;
     final float pyMm = act.getResources().getDisplayMetrics().ydpi / 25.4f;
-    final float k1 = distPct / 100f * 0.5f, k2 = k1 * 0.6f;
-    final boolean dist = st && distPct > 0.5f && lensFbo(vpW, vpH);
-    final float scl = st ? Math.max(0.3f, sizePct / 100f) : 1f;
+    final float k1 = eDist() / 100f * 0.34f, k2 = eDist() / 100f * 0.55f;
+    final boolean dist = st && eDist() > 0.5f && lensFbo(vpW, vpH);
+    final float scl = st ? Math.max(0.3f, eSize() / 100f) : 1f;
     final int rw = Math.round(vpW * scl), rh = Math.round(vpH * scl);
     for (int e = 0; e < eyes; e++) {
       int x, y = 0, w = vpW, h = vpH;
       if (st) {
         w = rw; h = rh;
         float sgn = e == 0 ? -1f : 1f;
-        x = e * cw + vpX + (vpW - rw) / 2 + Math.round(sgn * sepMm * 0.5f * pxMm);
-        y = vpY + (vpH - rh) / 2 + Math.round(vOffMm * pyMm);
+        x = e * cw + vpX + (vpW - rw) / 2 + Math.round(sgn * eSep() * 0.5f * pxMm);
+        y = vpY + (vpH - rh) / 2 + Math.round(eVoff() * pyMm);
         GLES20.glEnable(GLES20.GL_SCISSOR_TEST);
         GLES20.glScissor(e * cw, 0, cw, sh);
       } else {
@@ -4613,7 +4622,13 @@ final class ArRenderer implements GLSurfaceView.Renderer {
   private void drawSpace() {
     if (spKind == 0 || spProg == 0 || spTex == 0 || spAlpha <= 0.005f) return;
     float e = spAlpha * spAlpha * (3f - 2f * spAlpha);
-    Matrix.invertM(invProj, 0, proj, 0);
+    if (stereo) {
+      // panorama com campo de visao proprio (a camera do celular e estreita e dava efeito de zoom)
+      Matrix.perspectiveM(spProjM, 0, eFov(), (float) vpW / Math.max(1, vpH), 0.1f, 30f);
+      Matrix.invertM(invProj, 0, spProjM, 0);
+    } else {
+      Matrix.invertM(invProj, 0, proj, 0);
+    }
     final float[] vw3 = spGyro ? spView : view;
     for (int j = 0; j < 3; j++) for (int i = 0; i < 3; i++) rot3[j * 3 + i] = vw3[i * 4 + j];
     GLES20.glDisable(GLES20.GL_DEPTH_TEST);
@@ -5106,7 +5121,9 @@ public class ArActivity extends Activity {
     renderer.sepMm = prefs.getInt("sep", 0);
     renderer.vOffMm = prefs.getInt("vsep", 0);
     renderer.sizePct = prefs.getInt("lsize", 100);
-    renderer.distPct = prefs.getInt("ldist", 0);
+    renderer.distPct = prefs.getInt("ldist2", 100);
+    renderer.fovDeg = prefs.getInt("lfov", 90);
+    renderer.lensMode = prefs.getInt("lmode", 0);
     renderer.zoom = Math.max(1, Math.min(5, prefs.getInt("zoom", 1)));
     applyBrightness(prefs.getInt("bri", -1));
     renderer.overlay = overlay;
@@ -5343,7 +5360,7 @@ public class ArActivity extends Activity {
     return "{\"gpu\":" + tracker.wantsGpu() + ",\"hybrid\":" + renderer.hybridOn + ",\"stereo\":" + renderer.stereo
       + ",\"vol\":" + volumeNow() + ",\"bri\":" + brightnessNow() + ",\"room\":" + Math.round(renderer.roomDim * 100f)
       + ",\"curved\":" + renderer.moreCurved + ",\"desktop\":" + ArPanel.desktop + ",\"bz\":" + ArPanel.zoomPct + ",\"ar\":" + renderer.aspectIdx
-      + ",\"ipd\":" + Math.round(renderer.ipdMm) + ",\"sep\":" + Math.round(renderer.sepMm) + ",\"vsep\":" + Math.round(renderer.vOffMm) + ",\"lsize\":" + Math.round(renderer.sizePct) + ",\"sharp\":" + Math.round(renderer.sharp * 100f) + ",\"ldist\":" + Math.round(renderer.distPct)
+      + ",\"lmode\":" + renderer.lensMode + ",\"ipd\":" + Math.round(renderer.eIpd()) + ",\"sep\":" + Math.round(renderer.eSep()) + ",\"vsep\":" + Math.round(renderer.eVoff()) + ",\"lsize\":" + Math.round(renderer.eSize()) + ",\"ldist\":" + Math.round(renderer.eDist()) + ",\"lfov\":" + Math.round(renderer.eFov()) + ",\"sharp\":" + Math.round(renderer.sharp * 100f)
       + ",\"zoom\":" + renderer.zoom + ",\"pOn\":" + Math.round(renderer.pinchOn * 100f) + ",\"pOff\":" + Math.round(renderer.pinchOff * 100f) + "}";
   }
 
@@ -5394,9 +5411,11 @@ public class ArActivity extends Activity {
       if ("sep".equals(k)) { v = Math.max(-20, Math.min(20, v)); renderer.sepMm = v; prefs.edit().putInt("sep", v).apply(); return; }
       if ("vsep".equals(k)) { v = Math.max(-15, Math.min(15, v)); renderer.vOffMm = v; prefs.edit().putInt("vsep", v).apply(); return; }
       if ("lsize".equals(k)) { v = Math.max(60, Math.min(120, v)); renderer.sizePct = v; prefs.edit().putInt("lsize", v).apply(); return; }
-      if ("ldist".equals(k)) { v = Math.max(0, Math.min(100, v)); renderer.distPct = v; prefs.edit().putInt("ldist", v).apply(); return; }
+      if ("ldist".equals(k)) { v = Math.max(0, Math.min(200, v)); renderer.distPct = v; prefs.edit().putInt("ldist2", v).apply(); return; }
+      if ("lfov".equals(k)) { v = Math.max(60, Math.min(120, v)); renderer.fovDeg = v; prefs.edit().putInt("lfov", v).apply(); return; }
+      if ("lmode".equals(k)) { v = v == 0 ? 0 : 1; renderer.lensMode = v; prefs.edit().putInt("lmode", v).apply(); return; }
       if ("sharp".equals(k)) { v = Math.max(0, Math.min(100, v)); renderer.sharp = v / 100f; prefs.edit().putInt("sharp", v).apply(); return; }
-      if ("lreset".equals(k)) { renderer.ipdMm = 64; renderer.sepMm = 0; renderer.vOffMm = 0; renderer.sizePct = 100; renderer.distPct = 0; prefs.edit().putInt("ipd", 64).putInt("sep", 0).putInt("vsep", 0).putInt("lsize", 100).putInt("ldist", 0).putInt("sharp", 40).apply(); renderer.sharp = 0.4f; return; }
+      if ("lreset".equals(k)) { renderer.ipdMm = 64; renderer.sepMm = 0; renderer.vOffMm = 0; renderer.sizePct = 100; renderer.distPct = 100; renderer.fovDeg = 90; renderer.sharp = 0.4f; prefs.edit().putInt("ipd", 64).putInt("sep", 0).putInt("vsep", 0).putInt("lsize", 100).putInt("ldist2", 100).putInt("lfov", 90).putInt("sharp", 40).apply(); return; }
       if ("zoom".equals(k)) { int z = Math.max(1, Math.min(5, v)); renderer.zoom = z; prefs.edit().putInt("zoom", z).apply(); return; }
       if ("pOn".equals(k) || "pOff".equals(k)) {
         float on = renderer.pinchOn, off = renderer.pinchOff, f = Math.max(0.05f, Math.min(0.6f, v / 100f));
@@ -5571,6 +5590,7 @@ final class ArMenuPage {
     ".sub{font-size:14px;opacity:.75;line-height:1.4}\n" +
     ".bts{display:flex;gap:10px;margin-top:18px}\n" +
     ".bt{flex:1;height:58px;border-radius:14px;background:rgba(255,255,255,.12);display:flex;align-items:center;justify-content:center;font-size:16px}\n" +
+    ".row.dis{opacity:.38;pointer-events:none}\n" +
     ".soon{margin:auto;text-align:center;font-size:15px;opacity:.7;line-height:1.5}\n" +
     "#p-space .hd{margin:-2px 0 6px;min-height:34px}\n" +
     "#p-space .hd h1{margin:0;flex:1}\n" +
@@ -5642,13 +5662,15 @@ final class ArMenuPage {
     "  <div class=\"pg\" id=\"p-apps\"><h1>APLICATIVOS</h1><div class=\"soon\">Em breve</div></div>\n" +
     "  <div class=\"pg\" id=\"p-aju\"><h1>AJUSTES</h1><div class=\"vs\"><div class=\"vc\"><div class=\"cv\" data-v=\"vol\"></div><div class=\"sl v\" data-k=\"vol\" data-min=\"0\" data-max=\"100\"><div class=\"fl\"></div><svg viewBox=\"0 0 24 24\"><path d=\"M4 9h4l5-4v14l-5-4H4z\"/><path d=\"M16.5 9a4 4 0 0 1 0 6\"/><path d=\"M19 6.5a8 8 0 0 1 0 11\"/></svg></div><div class=\"nm2\">VOLUME</div></div><div class=\"vc\"><div class=\"cv\" data-v=\"bri\"></div><div class=\"sl v\" data-k=\"bri\" data-min=\"2\" data-max=\"100\"><div class=\"fl\"></div><svg viewBox=\"0 0 24 24\"><circle cx=\"12\" cy=\"12\" r=\"4\"/><path d=\"M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M18.7 5.3l-2.1 2.1M7.4 16.6l-2.1 2.1\"/></svg></div><div class=\"nm2\">BRILHO</div></div><div class=\"vc\"><div class=\"cv\" data-v=\"room\"></div><div class=\"sl v\" data-k=\"room\" data-min=\"0\" data-max=\"100\"><div class=\"fl\"></div><svg viewBox=\"0 0 24 24\"><path d=\"M20 14.5A8.5 8.5 0 0 1 9.5 4 8.5 8.5 0 1 0 20 14.5z\"/></svg></div><div class=\"nm2\">QUARTO</div></div></div></div>\n" +
     "  <div class=\"pg\" id=\"p-lente\"><div class=\"hd\"><div class=\"back\" data-go=\"cfg\">&lsaquo; Voltar</div><h1>CORRE&Ccedil;&Atilde;O DE LENTE</h1></div>\n" +
-    "<div class=\"row\"><div class=\"t\"><b>Dist&acirc;ncia entre os olhos (IPD)</b><span>Em mm. Valor da sua medida, padr&atilde;o 64.</span></div><div class=\"sl\" data-k=\"ipd\" data-min=\"50\" data-max=\"75\"><div class=\"tr\"><div class=\"fl\"></div></div><div class=\"kn\"></div></div><div class=\"cv\" data-v=\"ipd\"></div></div>\n" +
-    "<div class=\"row\"><div class=\"t\"><b>Separa&ccedil;&atilde;o das imagens</b><span>Em mm. Positivo afasta, negativo aproxima.</span></div><div class=\"sl\" data-k=\"sep\" data-min=\"-20\" data-max=\"20\"><div class=\"tr\"><div class=\"fl\"></div></div><div class=\"kn\"></div></div><div class=\"cv\" data-v=\"sep\"></div></div>\n" +
-    "<div class=\"row\"><div class=\"t\"><b>Altura das imagens</b><span>Em mm. Positivo sobe a imagem.</span></div><div class=\"sl\" data-k=\"vsep\" data-min=\"-15\" data-max=\"15\"><div class=\"tr\"><div class=\"fl\"></div></div><div class=\"kn\"></div></div><div class=\"cv\" data-v=\"vsep\"></div></div>\n" +
-    "<div class=\"row\"><div class=\"t\"><b>Tamanho da imagem</b><span>Em %. Reduz ou amplia cada olho.</span></div><div class=\"sl\" data-k=\"lsize\" data-min=\"60\" data-max=\"120\"><div class=\"tr\"><div class=\"fl\"></div></div><div class=\"kn\"></div></div><div class=\"cv\" data-v=\"lsize\"></div></div>\n" +
-    "<div class=\"row\"><div class=\"t\"><b>Corre&ccedil;&atilde;o de distor&ccedil;&atilde;o</b><span>Em %. Compensa o efeito da lente.</span></div><div class=\"sl\" data-k=\"ldist\" data-min=\"0\" data-max=\"100\"><div class=\"tr\"><div class=\"fl\"></div></div><div class=\"kn\"></div></div><div class=\"cv\" data-v=\"ldist\"></div></div>\n" +
-    "<div class=\"row\"><div class=\"t\"><b>Nitidez do mundo</b><span>Agu\u00e7a imagens e v\u00eddeos 360 (modo mundo).</span></div><div class=\"sl\" data-k=\"sharp\" data-min=\"0\" data-max=\"100\"><div class=\"tr\"><div class=\"fl\"></div></div><div class=\"kn\"></div></div><div class=\"cv\" data-v=\"sharp\"></div></div>\n" +
-    "    <div class=\"row\" data-act=\"set:lreset:0\"><div class=\"t\"><b>Restaurar padr&otilde;es</b><span>Vale s&oacute; no modo Est&eacute;reo (VR Box).</span></div><div class=\"chev\">&#8634;</div></div>\n" +
+    "    <div class=\"row\"><div class=\"t\"><b>Modo de lente</b><span id=\"lms\">Cardboard: valores prontos para o VR Box.</span></div><div class=\"seg\"><div class=\"sb\" data-lm=\"0\">Cardboard</div><div class=\"sb\" data-lm=\"1\">Personalizado</div></div></div>\n" +
+    "<div class=\"row lc\"><div class=\"t\"><b>Campo de vis&atilde;o</b><span>Em graus. Maior = imagem mais ampla, menos zoom.</span></div><div class=\"sl\" data-k=\"lfov\" data-min=\"60\" data-max=\"120\"><div class=\"tr\"><div class=\"fl\"></div></div><div class=\"kn\"></div></div><div class=\"cv\" data-v=\"lfov\"></div></div>\n" +
+    "<div class=\"row lc\"><div class=\"t\"><b>Dist&acirc;ncia entre os olhos (IPD)</b><span>Em mm. Padr&atilde;o 64.</span></div><div class=\"sl\" data-k=\"ipd\" data-min=\"50\" data-max=\"75\"><div class=\"tr\"><div class=\"fl\"></div></div><div class=\"kn\"></div></div><div class=\"cv\" data-v=\"ipd\"></div></div>\n" +
+    "<div class=\"row lc\"><div class=\"t\"><b>Separa&ccedil;&atilde;o das imagens</b><span>Em mm. Positivo afasta, negativo aproxima.</span></div><div class=\"sl\" data-k=\"sep\" data-min=\"-20\" data-max=\"20\"><div class=\"tr\"><div class=\"fl\"></div></div><div class=\"kn\"></div></div><div class=\"cv\" data-v=\"sep\"></div></div>\n" +
+    "<div class=\"row lc\"><div class=\"t\"><b>Altura das imagens</b><span>Em mm. Positivo sobe a imagem.</span></div><div class=\"sl\" data-k=\"vsep\" data-min=\"-15\" data-max=\"15\"><div class=\"tr\"><div class=\"fl\"></div></div><div class=\"kn\"></div></div><div class=\"cv\" data-v=\"vsep\"></div></div>\n" +
+    "<div class=\"row lc\"><div class=\"t\"><b>Tamanho da imagem</b><span>Em %. Reduz ou amplia cada olho.</span></div><div class=\"sl\" data-k=\"lsize\" data-min=\"60\" data-max=\"120\"><div class=\"tr\"><div class=\"fl\"></div></div><div class=\"kn\"></div></div><div class=\"cv\" data-v=\"lsize\"></div></div>\n" +
+    "<div class=\"row lc\"><div class=\"t\"><b>Corre&ccedil;&atilde;o de distor&ccedil;&atilde;o</b><span>100% = Cardboard. Compensa o efeito da lente.</span></div><div class=\"sl\" data-k=\"ldist\" data-min=\"0\" data-max=\"200\"><div class=\"tr\"><div class=\"fl\"></div></div><div class=\"kn\"></div></div><div class=\"cv\" data-v=\"ldist\"></div></div>\n" +
+    "<div class=\"row\"><div class=\"t\"><b>Nitidez do mundo</b><span>Agu\u00e7a imagens e v\u00eddeos 360 (sempre ajust\u00e1vel).</span></div><div class=\"sl\" data-k=\"sharp\" data-min=\"0\" data-max=\"100\"><div class=\"tr\"><div class=\"fl\"></div></div><div class=\"kn\"></div></div><div class=\"cv\" data-v=\"sharp\"></div></div>\n" +
+    "    <div class=\"row lc\" data-act=\"set:lreset:0\"><div class=\"t\"><b>Restaurar padr&otilde;es</b><span>Valores do modo personalizado (vale s&oacute; no modo Est&eacute;reo).</span></div><div class=\"chev\">&#8634;</div></div>\n" +
     "  </div>\n" +
     "  <div class=\"pg\" id=\"p-cfg\"><h1>CONFIGURA&Ccedil;&Otilde;ES</h1>\n" +
     "    <div class=\"row\" data-act=\"orig\"><div class=\"t\"><b>Modo 6DoF (AR)</b><span id=\"s6\">Ligado. Desligue para voltar ao modo original.</span></div><div class=\"sw on\" id=\"sw6\"><i></i></div></div>\n" +
@@ -5684,10 +5706,11 @@ final class ArMenuPage {
     "  document.getElementById('swg').className='sw'+(s.gpu?' on':'');\n" +
     "  document.getElementById('swh').className='sw'+(s.hybrid?' on':'');\n" +
     "  document.getElementById('sws').className='sw'+(s.stereo?' on':'');\n" +
-    "  ['vol','bri','room','pOn','pOff','ipd','sep','vsep','lsize','ldist','sharp'].forEach(function(k){if(typeof s[k]==='number')setSl(k,s[k]);});\n" +
-    "  if(typeof s.zoom==='number')setZoomUi(s.zoom);}\n" +
+    "  ['vol','bri','room','pOn','pOff','ipd','sep','vsep','lsize','ldist','lfov','sharp'].forEach(function(k){if(typeof s[k]==='number')setSl(k,s[k]);});\n" +
+    "  if(typeof s.zoom==='number')setZoomUi(s.zoom);\n" +
+    "  if(typeof s.lmode==='number')setLm(s.lmode);}\n" +
     "/* ---------- sliders e zoom ---------- */\n" +
-    "var UN={ipd:' mm',sep:' mm',vsep:' mm'},SLV={},SLD=null,SLT=0;\n" +
+    "var UN={ipd:' mm',sep:' mm',vsep:' mm',lfov:'\u00b0'},SLV={},SLD=null,SLT=0;\n" +
     "function slEl(k){return document.querySelector('.sl[data-k=\"'+k+'\"]');}\n" +
     "function setSl(k,v){var e=slEl(k);if(!e||SLD===k)return;paintSl(e,k,v);}\n" +
     "function paintSl(e,k,v){var mn=+e.getAttribute('data-min'),mx=+e.getAttribute('data-max');v=Math.max(mn,Math.min(mx,v));SLV[k]=v;\n" +
@@ -5708,6 +5731,10 @@ final class ArMenuPage {
     "  e.addEventListener('touchstart',st,{passive:false});e.addEventListener('touchmove',mv,{passive:false});\n" +
     "  e.addEventListener('touchend',en);e.addEventListener('touchcancel',en);\n" +
     "  e.addEventListener('mousedown',function(ev){st(ev);function m(x){mv(x);}function u(x){document.removeEventListener('mousemove',m);document.removeEventListener('mouseup',u);en(x);}document.addEventListener('mousemove',m);document.addEventListener('mouseup',u);});});\n" +
+    "function setLm(m){document.querySelectorAll('[data-lm]').forEach(function(b){b.className='sb'+(+b.getAttribute('data-lm')===m?' on':'');});\n" +
+    "  document.querySelectorAll('.lc').forEach(function(r){r.classList.toggle('dis',m===0);});\n" +
+    "  var t=document.getElementById('lms');if(t)t.textContent=m===0?'Cardboard: valores prontos para o VR Box.':'Personalizado: ajuste cada item.';}\n" +
+    "document.querySelectorAll('[data-lm]').forEach(function(b){b.onclick=function(){var m=+b.getAttribute('data-lm');setLm(m);act('set:lmode:'+m);setTimeout(refresh,300);};});\n" +
     "function setZoomUi(z){document.querySelectorAll('[data-z]').forEach(function(b){b.className='sb'+(+b.getAttribute('data-z')===z?' on':'');});}\n" +
     "document.querySelectorAll('[data-z]').forEach(function(b){b.onclick=function(){var z=+b.getAttribute('data-z');setZoomUi(z);act('set:zoom:'+z);};});\n" +
     "document.querySelectorAll('[data-c]').forEach(function(b){b.onclick=function(){if(b.getAttribute('data-c')==='1')toast('Empurrar: em breve');};});\n" +
