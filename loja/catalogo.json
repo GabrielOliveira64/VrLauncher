@@ -103,5 +103,13 @@
     "tamanho": 5124952,
     "miniatura": "https://raw.githubusercontent.com/GabrielOliveira64/VrLauncher/main/loja/thumbs/snowy_park_01_thumb.jpg",
     "url": "https://github.com/GabrielOliveira64/VrLauncher/releases/download/loja/snowy_park_01.jpg"
+  },
+  {
+    "id": "spaichingen_hill",
+    "nome": "spaichingen_hill",
+    "tipo": "imagem",
+    "tamanho": 52790943,
+    "miniatura": "https://raw.githubusercontent.com/GabrielOliveira64/VrLauncher/main/loja/thumbs/spaichingen_hill_thumb.jpg",
+    "url": "https://github.com/GabrielOliveira64/VrLauncher/releases/download/loja/spaichingen_hill.jpg"
   }
 ]
