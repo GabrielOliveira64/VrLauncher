@@ -2,7 +2,7 @@
 # Modo AR (6DoF) do VR Launcher: tudo do 6DoF fica neste arquivo.
 # Para atualizar: envie um modo-ar.sh novo para o repositorio, substituindo este.
 set -e
-echo "modo-ar.sh: Fase 19 - correcoes: teclado, quebra de linha, estereo, carregamento em tela cheia (2026-11-20)"
+echo "modo-ar.sh: Fase 20 - rastreio robusto na partida, sair com voltar, otimizacoes (2026-11-20)"
 mkdir -p app/src/main/java/com/vr/launcher
 cat > /tmp/vr_orig_ui.js <<'JSEOF'
 var tabAju = mk2('tab', '<div class="tt">AJUSTES</div><div class="cfl"></div>'); tabAju.style.zIndex = 200;
@@ -2013,6 +2013,11 @@ final class ArRenderer implements GLSurfaceView.Renderer {
   static final long DWELL_MS = 220;
   // espera antes de criar a primeira janela, para o ARCore firmar a escala do mundo
   static final long SPAWN_WAIT_MS = 2500;
+  static final long SPAWN_FALLBACK_MS = 5000;    // sem rastreio: cria as janelas mesmo assim (ancoram quando rastrear)
+  static final long RESTART_MS = 9000;           // nunca rastreou: reinicia a sessao do ARCore uma vez
+  private long firstFrameMs = 0;
+  private final float[] probeOut = new float[6];
+  private boolean everTracked = false, restartedAr = false;
   private static final int[][] CONN = {
     {0, 1}, {1, 2}, {2, 3}, {3, 4}, {0, 5}, {5, 6}, {6, 7}, {7, 8}, {5, 9}, {9, 10}, {10, 11}, {11, 12},
     {9, 13}, {13, 14}, {14, 15}, {15, 16}, {13, 17}, {17, 18}, {18, 19}, {19, 20}, {0, 17}
@@ -2551,9 +2556,16 @@ final class ArRenderer implements GLSurfaceView.Renderer {
       float[] ct = camPose.getTranslation();
       camP[0] = ct[0]; camP[1] = ct[1]; camP[2] = ct[2];
       if (tracking) { if (trackOkSince == 0) trackOkSince = nowMs; } else trackOkSince = 0;
-      if (needSpawn && tracking && nowMs - trackOkSince >= SPAWN_WAIT_MS) {
+      if (firstFrameMs == 0) firstFrameMs = nowMs;
+      if (tracking) everTracked = true;
+      if (needSpawn && ((tracking && nowMs - trackOkSince >= SPAWN_WAIT_MS) || nowMs - firstFrameMs >= SPAWN_FALLBACK_MS)) {
         createInitialLayout(s, camPose);
         needSpawn = false;
+      }
+      if (!everTracked && !restartedAr && nowMs - firstFrameMs >= RESTART_MS) {
+        restartedAr = true;
+        camTexSet = false; viewportChanged = true;
+        act.restartAr();
       }
       maintainAnchors(s);
       if (!needSpawn && tracking && zoomApplied != zoom) {
@@ -2808,7 +2820,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
   /** Descobre como girar a imagem da camera para ficar "em pe" na tela atual (0, 90, 180 ou 270). */
   private void probeRotation(Frame frame) {
     float[] in = {0f, 0f, 1f, 0f, 0f, 1f};
-    float[] out = new float[6];
+    float[] out = probeOut;
     frame.transformCoordinates2d(Coordinates2d.IMAGE_NORMALIZED, in, Coordinates2d.VIEW, out);
     float ex = out[2] - out[0], ey = out[3] - out[1];   // para onde aponta o eixo x da imagem na tela
     int r;
@@ -3403,7 +3415,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     if (cp != null && loadWin != null) loadWin.pose = cp.compose(Pose.makeTranslation(0f, 0f, -0.75f));
     if (loadMode == 1) {
       long el = now - loadStart;
-      if ((el > 1800 && tracking && act.handReady()) || el > 25000) { loadMode = 2; loadT = now; }
+      if ((el > 1800 && (tracking || el > 6000) && act.handReady()) || el > 12000) { loadMode = 2; loadT = now; }
     } else if (loadMode == 2) {
       if (now - loadT > 700) {
         loadMode = 0;
@@ -3483,7 +3495,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     Session s = session;
     if (helloMode == 0) {
       // so depois de carregar a IA da mao e de o ARCore comecar a rastrear (layout inicial criado)
-      if (s == null || needSpawn || railWin == null || lastCamPose == null || !tracking || !act.handReady()) return;
+      if (s == null || needSpawn || railWin == null || lastCamPose == null || !act.handReady()) return;
       if (helloWin == null) {
         Pose cp = lastCamPose;
         float[] t = cp.getTranslation();
@@ -5352,6 +5364,8 @@ public class ArActivity extends Activity {
   @Override protected void onCreate(Bundle b) {
     super.onCreate(b);
     getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+    // desempenho constante (sem throttling termico agressivo) quando o aparelho suporta
+    try { if (android.os.Build.VERSION.SDK_INT >= 24) getWindow().setSustainedPerformanceMode(true); } catch (Throwable t) { }
     // o teclado do celular nunca aparece: so o teclado virtual do AR
     getWindow().setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_STATE_ALWAYS_HIDDEN);
     if (android.os.Build.VERSION.SDK_INT >= 28) {
@@ -5455,12 +5469,27 @@ public class ArActivity extends Activity {
     } catch (Exception e) {
       // sem ARCore neste aparelho (ou falha ao abrir a camera): volta para o modo original
       Toast.makeText(this, "Modo 6DoF indisponivel: " + e, Toast.LENGTH_LONG).show();
-      ui.postDelayed(new Runnable() { @Override public void run() { exitToOriginal(); } }, 2500);
+      ui.postDelayed(new Runnable() { @Override public void run() { finish(); } }, 2500);
       return;
     }
     gl.onResume();
     imu.start();
     space.resume();
+  }
+
+  /** Reinicia a sessao do ARCore (nunca rastreou no inicio a frio). */
+  void restartAr() {
+    runOnUiThread(new Runnable() {
+      @Override public void run() {
+        try {
+          if (session == null) return;
+          gl.onPause();
+          session.pause();
+          session.resume();
+          gl.onResume();
+        } catch (Throwable t) { }
+      }
+    });
   }
 
   @Override protected void onPause() {
@@ -5488,13 +5517,13 @@ public class ArActivity extends Activity {
     super.onRequestPermissionsResult(code, perms, res);
     if (res.length == 0 || res[0] != PackageManager.PERMISSION_GRANTED) {
       Toast.makeText(this, "Preciso da permissao da camera", Toast.LENGTH_LONG).show();
-      exitToOriginal();
+      finish();
     }
   }
 
-  /** Voltar = sair do modo 6DoF e voltar ao modo original. */
+  /** Voltar = fecha o app. */
   @Override public void onBackPressed() {
-    exitToOriginal();
+    finish();
   }
 
   @Override public void onWindowFocusChanged(boolean focus) {
