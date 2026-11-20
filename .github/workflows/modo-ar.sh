@@ -2,7 +2,7 @@
 # Modo AR (6DoF) do VR Launcher: tudo do 6DoF fica neste arquivo.
 # Para atualizar: envie um modo-ar.sh novo para o repositorio, substituindo este.
 set -e
-echo "modo-ar.sh: Fase 17 - app unico GBWorld VR (2026-11-19)"
+echo "modo-ar.sh: Fase 18 - tela de carregamento e boas-vindas suave (2026-11-19)"
 mkdir -p app/src/main/java/com/vr/launcher
 cat > /tmp/vr_orig_ui.js <<'JSEOF'
 var tabAju = mk2('tab', '<div class="tt">AJUSTES</div><div class="cfl"></div>'); tabAju.style.zIndex = 200;
@@ -1297,6 +1297,8 @@ final class ArPanel {
   final boolean more;
   /** Tela de boas-vindas: pagina propria (ArHelloPage) com a ponte "ArMenu". */
   final boolean hello;
+  /** Tela de carregamento: pagina propria (ArLoadPage). */
+  final boolean loading;
   private long downTime = 0;
   private Runnable tick, watchdog;
 
@@ -1310,6 +1312,7 @@ final class ArPanel {
     this.vid = menu && ArActivity.VID_URL.equals(url);
     this.more = menu && ArActivity.MORE_URL.equals(url);
     this.hello = menu && ArActivity.HELLO_URL.equals(url);
+    this.loading = menu && ArActivity.LOAD_URL.equals(url);
     this.id = ++seq;
     tabs.add(new Tab(url));
     android.opengl.Matrix.setIdentityM(stm, 0);
@@ -1567,6 +1570,7 @@ final class ArPanel {
       t.loaded = true;
       if (kb) t.web.loadDataWithBaseURL("https://vrlauncher.local/", ArKbPage.HTML, "text/html", "utf-8", null);
       else if (vid) t.web.loadDataWithBaseURL("https://vrlauncher.local/", ArVidPage.HTML, "text/html", "utf-8", null);
+      else if (loading) t.web.loadDataWithBaseURL("https://vrlauncher.local/", ArLoadPage.HTML, "text/html", "utf-8", null);
       else if (hello) t.web.loadDataWithBaseURL("https://vrlauncher.local/", ArHelloPage.HTML, "text/html", "utf-8", null);
       else if (more) t.web.loadDataWithBaseURL("https://vrlauncher.local/", ArMorePage.HTML, "text/html", "utf-8", null);
       else if (menu) t.web.loadDataWithBaseURL("https://vrlauncher.local/", ArMenuPage.HTML, "text/html", "utf-8", null);
@@ -2243,7 +2247,13 @@ final class ArRenderer implements GLSurfaceView.Renderer {
   private long spLastMs = 0;
 
   // menu 3D
-  private Win railWin = null, tabWin = null, helloWin = null;
+  private Win railWin = null, tabWin = null, helloWin = null, loadWin = null;
+  // tela de carregamento: 0 nao mostrando, 1 carregando, 2 sumindo
+  volatile int loadMode = 0;
+  private boolean loadDone = false;
+  private long loadStart = 0, loadT = 0;
+  private final float[] helloPos = new float[3];
+  private boolean helloPosInit = false;
   // zoom do menu (1..5; 2 = tamanho original)
   volatile int menuZoom = 2;
   private float menuScaleApplied = 1f;
@@ -2569,6 +2579,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
           if (tabWin != null) tabWin.s = RAIL_H / (2f * HH) * ms;
         }
       }
+      updateLoad(nowMs);
       updateHello(nowMs);
       placeTab();
       placeKb();
@@ -2630,7 +2641,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
       drawSpace();
       pxShift = st ? (e == 0 ? 1f : -1f) * ipdM * 0.5f * proj[0] * (vw * 0.5f) / Math.max(0.3f, cursorDepth) : 0f;
       drawWindows();
-      drawHand();
+      if (loadWin == null || loadWin.hidden) drawHand();
       pxShift = 0f;
       if (dist) {
         GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0);
@@ -3323,7 +3334,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     if (kbWin == null || kbWin.hidden) return;
     Win o = kbOwner;
     if (o == null || !wins.contains(o) || o.min) { hideKb(); return; }
-    float y = -(o.hh * o.s + 0.09f * o.s + HH * kbWin.s);
+    float y = o == helloWin ? -(0.26f * o.hh * o.s + 0.04f + HH * kbWin.s) : -(o.hh * o.s + 0.09f * o.s + HH * kbWin.s);
     kbWin.pose = o.current().compose(Pose.makeTranslation(0f, y, 0f));
   }
 
@@ -3374,8 +3385,53 @@ final class ArRenderer implements GLSurfaceView.Renderer {
 
   // ---- tela de boas-vindas ----
 
+  /** Tela de carregamento: fixa na frente dos olhos ate a IA da mao e o ARCore estarem prontos. */
+  private void updateLoad(long now) {
+    if (loadDone) return;
+    Session s = session;
+    Pose cp = lastCamPose;
+    if (loadMode == 0) {
+      if (s == null || cp == null) return;
+      loadWin = addWindowP(s, cp.compose(Pose.makeTranslation(0f, 0f, -0.75f)), newPanel(ArActivity.LOAD_URL, true), true, false);
+      loadWin.s = 3f;
+      loadMode = 1;
+      loadStart = now;
+      return;
+    }
+    if (cp != null && loadWin != null) loadWin.pose = cp.compose(Pose.makeTranslation(0f, 0f, -0.75f));
+    if (loadMode == 1) {
+      long el = now - loadStart;
+      if ((el > 1800 && tracking && act.handReady()) || el > 25000) { loadMode = 2; loadT = now; }
+    } else if (loadMode == 2) {
+      if (now - loadT > 700) {
+        loadMode = 0;
+        loadDone = true;
+        if (loadWin != null) loadWin.hidden = true;
+      }
+    }
+  }
+
+  /** A saudacao segue o olhar com atraso suave (o teclado acompanha a janela). */
+  private void followHello() {
+    Pose cp = lastCamPose;
+    if (helloWin == null || helloWin.hidden || cp == null) return;
+    float[] t = cp.getTranslation();
+    float[] f = cp.transformPoint(new float[]{0f, 0f, -1f});
+    float fx = f[0] - t[0], fy = Math.max(-0.4f, Math.min(0.4f, f[1] - t[1])), fz = f[2] - t[2];
+    float n = (float) Math.sqrt(fx * fx + fy * fy + fz * fz);
+    if (n < 1e-3f) return;
+    float tx = t[0] + 1.1f * fx / n, ty = t[1] + 1.1f * fy / n, tz = t[2] + 1.1f * fz / n;
+    if (!helloPosInit) { helloPos[0] = tx; helloPos[1] = ty; helloPos[2] = tz; helloPosInit = true; }
+    float k = 1f - (float) Math.exp(-frameDt * 2.2f);
+    helloPos[0] += (tx - helloPos[0]) * k;
+    helloPos[1] += (ty - helloPos[1]) * k;
+    helloPos[2] += (tz - helloPos[2]) * k;
+    helloWin.pose = facing(helloPos[0], helloPos[1], helloPos[2], t[0], t[2]);
+  }
+
   private void updateHello(long now) {
-    if (helloDone) return;
+    followHello();
+    if (helloDone || !loadDone) return;
     Session s = session;
     if (helloMode == 0) {
       // so depois de carregar a IA da mao e de o ARCore comecar a rastrear (layout inicial criado)
@@ -3386,6 +3442,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
         float h = heading(cp);
         Pose p = facing(t[0] + 1.1f * (float) Math.sin(h), t[1], t[2] + 1.1f * (float) Math.cos(h), t[0], t[2]);
         helloWin = addWindowP(s, p, newPanel(ArActivity.HELLO_URL, true), true, false);
+        helloPosInit = false;
         helloWin.s = 1.15f;
       }
       helloWin.hidden = false;
@@ -3553,6 +3610,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
       GLES20.glUniform2f(winHalfVLoc, w.hw * w.s, w.hh * w.s);
       GLES20.glUniform1f(winRadLoc, CORNER_R * w.s);
       GLES20.glUniform1f(winSLoc, w.s);
+      GLES20.glUniform1f(winDimLoc, w == loadWin ? 1f : dimV);
       GLES20.glUniform1f(winGlassLoc, w == helloWin ? 2f : (w == tabWin || w == moreWin) ? 1f : 0f);
       modelOf(w);
       Matrix.multiplyMM(mvp, 0, vp, 0, model, 0);
@@ -3580,8 +3638,8 @@ final class ArRenderer implements GLSurfaceView.Renderer {
       boolean cornOn = (sizeWin == w) || (hov && hoverRegion == R_CORNER);
       boolean barAct = dragWin == w, cornAct = sizeWin == w;
       float ba = barOn ? 0.95f : 0.55f, ca = cornOn ? 0.95f : 0.5f;
-      if (!w.kb && w != helloWin) quad(barTex, 0f, barCy(w), BAR_W * (barOn ? 1.15f : 0.62f), BAR_H * (barOn ? 1.2f : 0.7f), barAct ? 0.37f : 1f, barAct ? 0.92f : 1f, barAct ? 0.83f : 1f, ba, dimV);
-      if (!w.kb && w != helloWin) quad(cornerTex, w.hw - 0.013f, -w.hh + 0.013f, CS * (cornOn ? 1.2f : 0.8f), CS * (cornOn ? 1.2f : 0.8f), cornAct ? 0.37f : 1f, cornAct ? 0.92f : 1f, cornAct ? 0.83f : 1f, ca, dimV);
+      if (!w.kb && w != helloWin && w != loadWin) quad(barTex, 0f, barCy(w), BAR_W * (barOn ? 1.15f : 0.62f), BAR_H * (barOn ? 1.2f : 0.7f), barAct ? 0.37f : 1f, barAct ? 0.92f : 1f, barAct ? 0.83f : 1f, ba, dimV);
+      if (!w.kb && w != helloWin && w != loadWin) quad(cornerTex, w.hw - 0.013f, -w.hh + 0.013f, CS * (cornOn ? 1.2f : 0.8f), CS * (cornOn ? 1.2f : 0.8f), cornAct ? 0.37f : 1f, cornAct ? 0.92f : 1f, cornAct ? 0.83f : 1f, ca, dimV);
       if (!w.menu) {
         boolean curveOn = hov && hoverRegion == R_CURVE;
         iconBtn(curveGlyph, -PLUS_X, barCy(w), PLUS_S * (curveOn ? 1.2f : 0.9f), curveOn, moreWin != null && !moreWin.hidden && moreOwner == w, 1f, dimV);
@@ -4236,7 +4294,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
   /** x, y em metros com a janela na escala 1. Define regElem quando cai na barra do navegador. */
   private int region(Win w, float x, float y) {
     regElem = 0;
-    if (w == helloWin) return R_NONE;
+    if (w == helloWin || w == loadWin) return R_NONE;
     if (w.rail) {
       float barY = -RAIL_H - 0.034f;
       if (Math.abs(x) <= 0.05f && Math.abs(y - barY) <= 0.026f && menuReveal > 0.9f) return R_BAR;
@@ -5211,6 +5269,7 @@ public class ArActivity extends Activity {
   static final String VID_URL = "about:vid";
   static final String MORE_URL = "about:more";
   static final String HELLO_URL = "about:hello";
+  static final String LOAD_URL = "about:load";
   /** Aba do menu que a pagina deve mostrar (lida pela pagina via ArMenu.page()). */
   volatile String menuPage = "web";
 
@@ -5594,7 +5653,7 @@ public class ArActivity extends Activity {
       + ",\"vol\":" + volumeNow() + ",\"bri\":" + brightnessNow() + ",\"room\":" + Math.round(renderer.roomDim * 100f)
       + ",\"curved\":" + renderer.moreCurved + ",\"desktop\":" + ArPanel.desktop + ",\"bz\":" + ArPanel.zoomPct + ",\"ar\":" + renderer.aspectIdx
       + ",\"lmode\":" + renderer.lensMode + ",\"ipd\":" + Math.round(renderer.eIpd()) + ",\"sep\":" + Math.round(renderer.eSep()) + ",\"vsep\":" + Math.round(renderer.eVoff()) + ",\"lsize\":" + Math.round(renderer.eSize()) + ",\"ldist\":" + Math.round(renderer.eDist()) + ",\"lfov\":" + Math.round(renderer.eFov()) + ",\"sharp\":" + Math.round(renderer.sharp * 100f)
-      + ",\"fav\":" + renderer.moreFav + ",\"mz\":" + renderer.menuZoom + ",\"hm\":" + renderer.helloMode + ",\"ht\":" + q(renderer.helloText) + ",\"hb\":" + q(renderer.helloBuf)
+      + ",\"fav\":" + renderer.moreFav + ",\"ld\":" + renderer.loadMode + ",\"mz\":" + renderer.menuZoom + ",\"hm\":" + renderer.helloMode + ",\"ht\":" + q(renderer.helloText) + ",\"hb\":" + q(renderer.helloBuf)
       + ",\"zoom\":" + renderer.zoom + ",\"pOn\":" + Math.round(renderer.pinchOn * 100f) + ",\"pOff\":" + Math.round(renderer.pinchOff * 100f) + "}";
   }
 
@@ -7116,15 +7175,15 @@ final class ArHelloPage {
     "#w.on{opacity:1}\n" +
     "/* sombra em azul puro: o 3D a transforma em um escurecimento translucido atras das letras */\n" +
     "#t{font-family:'Hand',cursive;font-weight:600;font-size:68px;text-align:center;padding:0 20px;line-height:1.1;color:#fff;\n" +
-    "  text-shadow:0 4px 12px rgb(0,0,255),0 2px 3px rgb(0,0,255),0 0 26px rgb(0,0,255)}\n" +
-    "#t span{display:inline-block;white-space:pre;animation:smoke 1.25s cubic-bezier(.2,.7,.3,1) both,wipe .7s ease-out both}\n" +
+    "  text-shadow:0 3px 14px rgba(0,0,255,.42),0 0 28px rgba(0,0,255,.22)}\n" +
+    "#t span{display:inline-block;white-space:pre;padding:0 .12em;margin:0 -.12em;animation:smoke 1.25s cubic-bezier(.2,.7,.3,1) both,wipe .7s ease-out both}\n" +
     "@keyframes smoke{0%{opacity:0;filter:blur(18px);transform:translate(-10px,14px) scale(1.7)}\n" +
     "  45%{opacity:.55;filter:blur(8px);transform:translate(4px,-4px) scale(1.25)}\n" +
     "  100%{opacity:1;filter:blur(0);transform:none}}\n" +
-    "@keyframes wipe{0%{clip-path:inset(-30% 100% -30% -10%)}100%{clip-path:inset(-30% -10% -30% -10%)}}\n" +
+    "@keyframes wipe{0%{clip-path:inset(-60% 100% -60% -80%)}100%{clip-path:inset(-60% -80% -60% -80%)}}\n" +
     "#f{width:74%;max-width:560px;height:78px;border-radius:39px;border:2.5px solid #fff;background:rgb(0,0,150);display:none;align-items:center;justify-content:center;\n" +
     "  font-family:'Hand',cursive;font-weight:600;font-size:54px;color:#fff;padding:0 28px;overflow:hidden;white-space:nowrap;\n" +
-    "  box-shadow:0 0 14px rgb(0,0,255);text-shadow:0 3px 8px rgb(0,0,255)}\n" +
+    "  box-shadow:0 0 10px rgba(0,0,255,.4);text-shadow:0 2px 8px rgba(0,0,255,.4)}\n" +
     "#f.on{display:flex}\n" +
     "#c{display:inline-block;width:3px;height:48px;background:#fff;margin-left:4px;animation:bl 1s steps(1) infinite}\n" +
     "#ph{opacity:.7}\n" +
@@ -7146,6 +7205,258 @@ final class ArHelloPage {
     "  document.getElementById('w').className=(m===1||m===2)?'on':'';}\n" +
     "setInterval(tick,120);tick();\n" +
     "</script></body></html>\n" +
+    "\n";
+}
+EOF
+cat > app/src/main/java/com/vr/launcher/ArLoadPage.java <<'EOF'
+package com.vr.launcher;
+
+/** Pagina HTML gerada (loading.html). */
+final class ArLoadPage {
+  static final String HTML =
+    "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><title>Carregando Mundo</title>\n" +
+    "<style>\n" +
+    "  /* Layout: tela cheia escura; buraco negro branco no centro, texto neon logo abaixo.\n" +
+    "     Single-look escuro por escolha: a tela de carregamento \u00e9 sempre escura. */\n" +
+    "  :root {\n" +
+    "    --bg: #040405;\n" +
+    "    --fg: #ffffff;\n" +
+    "    --neon-core: rgba(255, 255, 255, 0.95);\n" +
+    "    --neon-mid: rgba(255, 255, 255, 0.6);\n" +
+    "    --neon-far: rgba(205, 220, 255, 0.4);\n" +
+    "    --font-text: \"Exo 2\", system-ui, -apple-system, \"Segoe UI\", sans-serif;\n" +
+    "    color-scheme: dark;\n" +
+    "  }\n" +
+    "  html, body { height: 100%; }\n" +
+    "  body {\n" +
+    "    margin: 0;\n" +
+    "    box-sizing: border-box;\n" +
+    "    background: var(--bg);\n" +
+    "    color: var(--fg);\n" +
+    "    padding-left: max(16px, env(safe-area-inset-left, 0px));\n" +
+    "    padding-right: max(16px, env(safe-area-inset-right, 0px));\n" +
+    "    overflow: hidden;\n" +
+    "  }\n" +
+    "  #c {\n" +
+    "    position: fixed;\n" +
+    "    inset: 0;\n" +
+    "    width: 100%;\n" +
+    "    height: 100%;\n" +
+    "    display: block;\n" +
+    "    pointer-events: none;\n" +
+    "  }\n" +
+    "  .stage {\n" +
+    "    position: relative;\n" +
+    "    z-index: 1;\n" +
+    "    height: 100%;\n" +
+    "    display: flex;\n" +
+    "    flex-direction: column;\n" +
+    "    align-items: center;\n" +
+    "    justify-content: center;\n" +
+    "    gap: clamp(18px, 5vmin, 48px);\n" +
+    "  }\n" +
+    "  .hole {\n" +
+    "    width: min(34vmin, 240px);\n" +
+    "    aspect-ratio: 1;\n" +
+    "    max-width: 100%;\n" +
+    "  }\n" +
+    "  .label {\n" +
+    "    margin: 0;\n" +
+    "    font: 300 clamp(15px, 3.8vmin, 26px) / 1.2 var(--font-text);\n" +
+    "    letter-spacing: 0.26em;\n" +
+    "    text-indent: 0.26em;\n" +
+    "    text-align: center;\n" +
+    "    color: var(--fg);\n" +
+    "    text-shadow: 0 0 3px var(--neon-core), 0 0 11px var(--neon-mid), 0 0 26px var(--neon-far);\n" +
+    "    animation: neon 3.6s ease-in-out infinite;\n" +
+    "  }\n" +
+    "  @keyframes neon {\n" +
+    "    0%   { opacity: 0.95; text-shadow: 0 0 3px var(--neon-core), 0 0 11px var(--neon-mid), 0 0 26px var(--neon-far); }\n" +
+    "    16%  { opacity: 1;    text-shadow: 0 0 4px var(--neon-core), 0 0 14px var(--neon-mid), 0 0 32px var(--neon-far); }\n" +
+    "    19%  { opacity: 0.86; text-shadow: 0 0 2px var(--neon-core), 0 0 7px var(--neon-mid), 0 0 16px var(--neon-far); }\n" +
+    "    21%  { opacity: 1;    text-shadow: 0 0 4px var(--neon-core), 0 0 14px var(--neon-mid), 0 0 30px var(--neon-far); }\n" +
+    "    55%  { opacity: 0.92; text-shadow: 0 0 3px var(--neon-core), 0 0 10px var(--neon-mid), 0 0 22px var(--neon-far); }\n" +
+    "    72%  { opacity: 1;    text-shadow: 0 0 4px var(--neon-core), 0 0 13px var(--neon-mid), 0 0 30px var(--neon-far); }\n" +
+    "    74%  { opacity: 0.9;  text-shadow: 0 0 2px var(--neon-core), 0 0 8px var(--neon-mid), 0 0 18px var(--neon-far); }\n" +
+    "    77%  { opacity: 0.98; }\n" +
+    "    100% { opacity: 0.95; text-shadow: 0 0 3px var(--neon-core), 0 0 11px var(--neon-mid), 0 0 26px var(--neon-far); }\n" +
+    "  }\n" +
+    "  @media (prefers-reduced-motion: reduce) {\n" +
+    "    .label { animation: none; }\n" +
+    "  }\n" +
+    "  @font-face{font-family:'Exo 2';font-weight:300;src:url(/font/exo2-300.woff2) format('woff2')}\n" +
+    "  *{-webkit-user-select:none;user-select:none}\n" +
+    "  body{transition:opacity .6s ease}\n" +
+    "  body.fade{opacity:0}\n" +
+    "</style>\n" +
+    "</head><body>\n" +
+    "<canvas id=\"c\" aria-hidden=\"true\"></canvas>\n" +
+    "<main class=\"stage\">\n" +
+    "  <div class=\"hole\" id=\"hole\"></div>\n" +
+    "  <p class=\"label\" role=\"status\" aria-live=\"polite\">carregando mundo...</p>\n" +
+    "</main>\n" +
+    "<script>\n" +
+    "var A=window.ArMenu;setInterval(function(){var s={};try{s=JSON.parse(A.state())}catch(e){}if(s.ld===2)document.body.className=\"fade\";},120);\n" +
+    "(function () {\n" +
+    "  var cv = document.getElementById(\"c\");\n" +
+    "  var ctx = cv.getContext(\"2d\");\n" +
+    "  var holeEl = document.getElementById(\"hole\");\n" +
+    "  var reduce = window.matchMedia && matchMedia(\"(prefers-reduced-motion: reduce)\").matches;\n" +
+    "  var speed = reduce ? 0.35 : 1;\n" +
+    "  var PS = 0.3; /* velocidade das part\u00edculas */\n" +
+    "\n" +
+    "  var W, H, dpr, cx, cy, R, maxD, parts = [];\n" +
+    "  var TAU = Math.PI * 2;\n" +
+    "  var BINS = 48;\n" +
+    "  var bump = new Float32Array(BINS);\n" +
+    "  var kick = 0;\n" +
+    "  var nextKick = 1.5;\n" +
+    "\n" +
+    "  function rnd(a, b) { return a + Math.random() * (b - a); }\n" +
+    "\n" +
+    "  function spawn(p, initial) {\n" +
+    "    p.a = Math.random() * TAU;\n" +
+    "    p.d = initial ? R * 1.6 + Math.pow(Math.random(), 1.4) * (maxD - R * 1.6)\n" +
+    "                  : maxD * rnd(0.7, 1.0);\n" +
+    "    p.k = rnd(0.7, 1.35);       /* varia\u00e7\u00e3o individual de velocidade */\n" +
+    "    p.s = rnd(0.7, 2.0);        /* espessura */\n" +
+    "    p.ph = Math.random() * TAU; /* fase da turbul\u00eancia */\n" +
+    "    p.born = initial ? 1 : 0;   /* fade-in na cria\u00e7\u00e3o */\n" +
+    "    p.w = Math.random() < 0.12 ? -0.6 : 1; /* poucos gr\u00e3os em \u00f3rbita contr\u00e1ria */\n" +
+    "  }\n" +
+    "\n" +
+    "  function resize() {\n" +
+    "    dpr = Math.min(window.devicePixelRatio || 1, 2);\n" +
+    "    W = window.innerWidth;\n" +
+    "    H = window.innerHeight;\n" +
+    "    cv.width = Math.round(W * dpr);\n" +
+    "    cv.height = Math.round(H * dpr);\n" +
+    "    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);\n" +
+    "    var r = holeEl.getBoundingClientRect();\n" +
+    "    cx = r.left + r.width / 2;\n" +
+    "    cy = r.top + r.height / 2;\n" +
+    "    R = r.width / 2 * 0.56;\n" +
+    "    maxD = Math.hypot(Math.max(cx, W - cx), Math.max(cy, H - cy)) * 1.02;\n" +
+    "    var n = Math.max(110, Math.min(320, Math.round(W * H / 5200)));\n" +
+    "    parts = [];\n" +
+    "    for (var i = 0; i < n; i++) {\n" +
+    "      var p = {};\n" +
+    "      spawn(p, true);\n" +
+    "      parts.push(p);\n" +
+    "    }\n" +
+    "  }\n" +
+    "\n" +
+    "  function bumpAt(a) {\n" +
+    "    var t = ((a % TAU) + TAU) % TAU / TAU * BINS;\n" +
+    "    var i = Math.floor(t) % BINS;\n" +
+    "    var l = (i + BINS - 1) % BINS, r = (i + 1) % BINS;\n" +
+    "    return (bump[l] + bump[i] * 2 + bump[r]) / 4;\n" +
+    "  }\n" +
+    "\n" +
+    "  function blobRadius(th, t, base, ph) {\n" +
+    "    var n = 1\n" +
+    "      + 0.075 * Math.sin(3 * th + 1.3 * t + ph)\n" +
+    "      + 0.05  * Math.sin(5 * th - 2.1 * t + ph * 2)\n" +
+    "      + 0.03  * Math.sin(9 * th + 3.7 * t - ph)\n" +
+    "      + bumpAt(th);\n" +
+    "    return base * n;\n" +
+    "  }\n" +
+    "\n" +
+    "  function drawBlob(t, base, ph, fill, alpha, blur) {\n" +
+    "    var N = 120;\n" +
+    "    ctx.beginPath();\n" +
+    "    for (var i = 0; i <= N; i++) {\n" +
+    "      var th = i / N * TAU;\n" +
+    "      var rr = blobRadius(th, t, base, ph);\n" +
+    "      var x = cx + Math.cos(th) * rr, y = cy + Math.sin(th) * rr;\n" +
+    "      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);\n" +
+    "    }\n" +
+    "    ctx.closePath();\n" +
+    "    ctx.globalAlpha = alpha;\n" +
+    "    if (fill) {\n" +
+    "      ctx.shadowColor = \"rgba(255,255,255,0.9)\";\n" +
+    "      ctx.shadowBlur = blur;\n" +
+    "      ctx.fillStyle = \"#fff\";\n" +
+    "      ctx.fill();\n" +
+    "      ctx.shadowBlur = 0;\n" +
+    "    } else {\n" +
+    "      ctx.strokeStyle = \"#fff\";\n" +
+    "      ctx.lineWidth = 1;\n" +
+    "      ctx.stroke();\n" +
+    "    }\n" +
+    "    ctx.globalAlpha = 1;\n" +
+    "  }\n" +
+    "\n" +
+    "  var last = performance.now(), T = 0;\n" +
+    "\n" +
+    "  function frame(now) {\n" +
+    "    var dt = Math.min(0.05, (now - last) / 1000) * speed;\n" +
+    "    last = now;\n" +
+    "    T += dt;\n" +
+    "\n" +
+    "    /* instabilidade: \"engolidas\" aleat\u00f3rias */\n" +
+    "    nextKick -= dt;\n" +
+    "    if (nextKick <= 0) { kick = Math.min(0.55, kick + rnd(0.25, 0.5)); nextKick = rnd(1.4, 4.2); }\n" +
+    "    kick *= Math.exp(-2.6 * dt);\n" +
+    "    for (var b = 0; b < BINS; b++) bump[b] *= Math.exp(-3.2 * dt);\n" +
+    "\n" +
+    "    ctx.clearRect(0, 0, W, H);\n" +
+    "\n" +
+    "    /* part\u00edculas sugadas */\n" +
+    "    ctx.lineCap = \"round\";\n" +
+    "    var pull = 1 + kick * 1.6;\n" +
+    "    for (var i = 0; i < parts.length; i++) {\n" +
+    "      var p = parts[i];\n" +
+    "      var q = R / p.d;\n" +
+    "      var vr = (22 + 0.42 * p.d + 900 * q * q) * p.k * pull\n" +
+    "             * (1 + 0.25 * Math.sin(T * 2.3 + p.ph));\n" +
+    "      var w = (0.25 + 5.2 * Math.pow(q, 1.4)) * p.k * p.w * (1 + kick * 0.5);\n" +
+    "      p.d -= vr * dt * PS;\n" +
+    "      p.a += w * dt * PS;\n" +
+    "      if (p.born < 1) p.born = Math.min(1, p.born + dt * 1.2);\n" +
+    "\n" +
+    "      var coreR = blobRadius(p.a, T, R, 0) * 0.92;\n" +
+    "      if (p.d <= coreR) {\n" +
+    "        bump[Math.floor(((p.a % TAU + TAU) % TAU) / TAU * BINS) % BINS] += 0.07;\n" +
+    "        spawn(p, false);\n" +
+    "        continue;\n" +
+    "      }\n" +
+    "\n" +
+    "      var x = cx + Math.cos(p.a) * p.d, y = cy + Math.sin(p.a) * p.d;\n" +
+    "      var tt = 0.075;\n" +
+    "      var d2 = p.d + vr * PS * tt, a2 = p.a - w * PS * tt;\n" +
+    "      var x2 = cx + Math.cos(a2) * d2, y2 = cy + Math.sin(a2) * d2;\n" +
+    "\n" +
+    "      var near = 1 - Math.min(1, (p.d - R) / (maxD * 0.5));\n" +
+    "      var alpha = (0.18 + 0.82 * near) * p.born;\n" +
+    "      ctx.globalAlpha = alpha;\n" +
+    "      ctx.strokeStyle = \"#fff\";\n" +
+    "      ctx.lineWidth = p.s * (0.7 + near * 0.8);\n" +
+    "      ctx.beginPath();\n" +
+    "      ctx.moveTo(x2, y2);\n" +
+    "      ctx.lineTo(x, y);\n" +
+    "      ctx.stroke();\n" +
+    "    }\n" +
+    "    ctx.globalAlpha = 1;\n" +
+    "\n" +
+    "    /* halo irregular + n\u00facleo branco */\n" +
+    "    var base = R * (1 + 0.05 * Math.sin(T * 1.1) + 0.14 * kick);\n" +
+    "    drawBlob(T * 0.8, base * 1.55, 2.1, false, 0.10 + 0.10 * kick, 0);\n" +
+    "    drawBlob(T * 1.1, base * 1.28, 4.0, false, 0.16 + 0.12 * kick, 0);\n" +
+    "    drawBlob(T, base, 0, true, 1, 34 + 30 * kick);\n" +
+    "\n" +
+    "    requestAnimationFrame(frame);\n" +
+    "  }\n" +
+    "\n" +
+    "  var rt;\n" +
+    "  window.addEventListener(\"resize\", function () { clearTimeout(rt); rt = setTimeout(resize, 60); });\n" +
+    "  window.addEventListener(\"orientationchange\", function () { setTimeout(resize, 150); });\n" +
+    "  if (document.fonts && document.fonts.ready) document.fonts.ready.then(resize);\n" +
+    "  resize();\n" +
+    "  requestAnimationFrame(frame);\n" +
+    "})();\n" +
+    "</script>\n" +
+    "</body></html>\n" +
     "\n";
 }
 EOF
