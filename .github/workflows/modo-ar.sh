@@ -2,7 +2,7 @@
 # Modo AR (6DoF) do VR Launcher: tudo do 6DoF fica neste arquivo.
 # Para atualizar: envie um modo-ar.sh novo para o repositorio, substituindo este.
 set -e
-echo "modo-ar.sh: Fase 18 - tela de carregamento e boas-vindas suave (2026-11-19)"
+echo "modo-ar.sh: Fase 19 - correcoes: teclado, quebra de linha, estereo, carregamento em tela cheia (2026-11-20)"
 mkdir -p app/src/main/java/com/vr/launcher
 cat > /tmp/vr_orig_ui.js <<'JSEOF'
 var tabAju = mk2('tab', '<div class="tt">AJUSTES</div><div class="cfl"></div>'); tabAju.style.zIndex = 200;
@@ -2607,7 +2607,9 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     final boolean dist = st && eDist() > 0.5f && lensFbo(vpW, vpH);
     final float scl = st ? Math.max(0.3f, eSize() / 100f) : 1f;
     final int rw = Math.round(vpW * scl), rh = Math.round(vpH * scl);
+    final boolean ldShow = loadWin != null && !loadWin.hidden;
     for (int e = 0; e < eyes; e++) {
+      if (ldShow) { drawLoadFull(e, cw); continue; }
       int x, y = 0, w = vpW, h = vpH;
       if (st) {
         w = rw; h = rh;
@@ -3335,7 +3337,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     Win o = kbOwner;
     if (o == null || !wins.contains(o) || o.min) { hideKb(); return; }
     float y = o == helloWin ? -(0.26f * o.hh * o.s + 0.04f + HH * kbWin.s) : -(o.hh * o.s + 0.09f * o.s + HH * kbWin.s);
-    kbWin.pose = o.current().compose(Pose.makeTranslation(0f, y, 0f));
+    kbWin.pose = o.current().compose(Pose.makeTranslation(0f, y, o == helloWin ? 0.04f : 0f));
   }
 
   void pageFocus(ArPanel p) {
@@ -3409,6 +3411,52 @@ final class ArRenderer implements GLSurfaceView.Renderer {
         if (loadWin != null) loadWin.hidden = true;
       }
     }
+  }
+
+  private final float[] fullVerts = {-1f, -1f, 0f, 1f, -1f, 0f, -1f, 1f, 0f, 1f, 1f, 0f};
+  private final FloatBuffer fullBuf = floatBuf(fullVerts);
+  private final float[] ident = new float[16];
+
+  /** Tela de carregamento em tela cheia (um quadro por olho), por cima de tudo e sem janela. */
+  private void drawLoadFull(int e, int cw) {
+    if (winProg == 0 || loadWin == null) return;
+    GLES20.glBindFramebuffer(GLES20.GL_FRAMEBUFFER, 0);
+    GLES20.glEnable(GLES20.GL_SCISSOR_TEST);
+    GLES20.glScissor(e * cw, 0, cw, sh);
+    GLES20.glClearColor(0.016f, 0.016f, 0.02f, 1f);
+    GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT);
+    if (!loadWin.panel.got) return;
+    final float ar = 16f / 9f;
+    int w, h;
+    if ((float) cw / sh > ar) { w = cw; h = Math.round(cw / ar); } else { h = sh; w = Math.round(sh * ar); }
+    GLES20.glViewport(e * cw + (cw - w) / 2, (sh - h) / 2, w, h);
+    GLES20.glDisable(GLES20.GL_DEPTH_TEST);
+    GLES20.glDisable(GLES20.GL_BLEND);
+    GLES20.glUseProgram(winProg);
+    GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
+    GLES20.glBindTexture(GLES11Ext.GL_TEXTURE_EXTERNAL_OES, loadWin.panel.tex);
+    GLES20.glUniform1i(winTexLoc, 0);
+    GLES20.glUniformMatrix4fv(winStmLoc, 1, false, loadWin.panel.stm, 0);
+    Matrix.setIdentityM(ident, 0);
+    GLES20.glUniformMatrix4fv(winMvpLoc, 1, false, ident, 0);
+    GLES20.glUniform1f(winFlatLoc, 0f);
+    GLES20.glUniform2f(winHalfLoc, 100f, 100f);
+    GLES20.glUniform2f(winHalfVLoc, 100f, 100f);
+    GLES20.glUniform1f(winRadLoc, 0.001f);
+    GLES20.glUniform1f(winSLoc, 1f);
+    GLES20.glUniform1f(winGlassLoc, 0f);
+    GLES20.glUniform1f(winDimLoc, 1f);
+    GLES20.glUniform2f(winShadeLoc, 0f, 0f);
+    fullBuf.position(0);
+    winUvs.position(0);
+    GLES20.glVertexAttribPointer(winPosLoc, 3, GLES20.GL_FLOAT, false, 0, fullBuf);
+    GLES20.glVertexAttribPointer(winUvLoc, 2, GLES20.GL_FLOAT, false, 0, winUvs);
+    GLES20.glEnableVertexAttribArray(winPosLoc);
+    GLES20.glEnableVertexAttribArray(winUvLoc);
+    GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4);
+    GLES20.glDisableVertexAttribArray(winPosLoc);
+    GLES20.glDisableVertexAttribArray(winUvLoc);
+    GLES20.glEnable(GLES20.GL_DEPTH_TEST);
   }
 
   /** A saudacao segue o olhar com atraso suave (o teclado acompanha a janela). */
@@ -3596,7 +3644,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     GLES20.glEnableVertexAttribArray(winPosLoc);
     GLES20.glEnableVertexAttribArray(winUvLoc);
     for (Win w : wins) {
-      if (w.hidden || w.min) continue;
+      if (w.hidden || w.min || w == loadWin) continue;
       GLES20.glUniform2f(winShadeLoc, w == dropT ? (float) dropSide : 0f, w == dropT ? 1f : 0f);
       FloatBuffer vb = w.curved ? curveVertsOf(w) : winVertsOf(w), ub = w.curved ? curveUvs : winUvs;
       vb.position(0);
@@ -3630,7 +3678,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     GLES20.glEnableVertexAttribArray(flatUvLoc);
     boolean idle = dragWin == null && sizeWin == null;
     for (Win w : wins) {
-      if (w.hidden) continue;
+      if (w.hidden || w == loadWin) continue;
       if (w.min) { drawBubble(w, idle && hoverWin == w, dimV); continue; }
       modelOf(w);
       boolean hov = idle && hoverWin == w;
@@ -5989,6 +6037,10 @@ final class ArMenuPage {
     "    <div class=\"row lc\" data-act=\"set:lreset:0\"><div class=\"t\"><b>Restaurar padr&otilde;es</b><span>Valores do modo personalizado (vale s&oacute; no modo Est&eacute;reo).</span></div><div class=\"chev\">&#8634;</div></div>\n" +
     "  </div>\n" +
     "  <div class=\"pg\" id=\"p-cfg\"><h1>CONFIGURA&Ccedil;&Otilde;ES</h1>\n" +
+    "    <div class=\"row\" data-act=\"gpu\"><div class=\"t\"><b>IA da m&atilde;o na GPU</b><span>Mais r&aacute;pido. Se travar, use a CPU.</span></div><div class=\"sw\" id=\"swg\"><i></i></div></div>\n" +
+    "    <div class=\"row\" data-go=\"help\"><div class=\"t\"><b>Ajuda e gestos</b><span>Como usar a m&atilde;o no modo 6DoF.</span></div><div class=\"chev\">&rsaquo;</div></div>\n" +
+    "    <div class=\"row\" data-act=\"stereo\"><div class=\"t\"><b>Est&eacute;reo (VR Box)</b><span>Divide a tela em duas, uma imagem para cada olho.</span></div><div class=\"sw\" id=\"sws\"><i></i></div></div>\n" +
+    "    <div class=\"row\"><div class=\"t\"><b>Zoom das janelas</b><span>Dist&acirc;ncia das janelas: quanto maior, mais longe.</span></div><div class=\"seg\" id=\"zseg\"><div class=\"sb\" data-z=\"1\">1x</div><div class=\"sb\" data-z=\"2\">2x</div><div class=\"sb\" data-z=\"3\">3x</div><div class=\"sb\" data-z=\"4\">4x</div><div class=\"sb\" data-z=\"5\">5x</div></div></div>\n" +
     "    <div class=\"row\"><div class=\"t\"><b>Zoom do menu</b><span>Tamanho do menu quando ele abre (2x = padr&atilde;o).</span></div><div class=\"seg\" id=\"mseg\"><div class=\"sb\" data-m=\"1\">1x</div><div class=\"sb\" data-m=\"2\">2x</div><div class=\"sb\" data-m=\"3\">3x</div><div class=\"sb\" data-m=\"4\">4x</div><div class=\"sb\" data-m=\"5\">5x</div></div></div>\n" +
     "    <div class=\"row\"><div class=\"t\"><b>Clique</b><span>Como a m&atilde;o clica.</span></div><div class=\"seg\"><div class=\"sb on\" data-c=\"0\">Pin&ccedil;a</div><div class=\"sb off\" data-c=\"1\">Empurrar</div></div></div>\n" +
     "    <div class=\"row\"><div class=\"t\"><b>Fechar a pin&ccedil;a</b><span>Dist&acirc;ncia dos dedos para clicar.</span></div><div class=\"sl\" data-k=\"pOn\" data-min=\"6\" data-max=\"30\"><div class=\"tr\"><div class=\"fl\"></div></div><div class=\"kn\"></div></div><div class=\"cv\" data-v=\"pOn\"></div></div>\n" +
@@ -7174,18 +7226,19 @@ final class ArHelloPage {
     "#w{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:34px;opacity:0;transition:opacity .8s ease}\n" +
     "#w.on{opacity:1}\n" +
     "/* sombra em azul puro: o 3D a transforma em um escurecimento translucido atras das letras */\n" +
-    "#t{font-family:'Hand',cursive;font-weight:600;font-size:68px;text-align:center;padding:0 20px;line-height:1.1;color:#fff;\n" +
+    "#t{font-family:'Hand',cursive;font-weight:600;font-size:min(68px,8.2vw);text-align:center;padding:0 20px;line-height:1.1;color:#fff;\n" +
     "  text-shadow:0 3px 14px rgba(0,0,255,.42),0 0 28px rgba(0,0,255,.22)}\n" +
+    "#t .wd{display:inline-block;white-space:nowrap;animation:none}\n" +
     "#t span{display:inline-block;white-space:pre;padding:0 .12em;margin:0 -.12em;animation:smoke 1.25s cubic-bezier(.2,.7,.3,1) both,wipe .7s ease-out both}\n" +
     "@keyframes smoke{0%{opacity:0;filter:blur(18px);transform:translate(-10px,14px) scale(1.7)}\n" +
     "  45%{opacity:.55;filter:blur(8px);transform:translate(4px,-4px) scale(1.25)}\n" +
     "  100%{opacity:1;filter:blur(0);transform:none}}\n" +
     "@keyframes wipe{0%{clip-path:inset(-60% 100% -60% -80%)}100%{clip-path:inset(-60% -80% -60% -80%)}}\n" +
-    "#f{width:74%;max-width:560px;height:78px;border-radius:39px;border:2.5px solid #fff;background:rgb(0,0,150);display:none;align-items:center;justify-content:center;\n" +
-    "  font-family:'Hand',cursive;font-weight:600;font-size:54px;color:#fff;padding:0 28px;overflow:hidden;white-space:nowrap;\n" +
+    "#f{width:80%;max-width:560px;height:min(78px,10vw);border-radius:60px;border:2.5px solid #fff;background:rgb(0,0,150);display:none;align-items:center;justify-content:center;\n" +
+    "  font-family:'Hand',cursive;font-weight:600;font-size:min(54px,6.8vw);color:#fff;padding:0 28px;overflow:hidden;white-space:nowrap;\n" +
     "  box-shadow:0 0 10px rgba(0,0,255,.4);text-shadow:0 2px 8px rgba(0,0,255,.4)}\n" +
     "#f.on{display:flex}\n" +
-    "#c{display:inline-block;width:3px;height:48px;background:#fff;margin-left:4px;animation:bl 1s steps(1) infinite}\n" +
+    "#c{display:inline-block;width:3px;height:min(48px,6vw);background:#fff;margin-left:4px;animation:bl 1s steps(1) infinite}\n" +
     "#ph{opacity:.7}\n" +
     "@keyframes bl{50%{opacity:0}}\n" +
     "</style></head><body>\n" +
@@ -7193,8 +7246,11 @@ final class ArHelloPage {
     "<script>\n" +
     "var A=window.ArMenu,last='',lt='';\n" +
     "function setTitle(x){var t=document.getElementById('t');t.innerHTML='';\n" +
-    "  for(var i=0;i<x.length;i++){var s=document.createElement('span');s.textContent=x.charAt(i);\n" +
-    "    s.style.animationDelay=(i*0.075)+'s,'+(i*0.075+0.35)+'s';t.appendChild(s);}}\n" +
+    "  var ws=x.split(' '),i=0;\n" +
+    "  ws.forEach(function(wd,wi){var g=document.createElement('span');g.className='wd';\n" +
+    "    for(var c=0;c<wd.length;c++,i++){var s=document.createElement('span');s.textContent=wd.charAt(c);\n" +
+    "      s.style.animationDelay=(i*0.075)+'s,'+(i*0.075+0.35)+'s';g.appendChild(s);}\n" +
+    "    t.appendChild(g);if(wi<ws.length-1){t.appendChild(document.createTextNode(' '));i++;}});}\n" +
     "function tick(){var s={};try{s=JSON.parse(A.state())}catch(e){}\n" +
     "  var m=s.hm||0,sig=[m,s.ht,s.hb].join('|');\n" +
     "  if(sig===last)return;last=sig;\n" +
