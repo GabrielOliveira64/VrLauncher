@@ -2,7 +2,7 @@
 # Modo AR (6DoF) do VR Launcher: tudo do 6DoF fica neste arquivo.
 # Para atualizar: envie um modo-ar.sh novo para o repositorio, substituindo este.
 set -e
-echo "modo-ar.sh: Fase 21 - video 360 de carregamento com derretimento, inicia em VR, saudacao centralizada com barra de mover (2026-11-20)"
+echo "modo-ar.sh: Fase 22 - bolinha de opcoes, rotacao adicional da janela, alca de tamanho opcional (2026-11-23)"
 mkdir -p app/src/main/java/com/vr/launcher
 cat > /tmp/vr_orig_ui.js <<'JSEOF'
 var tabAju = mk2('tab', '<div class="tt">AJUSTES</div><div class="cfl"></div>'); tabAju.style.zIndex = 200;
@@ -2006,7 +2006,8 @@ final class ArRenderer implements GLSurfaceView.Renderer {
   static final float CHROME_Z = 0.004f;
   static final int MAX_WINS = 3;
 
-  static final int R_NONE = 0, R_BODY = 1, R_BAR = 2, R_CORNER = 3, R_CHROME = 4, R_PLUS = 5, R_CURVE = 6, R_ICON = 7, R_KEY = 8, R_LINK = 9, R_BUBBLE = 10;
+  static final int R_NONE = 0, R_BODY = 1, R_BAR = 2, R_CORNER = 3, R_CHROME = 4, R_PLUS = 5, R_CURVE = 6, R_ICON = 7, R_KEY = 8, R_LINK = 9, R_BUBBLE = 10, R_ROTV = 11, R_ROTH = 12;
+  static final float DOT_X = 0.135f, DOT_HIT = 0.024f, ROTV_X = 0.16f, ROTV_HW = 0.04f, ROTH_DX = 0.032f, ROTH_HH = 0.065f;
   // grupos: janelas lado a lado num arco de raio GRP_R em volta de quem usa
   static final float GGAP = 0.012f, GRP_R = 1.2f, BUB = 0.1f;
   // tela curva: meio angulo da curvatura (rad) e raio (arco = largura da janela)
@@ -2062,6 +2063,9 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     long lockUntil = 0;        // bloqueada para interacao (alvo de agrupamento)
     int chromeSig = 0, bubTex = 0;
     boolean curved = false;   // tela curva (so as laterais, na horizontal)
+    boolean rotOn = false;    // barras azuis de rotacao adicional visiveis
+    boolean resizeOn = false; // alca de redimensionar (canto inferior direito) ativada
+    float rotX = 0f, rotY = 0f;   // rotacao adicional (rad): vertical (inclinar) e horizontal (girar)
     float hw = HW, hh = HH;   // meia largura/altura (m, escala 1): muda com a proporcao das janelas do navegador
     boolean hidden = false;   // aba do menu fechada
     boolean linked = false;   // aba do menu: segue o trilho
@@ -2074,6 +2078,13 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     Pose current() {
       Anchor a = anchor;
       return (a != null && a.getTrackingState() != TrackingState.STOPPED) ? a.getPose() : pose;
+    }
+    /** Pose para desenhar e apontar: a da janela mais a rotacao adicional em torno do centro. */
+    Pose cur() {
+      Pose b = current();
+      if (rotX == 0f && rotY == 0f) return b;
+      float sa = (float) Math.sin(rotY / 2f), ca = (float) Math.cos(rotY / 2f), sb = (float) Math.sin(rotX / 2f), cb = (float) Math.cos(rotX / 2f);
+      return b.compose(new Pose(new float[]{0f, 0f, 0f}, new float[]{ca * sb, sa * cb, -sa * sb, ca * cb}));
     }
   }
 
@@ -2105,7 +2116,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
   volatile int aspectIdx = 0;
   private final FloatBuffer[] winVA = new FloatBuffer[4], curVA = new FloatBuffer[4];
   private Win drawW = null, moreWin = null, moreOwner = null;
-  volatile boolean moreCurved = false;
+  volatile boolean moreCurved = false, moreRot = false, moreRsz = false;
   volatile boolean stereo = false;        // tela dividida (um desenho por olho) para o oculos VR Box
   volatile int viewMode = 1;              // 0 preenchida (corta), 1 meio-termo, 2 inteira (faixas), 3 esticada (tela cheia)
   private volatile boolean vpDirty = true;
@@ -2339,7 +2350,11 @@ final class ArRenderer implements GLSurfaceView.Renderer {
   private Win hoverWin = null;
 
   // arrastos em andamento
-  private Win dragWin = null, sizeWin = null, touchWin = null;
+  private Win dragWin = null, sizeWin = null, touchWin = null, rotWin = null;
+  private int rotKind = 0;
+  private float rotA0 = 0f, rotR0 = 0f, rotGain = 2f;
+  private Win lastRotTapWin = null; private int lastRotTapKind = 0; private long lastRotTapMs = 0;
+  private float[] lastDir = null;
   private float grabDist = 1f, grabSize = 0.1f, grabLx = 0f, grabLy = 0f, distS = 1f;
   private float sizeS0 = 1f, sizeD0 = 0.1f;
   private float lastPx = -1f, lastPy = -1f;
@@ -3286,7 +3301,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
           }
     if (moreWin == null) return;
     moreOwner = w;
-    moreCurved = w.curved;
+    moreCurved = w.curved; moreRot = w.rotOn; moreRsz = w.resizeOn;
     refreshFav();
     moreWin.hidden = false;
     moreWin.lockUntil = SystemClock.uptimeMillis() + 300;
@@ -3316,7 +3331,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     if (moreWin == null || moreWin.hidden) return;
     Win o = moreOwner;
     if (o == null || !wins.contains(o) || o.min) { hideMore(); return; }
-    moreCurved = o.curved;
+    moreCurved = o.curved; moreRot = o.rotOn; moreRsz = o.resizeOn;
     float dx = o.hw * o.s + 0.03f + HW * moreWin.s;
     moreWin.pose = o.current().compose(Pose.makeTranslation(dx, 0f, 0.012f));
   }
@@ -3327,6 +3342,12 @@ final class ArRenderer implements GLSurfaceView.Renderer {
       if ("more:curve".equals(a)) {
         Win o = moreOwner;
         if (o != null) { o.curved = !o.curved; moreCurved = o.curved; say(o.curved ? "Tela curva" : "Tela plana"); }
+      } else if ("more:rot".equals(a)) {
+        Win o = moreOwner;
+        if (o != null) { o.rotOn = !o.rotOn; moreRot = o.rotOn; say(o.rotOn ? "Rotacao adicional ativada" : "Rotacao adicional desativada"); }
+      } else if ("more:rsz".equals(a)) {
+        Win o = moreOwner;
+        if (o != null) { o.resizeOn = !o.resizeOn; moreRsz = o.resizeOn; say(o.resizeOn ? "Redimensionar ativado" : "Redimensionar desativado"); }
       } else if ("more:desktop".equals(a)) {
         ArPanel.desktop = !ArPanel.desktop;
         for (Win w : wins) if (!w.menu) w.panel.applyBrowser();
@@ -3832,11 +3853,20 @@ final class ArRenderer implements GLSurfaceView.Renderer {
       boolean cornOn = (sizeWin == w) || (hov && hoverRegion == R_CORNER);
       boolean barAct = dragWin == w || (hb && dragWin == helloWin), cornAct = sizeWin == w;
       float ba = barOn ? 0.95f : 0.55f, ca = cornOn ? 0.95f : 0.5f;
+      boolean showCorner = !w.kb && w != helloWin && w != loadWin && (w.menu || w.resizeOn);
       if ((hb || (!w.kb && w != helloWin)) && w != loadWin) quad(barTex, 0f, barCy(w), BAR_W * (barOn ? 1.15f : 0.62f), BAR_H * (barOn ? 1.2f : 0.7f), barAct ? 0.37f : 1f, barAct ? 0.92f : 1f, barAct ? 0.83f : 1f, ba, dimV);
-      if (!w.kb && w != helloWin && w != loadWin) quad(cornerTex, w.hw - 0.013f, -w.hh + 0.013f, CS * (cornOn ? 1.2f : 0.8f), CS * (cornOn ? 1.2f : 0.8f), cornAct ? 0.37f : 1f, cornAct ? 0.92f : 1f, cornAct ? 0.83f : 1f, ca, dimV);
+      if (showCorner) quad(cornerTex, w.hw - 0.013f, -w.hh + 0.013f, CS * (cornOn ? 1.2f : 0.8f), CS * (cornOn ? 1.2f : 0.8f), cornAct ? 0.37f : 1f, cornAct ? 0.92f : 1f, cornAct ? 0.83f : 1f, ca, dimV);
       if (!w.menu) {
         boolean curveOn = hov && hoverRegion == R_CURVE;
-        iconBtn(curveGlyph, -PLUS_X, barCy(w), PLUS_S * (curveOn ? 1.2f : 0.9f), curveOn, moreWin != null && !moreWin.hidden && moreOwner == w, 1f, dimV);
+        // bolinha das opcoes: pequena, na altura e na cor da barra de mover, a esquerda dela
+        boolean moreShown = moreWin != null && !moreWin.hidden && moreOwner == w;
+        float dsz = 0.017f * (curveOn ? 1.35f : 1f);
+        quad(discTex, -DOT_X, barCy(w), dsz, dsz, moreShown ? 0.37f : 1f, moreShown ? 0.92f : 1f, moreShown ? 0.83f : 1f, (curveOn || moreShown) ? 0.95f : 0.55f, dimV);
+        if (w.rotOn) {
+          boolean vOn = (hov && hoverRegion == R_ROTV) || (rotWin == w && rotKind == 1), hOn = (hov && hoverRegion == R_ROTH) || (rotWin == w && rotKind == 2);
+          quad(barTex, ROTV_X, barCy(w), 2f * ROTV_HW * (vOn ? 1.1f : 0.8f), BAR_H * (vOn ? 1.2f : 0.8f), 0.25f, 0.56f, 1f, vOn ? 0.98f : 0.7f, dimV);
+          quad(barTex, w.hw + ROTH_DX, 0f, BAR_H * (hOn ? 1.2f : 0.8f), 2f * ROTH_HH * (hOn ? 1.1f : 0.8f), 0.25f, 0.56f, 1f, hOn ? 0.98f : 0.7f, dimV);
+        }
         boolean keyOn = hov && hoverRegion == R_KEY, kbShown = kbWin != null && !kbWin.hidden && kbOwner == w;
         iconBtn(keyGlyph, PLUS_X, barCy(w), PLUS_S * (keyOn ? 1.2f : 0.9f), keyOn, kbShown, 1f, dimV);
         if (w.group != null && w.group.m.indexOf(w) > 0) {
@@ -3941,7 +3971,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
   /** model = pose da janela * escala (curva: escala uniforme, a malha ja tem a profundidade). */
   private void modelOf(Win w) {
     drawW = w;
-    w.current().toMatrix(model, 0);
+    w.cur().toMatrix(model, 0);
     Matrix.scaleM(model, 0, w.s, w.s, w.curved ? w.s : 1f);
     bend = w.curved;
   }
@@ -4139,11 +4169,12 @@ final class ArRenderer implements GLSurfaceView.Renderer {
       pend = null;
       if (hit != null) {
         // mover e redimensionar pedem um instante de pinca firme; toque e botoes agem na hora
-        if (hit.region == R_BAR || hit.region == R_CORNER) { pend = hit; pendSince = now; }
+        if (hit.region == R_BAR || hit.region == R_CORNER || hit.region == R_ROTV || hit.region == R_ROTH) { pend = hit; pendSince = now; }
         else grab(s, hit, now);
       }
     } else if (!pinchOn && pinchWasOn) {
       if (pend != null && pend.region == R_BAR) barTap(pend.win, now);   // pinca rapida na barra: toque
+      else if (pend != null && (pend.region == R_ROTV || pend.region == R_ROTH)) rotTap(pend.win, pend.region == R_ROTV ? 1 : 2, now);   // dois toques: restaura
       release(s);
       pend = null;
     }
@@ -4158,7 +4189,9 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     updateHold(s, pinchOn, hit, camPos, dir, now);
 
     if (pinchOn && dir != null) {
-      if (sizeWin != null) doResize(camPos, dir);
+      lastDir = dir;
+      if (rotWin != null) doRot(dir);
+      else if (sizeWin != null) doResize(camPos, dir);
       else if (dragWin != null) doDrag(camPos, dir);
       else if (touchWin != null) doTouchMove(camPos, dir);
     }
@@ -4187,7 +4220,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     }
   }
 
-  private boolean pinchWasOnGrab() { return dragWin != null || sizeWin != null || touchWin != null; }
+  private boolean pinchWasOnGrab() { return dragWin != null || sizeWin != null || touchWin != null || rotWin != null; }
 
   private void ensureVctl(Session s, Pose p) {
     if (vctlWin != null || s == null) return;
@@ -4284,6 +4317,13 @@ final class ArRenderer implements GLSurfaceView.Renderer {
       grabLx = h.lx;
       grabLy = h.ly;
       distS = h.t;
+    } else if (h.region == R_ROTV || h.region == R_ROTH) {
+      float[] d = lastDir;
+      if (d == null) return;
+      rotWin = w;
+      rotKind = h.region == R_ROTV ? 1 : 2;
+      rotA0 = rotKind == 1 ? w.rotX : w.rotY;
+      rotR0 = rotKind == 1 ? (float) Math.asin(Math.max(-1f, Math.min(1f, d[1]))) : (float) Math.atan2(d[0], d[2]);
     } else if (h.region == R_BODY) {
       touchWin = w;
       lastPx = toPx(w, h.lx / w.s, true);
@@ -4342,6 +4382,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
   }
 
   private void release(Session s) {
+    rotWin = null;
     if (touchWin != null) {
       sendTouch(touchWin, MotionEvent.ACTION_UP, lastPx, lastPy);
       touchWin = null;
@@ -4364,6 +4405,31 @@ final class ArRenderer implements GLSurfaceView.Renderer {
       }
       clearDrop();
     }
+  }
+
+  /** Barra azul de baixo: inclina a janela (vertical). Barra azul da lateral: gira a janela (horizontal). */
+  private void doRot(float[] dir) {
+    Win w = rotWin;
+    if (w == null || dir == null) return;
+    final float lim = 1.35f;
+    if (rotKind == 1) {
+      float r = (float) Math.asin(Math.max(-1f, Math.min(1f, dir[1])));
+      w.rotX = Math.max(-lim, Math.min(lim, rotA0 + rotGain * (r - rotR0)));
+    } else {
+      float r = (float) Math.atan2(dir[0], dir[2]), d = r - rotR0;
+      while (d > Math.PI) d -= 2 * Math.PI;
+      while (d < -Math.PI) d += 2 * Math.PI;
+      w.rotY = Math.max(-lim, Math.min(lim, rotA0 - rotGain * d));
+    }
+  }
+
+  /** Dois toques rapidos na mesma barra azul voltam a rotacao ao normal. */
+  private void rotTap(Win w, int kind, long now) {
+    if (lastRotTapWin == w && lastRotTapKind == kind && now - lastRotTapMs < 800) {
+      lastRotTapWin = null;
+      if (kind == 1) w.rotX = 0f; else w.rotY = 0f;
+      say("Rotacao restaurada");
+    } else { lastRotTapWin = w; lastRotTapKind = kind; lastRotTapMs = now; }
   }
 
   private void doResize(float[] camPos, float[] dir) {
@@ -4451,7 +4517,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
 
   /** Cruza o raio com o plano da janela. out = {x local, y local, t} em metros reais. */
   private boolean planeHit(Win w, float[] o, float[] d, float[] out) {
-    Pose inv = w.current().inverse();
+    Pose inv = w.cur().inverse();
     float[] lo = inv.transformPoint(o);
     float[] ld = inv.rotateVector(d);
     if (w.curved && !w.min) return cylHit(w, lo, ld, out);
@@ -4511,9 +4577,13 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     }
     if (!w.menu && w.group != null && w.group.m.indexOf(w) > 0
       && Math.abs(x - chainX(w)) <= 0.03f && Math.abs(y - chainY(w)) <= 0.03f) return R_LINK;
-    if (Math.abs(x - (w.hw - 0.013f)) <= CS_HIT && Math.abs(y - (-w.hh + 0.013f)) <= CS_HIT) return R_CORNER;
+    if (!w.menu && w.rotOn) {
+      if (Math.abs(x - ROTV_X) <= ROTV_HW && Math.abs(y - barCy(w)) <= BAR_HIT_Y) return R_ROTV;
+      if (Math.abs(x - (w.hw + ROTH_DX)) <= 0.03f && Math.abs(y) <= ROTH_HH) return R_ROTH;
+    }
+    if ((w.menu || w.resizeOn) && Math.abs(x - (w.hw - 0.013f)) <= CS_HIT && Math.abs(y - (-w.hh + 0.013f)) <= CS_HIT) return R_CORNER;
     if (!w.menu && Math.abs(x - PLUS_X) <= PLUS_HIT && Math.abs(y - barCy(w)) <= PLUS_HIT) return R_KEY;
-    if (!w.menu && Math.abs(x + PLUS_X) <= PLUS_HIT && Math.abs(y - barCy(w)) <= PLUS_HIT) return R_CURVE;
+    if (!w.menu && Math.abs(x + DOT_X) <= DOT_HIT && Math.abs(y - barCy(w)) <= DOT_HIT) return R_CURVE;
     if (Math.abs(x) <= BAR_HIT_X && Math.abs(y - barCy(w)) <= BAR_HIT_Y) return R_BAR;
     if (Math.abs(x) <= w.hw && Math.abs(y) <= w.hh) return R_BODY;
     float y0 = w.hh + CH_GAP, CHW = chW(w), CHH = chH(w);
@@ -5908,7 +5978,7 @@ public class ArActivity extends Activity {
   String menuState() {
     return "{\"gpu\":" + tracker.wantsGpu() + ",\"hybrid\":" + renderer.hybridOn + ",\"stereo\":" + renderer.stereo
       + ",\"vol\":" + volumeNow() + ",\"bri\":" + brightnessNow() + ",\"room\":" + Math.round(renderer.roomDim * 100f)
-      + ",\"curved\":" + renderer.moreCurved + ",\"desktop\":" + ArPanel.desktop + ",\"bz\":" + ArPanel.zoomPct + ",\"ar\":" + renderer.aspectIdx
+      + ",\"curved\":" + renderer.moreCurved + ",\"rot\":" + renderer.moreRot + ",\"rsz\":" + renderer.moreRsz + ",\"desktop\":" + ArPanel.desktop + ",\"bz\":" + ArPanel.zoomPct + ",\"ar\":" + renderer.aspectIdx
       + ",\"lmode\":" + renderer.lensMode + ",\"ipd\":" + Math.round(renderer.eIpd()) + ",\"sep\":" + Math.round(renderer.eSep()) + ",\"vsep\":" + Math.round(renderer.eVoff()) + ",\"lsize\":" + Math.round(renderer.eSize()) + ",\"ldist\":" + Math.round(renderer.eDist()) + ",\"lfov\":" + Math.round(renderer.eFov()) + ",\"sharp\":" + Math.round(renderer.sharp * 100f)
       + ",\"fav\":" + renderer.moreFav + ",\"ld\":" + renderer.loadMode + ",\"mz\":" + renderer.menuZoom + ",\"hm\":" + renderer.helloMode + ",\"ht\":" + q(renderer.helloText) + ",\"hb\":" + q(renderer.helloBuf)
       + ",\"zoom\":" + renderer.zoom + ",\"pOn\":" + Math.round(renderer.pinchOn * 100f) + ",\"pOff\":" + Math.round(renderer.pinchOff * 100f) + "}";
@@ -7440,6 +7510,8 @@ final class ArMorePage {
     "<div id=\"main\">\n" +
     "<h1>OP&Ccedil;&Otilde;ES DA JANELA</h1>\n" +
     "<div class=\"row\" data-a=\"curve\"><div class=\"t\"><b>Tela curva</b><span>Curva s&oacute; as laterais desta janela.</span></div><div class=\"sw\" id=\"s-curve\"><i></i></div></div>\n" +
+    "<div class=\"row\" data-a=\"rot\"><div class=\"t\"><b>Rota&ccedil;&atilde;o adicional</b><span>Barras azuis: embaixo inclina, na lateral gira. Dois toques restauram.</span></div><div class=\"sw\" id=\"s-rot\"><i></i></div></div>\n" +
+    "<div class=\"row\" data-a=\"rsz\"><div class=\"t\"><b>Redimensionar janela</b><span>Mostra a al&ccedil;a de tamanho no canto inferior direito.</span></div><div class=\"sw\" id=\"s-rsz\"><i></i></div></div>\n" +
     "<div class=\"row\" data-a=\"fav\"><div class=\"t\"><b>Favoritar</b><span>Adiciona este site &agrave; aba Web (toque de novo para remover).</span></div><svg id=\"s-fav\" viewBox=\"0 0 24 24\" width=\"34\" height=\"34\" style=\"flex:none;fill:none;stroke:#fff;stroke-width:1.8;stroke-linejoin:round\"><path d=\"M12 20.5s-7.5-4.6-9.3-9.2C1.6 8.3 3.4 5 6.6 5c2 0 3.5 1.1 5.4 3.2C13.9 6.1 15.4 5 17.4 5c3.2 0 5 3.3 3.9 6.3-1.8 4.6-9.3 9.2-9.3 9.2z\"/></svg></div>\n" +
     "<div class=\"row\" data-a=\"desktop\"><div class=\"t\"><b>Modo computador</b><span>Sites em vers&atilde;o de PC (todas as janelas).</span></div><div class=\"sw\" id=\"s-desktop\"><i></i></div></div>\n" +
     "<div class=\"row\"><div class=\"t\"><b>Zoom do navegador</b><span>Menor = letras menores (todas as janelas).</span></div><div class=\"seg\" id=\"g-zoom\"><div class=\"sb\" data-z=\"100\">100%</div><div class=\"sb\" data-z=\"90\">90%</div><div class=\"sb\" data-z=\"80\">80%</div><div class=\"sb\" data-z=\"70\">70%</div><div class=\"sb\" data-z=\"60\">60%</div></div></div>\n" +
@@ -7450,6 +7522,8 @@ final class ArMorePage {
     "function act(a){try{A.act(a)}catch(e){}}\n" +
     "function refresh(){var s={};try{s=JSON.parse(A.state())}catch(e){}\n" +
     "  document.getElementById('s-curve').className='sw'+(s.curved?' on':'');\n" +
+    "  document.getElementById('s-rot').className='sw'+(s.rot?' on':'');\n" +
+    "  document.getElementById('s-rsz').className='sw'+(s.rsz?' on':'');\n" +
     "  var hf=document.getElementById('s-fav');hf.style.fill=s.fav?'#ff4d6d':'none';hf.style.stroke=s.fav?'#ff4d6d':'#fff';\n" +
     "  document.getElementById('s-desktop').className='sw'+(s.desktop?' on':'');\n" +
     "  document.querySelectorAll('[data-z]').forEach(function(b){b.className='sb'+(+b.getAttribute('data-z')===s.bz?' on':'')});\n" +
