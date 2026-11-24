@@ -2,7 +2,7 @@
 # Modo AR (6DoF) do VR Launcher: tudo do 6DoF fica neste arquivo.
 # Para atualizar: envie um modo-ar.sh novo para o repositorio, substituindo este.
 set -e
-echo "modo-ar.sh: Fase 22 - bolinha de opcoes, rotacao adicional da janela, alca de tamanho opcional (2026-11-23)"
+echo "modo-ar.sh: Fase 23 - desempenho A: paineis escondidos pausados, mao estavel, menos alocacoes, medidores (2026-11-24)"
 mkdir -p app/src/main/java/com/vr/launcher
 cat > /tmp/vr_orig_ui.js <<'JSEOF'
 var tabAju = mk2('tab', '<div class="tt">AJUSTES</div><div class="cfl"></div>'); tabAju.style.zIndex = 200;
@@ -749,6 +749,7 @@ final class ArFuse {
   private boolean yawInit = false;
   volatile boolean freezeYaw = false;
 
+  private final float[] fRef = new float[9], fRy = {1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f}, yRef = new float[9], yQ = new float[9];
   private final float[] a = new float[9], b = new float[9], c = new float[9], d = new float[9];
 
   /** Calibrado e com direcao conhecida: pode assumir quando o ARCore perder o rastreio. */
@@ -802,7 +803,7 @@ final class ArFuse {
   }
 
   private void yawUpdate(float[] rAr, float[] rG) {
-    float[] ref = new float[9], q = new float[9];
+    float[] ref = yRef, q = yQ;
     base(rG, ref);
     mulNT(rAr, ref, q);       // deve ser uma rotacao so em torno do eixo vertical
     if (q[4] < 0.97f) return;
@@ -822,13 +823,12 @@ final class ArFuse {
    * Orientacao da camera so pelo giroscopio, sem precisar do ARCore (tela de carregamento).
    * rot = Surface.ROTATION_*. Camera->mundo (y para cima), por linhas.
    */
+  private static final float[] K0 = {1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f}, K1 = {0f, 1f, 0f, -1f, 0f, 0f, 0f, 0f, 1f},
+    K2 = {-1f, 0f, 0f, 0f, -1f, 0f, 0f, 0f, 1f}, K3 = {0f, -1f, 0f, 1f, 0f, 0f, 0f, 0f, 1f}, FI_T = new float[9];
+
   static void fromImu(float[] rG, int rot, float[] out) {
-    float[] k;
-    if (rot == 1) k = new float[]{0f, 1f, 0f, -1f, 0f, 0f, 0f, 0f, 1f};
-    else if (rot == 3) k = new float[]{0f, -1f, 0f, 1f, 0f, 0f, 0f, 0f, 1f};
-    else if (rot == 2) k = new float[]{-1f, 0f, 0f, 0f, -1f, 0f, 0f, 0f, 1f};
-    else k = new float[]{1f, 0f, 0f, 0f, 1f, 0f, 0f, 0f, 1f};
-    float[] t = new float[9];
+    float[] k = rot == 1 ? K1 : rot == 3 ? K3 : rot == 2 ? K2 : K0;
+    float[] t = FI_T;
     mul(E, rG, t);
     mul(t, k, out);
   }
@@ -836,10 +836,9 @@ final class ArFuse {
   /** Orientacao da camera (camera->mundo do ARCore) a partir so do giroscopio. */
   boolean fused(float[] rG, float[] out) {
     if (!usable()) return false;
-    float[] ref = new float[9];
-    base(rG, ref);
-    float[] ry = {yc, 0f, ys, 0f, 1f, 0f, -ys, 0f, yc};
-    mul(ry, ref, out);
+    base(rG, fRef);
+    fRy[0] = yc; fRy[2] = ys; fRy[6] = -ys; fRy[8] = yc;
+    mul(fRy, fRef, out);
     return true;
   }
 
@@ -848,29 +847,47 @@ final class ArFuse {
   // =============================================================
 
   static void mul(float[] x, float[] y, float[] o) {
-    float[] t = new float[9];
-    for (int i = 0; i < 3; i++)
-      for (int j = 0; j < 3; j++)
-        t[3 * i + j] = x[3 * i] * y[j] + x[3 * i + 1] * y[3 + j] + x[3 * i + 2] * y[6 + j];
-    System.arraycopy(t, 0, o, 0, 9);
+    float t0, t1, t2, t3, t4, t5, t6, t7, t8;
+    t0 = x[0] * y[0] + x[1] * y[3] + x[2] * y[6];
+    t1 = x[0] * y[1] + x[1] * y[4] + x[2] * y[7];
+    t2 = x[0] * y[2] + x[1] * y[5] + x[2] * y[8];
+    t3 = x[3] * y[0] + x[4] * y[3] + x[5] * y[6];
+    t4 = x[3] * y[1] + x[4] * y[4] + x[5] * y[7];
+    t5 = x[3] * y[2] + x[4] * y[5] + x[5] * y[8];
+    t6 = x[6] * y[0] + x[7] * y[3] + x[8] * y[6];
+    t7 = x[6] * y[1] + x[7] * y[4] + x[8] * y[7];
+    t8 = x[6] * y[2] + x[7] * y[5] + x[8] * y[8];
+    o[0] = t0; o[1] = t1; o[2] = t2; o[3] = t3; o[4] = t4; o[5] = t5; o[6] = t6; o[7] = t7; o[8] = t8;
   }
 
   /** x^T * y */
   static void mulTN(float[] x, float[] y, float[] o) {
-    float[] t = new float[9];
-    for (int i = 0; i < 3; i++)
-      for (int j = 0; j < 3; j++)
-        t[3 * i + j] = x[i] * y[j] + x[3 + i] * y[3 + j] + x[6 + i] * y[6 + j];
-    System.arraycopy(t, 0, o, 0, 9);
+    float t0, t1, t2, t3, t4, t5, t6, t7, t8;
+    t0 = x[0] * y[0] + x[3] * y[3] + x[6] * y[6];
+    t1 = x[0] * y[1] + x[3] * y[4] + x[6] * y[7];
+    t2 = x[0] * y[2] + x[3] * y[5] + x[6] * y[8];
+    t3 = x[1] * y[0] + x[4] * y[3] + x[7] * y[6];
+    t4 = x[1] * y[1] + x[4] * y[4] + x[7] * y[7];
+    t5 = x[1] * y[2] + x[4] * y[5] + x[7] * y[8];
+    t6 = x[2] * y[0] + x[5] * y[3] + x[8] * y[6];
+    t7 = x[2] * y[1] + x[5] * y[4] + x[8] * y[7];
+    t8 = x[2] * y[2] + x[5] * y[5] + x[8] * y[8];
+    o[0] = t0; o[1] = t1; o[2] = t2; o[3] = t3; o[4] = t4; o[5] = t5; o[6] = t6; o[7] = t7; o[8] = t8;
   }
 
   /** x * y^T */
   static void mulNT(float[] x, float[] y, float[] o) {
-    float[] t = new float[9];
-    for (int i = 0; i < 3; i++)
-      for (int j = 0; j < 3; j++)
-        t[3 * i + j] = x[3 * i] * y[3 * j] + x[3 * i + 1] * y[3 * j + 1] + x[3 * i + 2] * y[3 * j + 2];
-    System.arraycopy(t, 0, o, 0, 9);
+    float t0, t1, t2, t3, t4, t5, t6, t7, t8;
+    t0 = x[0] * y[0] + x[1] * y[1] + x[2] * y[2];
+    t1 = x[0] * y[3] + x[1] * y[4] + x[2] * y[5];
+    t2 = x[0] * y[6] + x[1] * y[7] + x[2] * y[8];
+    t3 = x[3] * y[0] + x[4] * y[1] + x[5] * y[2];
+    t4 = x[3] * y[3] + x[4] * y[4] + x[5] * y[5];
+    t5 = x[3] * y[6] + x[4] * y[7] + x[5] * y[8];
+    t6 = x[6] * y[0] + x[7] * y[1] + x[8] * y[2];
+    t7 = x[6] * y[3] + x[7] * y[4] + x[8] * y[5];
+    t8 = x[6] * y[6] + x[7] * y[7] + x[8] * y[8];
+    o[0] = t0; o[1] = t1; o[2] = t2; o[3] = t3; o[4] = t4; o[5] = t5; o[6] = t6; o[7] = t7; o[8] = t8;
   }
 
   /** Angulo (graus) da rotacao que leva x em y. */
@@ -1289,6 +1306,25 @@ final class ArPanel {
   final float[] stm = new float[16];
   final AtomicBoolean avail = new AtomicBoolean(false);
   volatile boolean got = false;
+  volatile boolean active = true;   // falso = janela escondida: a pagina para de desenhar e os timers esfriam
+
+  /** Janela escondida nao gasta CPU/GPU: WebView invisivel e pausado. Ao voltar, retoma e redesenha. */
+  void setActive(final boolean on) {
+    if (active == on) return;
+    active = on;
+    ui.post(new Runnable() {
+      @Override public void run() {
+        for (Tab t : tabs) {
+          WebView v = t.web;
+          if (v == null) continue;
+          try {
+            if (on) { v.onResume(); v.setVisibility(View.VISIBLE); v.postInvalidate(); }
+            else { v.setVisibility(View.INVISIBLE); v.onPause(); }
+          } catch (Throwable e) { }
+        }
+      }
+    });
+  }
   volatile int frames = 0;
 
   // ---- lado UI ----
@@ -1559,6 +1595,7 @@ final class ArPanel {
       @Override public void run() {
         FrameLayout h = holder;
         if (!running || h == null || s != surf) return;
+        if (!active) { ui.postDelayed(this, 200); return; }
         try {
           Canvas c = s.lockCanvas(null);
           try { h.draw(c); } finally { s.unlockCanvasAndPost(c); }
@@ -2068,6 +2105,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     float rotX = 0f, rotY = 0f;   // rotacao adicional (rad): vertical (inclinar) e horizontal (girar)
     float hw = HW, hh = HH;   // meia largura/altura (m, escala 1): muda com a proporcao das janelas do navegador
     boolean hidden = false;   // aba do menu fechada
+    boolean pAct = true;      // painel (WebView) ativo; falso enquanto escondida
     boolean linked = false;   // aba do menu: segue o trilho
     boolean rail = false;     // o proprio trilho de icones (sem painel)
     boolean tabsOpen = false, chromeOpen = false;   // fileira de abas acima da barra do navegador
@@ -2326,7 +2364,11 @@ final class ArRenderer implements GLSurfaceView.Renderer {
   // fps
   private long fpsT0 = 0, arTs = 0;
   private int glN = 0, arN = 0;
-  private float glFps = 0f, arFps = 0f;
+  private static String gcCount() {
+    try { return android.os.Debug.getRuntimeStat("art.gc.gc-count"); } catch (Throwable t) { return "?"; }
+  }
+
+  private float glFps = 0f, arFps = 0f, frameMs = 0f;
 
   // mao e cursor (coordenadas de tela)
   private long lastSeq = 0, tDet = 0, seenMs = 0, lastFrameMs = 0;
@@ -2409,6 +2451,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
   // =============================================================
 
   @Override public void onSurfaceCreated(GL10 gl, EGLConfig config) {
+    try { android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY); } catch (Throwable t) { }
     GLES20.glClearColor(0f, 0f, 0f, 1f);
 
     int[] t = new int[1];
@@ -2543,6 +2586,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
   }
 
   @Override public void onDrawFrame(GL10 gl) {
+    final long frameT0 = System.nanoTime();
     GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT | GLES20.GL_DEPTH_BUFFER_BIT);
     if (vpDirty) { vpDirty = false; updateViewport(); }
     GLES20.glViewport(vpX, vpY, vpW, vpH);
@@ -2614,7 +2658,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
         rescaleLayout(s, camPose, kz);
       }
 
-      if (!dim) feedTracker(frame);
+      feedTracker(frame);   // a mao continua sendo lida mesmo sem rastreio do ARCore (evita o ciclo: engasga -> perde rastreio -> perde a mao)
       distTarget = 0f;
       updateInteraction(s, frame, ct);
       animateMenu(frameDt);
@@ -2637,12 +2681,29 @@ final class ArRenderer implements GLSurfaceView.Renderer {
       placeKb();
       placeMore();
 
+      syncPanels();
       drawEyes();
       errorText = "";
     } catch (Throwable e) {
       errorText = e.toString();
     }
+    {
+      float ms = (System.nanoTime() - frameT0) / 1e6f;
+      frameMs = frameMs == 0f ? ms : frameMs * 0.95f + ms * 0.05f;
+    }
     publishOverlay();
+  }
+
+  /** Janelas escondidas (menu, teclado, opcoes, saudacao, carregamento) pausam o WebView; ao aparecer, retomam. */
+  private void syncPanels() {
+    for (Win w : wins) {
+      if (w.panel == null) continue;
+      boolean want = !w.hidden;
+      if (w.pAct == want) continue;
+      if (!want && !w.panel.got) continue;   // so pausa depois de ter desenhado ao menos um quadro
+      w.pAct = want;
+      w.panel.setActive(want);
+    }
   }
 
   /** Desenha a cena uma vez (tela normal) ou duas (estereo: olho esquerdo e direito, lado a lado). */
@@ -4127,7 +4188,9 @@ final class ArRenderer implements GLSurfaceView.Renderer {
       // compensa o atraso: a imagem da mao tem "age" ms de idade; projeta o movimento ate agora
       float age = Math.min(0.15f, Math.max(0f, (now - tDet) / 1000f));
       handAgeMs = age * 1000f;
-      float lead = age + 0.016f;
+      float lead = Math.min(age, 0.08f) + 0.016f;   // prever muito adiante com poucos quadros faz a mao "andar sozinha"
+      if (Math.abs(vxc) < 30f) vxc = 0f;   // mao parada: sem ruido de velocidade
+      if (Math.abs(vyc) < 30f) vyc = 0f;
       float lim = Math.max(40f, vw * 0.12f);
       float dxp = Math.max(-lim, Math.min(lim, vxc * lead)), dyp = Math.max(-lim, Math.min(lim, vyc * lead));
       float kc = 1f - (float) Math.exp(-dt * 45f), ks = 1f - (float) Math.exp(-dt * 40f);
@@ -4785,7 +4848,7 @@ final class ArRenderer implements GLSurfaceView.Renderer {
     if (now - lastHud < 250) return;
     lastHud = now;
     String l1 = "AR: " + (hybridActive ? "SEM RASTREIO -> 3DoF (giroscopio)" : trackText) + "  perdas: " + lostCount + (lostCount > 0 ? "  motivo: " + lastReason + "  ultima: " + lastLostMs + " ms" : "");
-    String l2 = "gl: " + Math.round(glFps) + " fps  ar: " + Math.round(arFps) + " fps  " + camInfo;
+    String l2 = "gl: " + Math.round(glFps) + " fps (" + String.format("%.1f", frameMs) + " ms cpu)  ar: " + Math.round(arFps) + " fps  gc: " + gcCount() + "  " + camInfo;
     String l3 = "mao: " + (skel != null ? "sim" : "nao") + "  pinca: " + String.format("%.2f", ratio) + (handFist ? "  PUNHO" : "")
       + "  ia(" + tracker.delegateName + "): " + Math.round(tracker.detFps) + " fps / " + Math.round(tracker.detMs) + " ms"
       + "  atraso: " + Math.round(handAgeMs) + " ms";
@@ -5086,9 +5149,8 @@ final class ArRenderer implements GLSurfaceView.Renderer {
       + "  }\n"
       + "  vec3 col = texture2D(u_Tex, uvOf(q)).rgb;\n"
       + "  if (u_Sharp > 0.01) {\n"
-      + "    vec3 bl = texture2D(u_Tex, uvOf(q + vec2(u_Px.x, 0.0))).rgb + texture2D(u_Tex, uvOf(q - vec2(u_Px.x, 0.0))).rgb\n"
-      + "            + texture2D(u_Tex, uvOf(q + vec2(0.0, u_Px.y))).rgb + texture2D(u_Tex, uvOf(q - vec2(0.0, u_Px.y))).rgb;\n"
-      + "    col = clamp(col + (col - bl * 0.25) * u_Sharp, 0.0, 1.0);\n"
+      + "    vec3 bl = texture2D(u_Tex, uvOf(q + u_Px)).rgb + texture2D(u_Tex, uvOf(q - u_Px)).rgb;\n"
+      + "    col = clamp(col + (col - bl * 0.5) * u_Sharp, 0.0, 1.0);\n"
       + "  }\n"
       + "  float fa = u_A * ma;\n"
       + "  gl_FragColor = vec4(col * fa, fa);\n"
